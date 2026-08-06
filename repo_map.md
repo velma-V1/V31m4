@@ -2,106 +2,93 @@
 
 ## Current State
 
-**Layer:** Contracts and Schema Layer 3  
-**Branch:** `agent/contracts-schema-layer-3`  
-**Parent layer:** `agent/domain-entities-layer-2`  
+**Layer:** Application Ports Layer 4  
+**Branch:** `agent/application-ports-layer-4`  
+**Parent layer:** `agent/contracts-schema-layer-3`  
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
 
 ### Implemented and functional
 
 ```text
 packages/
-├── domain/
-│   ├── README.md
-│   ├── src/
-│   │   ├── domain-errors.ts
-│   │   ├── domain-events.ts
-│   │   ├── index.ts
-│   │   ├── value-objects/                 # 5 canonical primitives
-│   │   └── entities/                      # 23 immutable domain entities
-│   └── tests/                             # 16 Layer 1-2 test files
-└── contracts/
+├── domain/                              # Layer 1-2: primitives and 23 immutable entities
+├── contracts/                           # Layer 3: strict APIs, events, manifests, and RPC
+└── application/
     ├── README.md
     ├── package.json
     ├── tsconfig.json
     ├── src/
     │   ├── index.ts
-    │   ├── common.schemas.ts
-    │   ├── projects.schemas.ts
-    │   ├── missions.schemas.ts
-    │   ├── jobs.schemas.ts
-    │   ├── evidence.schemas.ts
-    │   ├── capabilities.schemas.ts
-    │   ├── models.schemas.ts
-    │   ├── tools.schemas.ts
-    │   ├── plugins.schemas.ts
-    │   ├── practice.schemas.ts
-    │   ├── avatar.schemas.ts
-    │   ├── runtime-events.schemas.ts
-    │   └── adapter-rpc.schemas.ts
-    └── tests/
-        ├── common.schemas.test.ts
-        ├── runtime-resources.schemas.test.ts
-        ├── capability-endpoints.schemas.test.ts
-        ├── runtime-events.schemas.test.ts
-        ├── adapter-rpc.schemas.test.ts
-        ├── json-schemas.test.ts
-        ├── compatibility.test.ts
-        └── public-api.test.ts
+    │   ├── application-json.ts
+    │   ├── application-errors.ts
+    │   ├── operation-context.ts
+    │   ├── port-types.ts
+    │   └── ports/
+    │       ├── unit-of-work.port.ts
+    │       ├── project-repository.port.ts
+    │       ├── mission-repository.port.ts
+    │       ├── job-repository.port.ts
+    │       ├── evidence-repository.port.ts
+    │       ├── candidate-repository.port.ts
+    │       ├── capability-repository.port.ts
+    │       ├── artifact-store.port.ts
+    │       ├── event-bus.port.ts
+    │       ├── model-gateway.port.ts
+    │       ├── tool-gateway.port.ts
+    │       ├── plugin-registry.port.ts
+    │       ├── production-kernel.port.ts
+    │       ├── verifier.port.ts
+    │       ├── policy-engine.port.ts
+    │       ├── scheduler.port.ts
+    │       ├── resource-monitor.port.ts
+    │       ├── training-store.port.ts
+    │       ├── secret-store.port.ts
+    │       ├── clock.port.ts
+    │       ├── workflow-repository.port.ts
+    │       ├── workspace-manager.port.ts
+    │       ├── audit-store.port.ts
+    │       ├── approval-store.port.ts
+    │       ├── configuration-store.port.ts
+    │       └── backup-store.port.ts
+    └── tests/                            # 6 Layer 4 test files
 
-schemas/
-├── adapter-manifest.schema.json
-├── plugin-manifest.schema.json
-├── workflow.schema.json
-├── evidence-record.schema.json
-├── training-packet.schema.json
-├── capability-package.schema.json
-└── achievement-rule.schema.json
-
-docs/
-├── architecture.md
-├── dependency-rules.md
-├── contract-versioning.md
-├── repository-map.md
-└── superpowers/plans/2026-08-06-contracts-schema-layer-3.md
+schemas/                                 # 7 portable draft 2020-12 schemas
+docs/                                    # Architecture, maps, versioning, and Layer 1-4 plans
 ```
 
-Repository governance, workspace configuration, the Layer 1 foundation, and the complete Layer 2 entity model remain present from the parent branches.
+### Verified application behavior
 
-### Verified contract behavior
-
-- Every bounded API, event, RPC, workflow, and manifest object rejects unknown properties.
-- Contract, event, adapter-protocol, and JSON Schema documents use exact version `1.0.0` compatibility.
-- Durable identifiers, content hashes, safe paths, scores, and resource budgets reuse domain validation.
-- Canonical timestamps require UTC ISO-8601 with milliseconds and reject normalized lookalikes.
-- Recursive JSON values reject cycles, non-finite numbers, non-plain objects, and prototype-pollution keys.
-- Mission submissions require unique IDs and explicit evidence coverage for every mandatory criterion.
-- Jobs, checkpoints, evidence, capability scores, deliveries, promotions, practice tasks, and avatar state enforce cross-field invariants.
-- Model and tool payloads remain provider-neutral and reject provider extension fields.
-- Plugin tool sets are unique and disjoint; workflow dependency graphs reference known stages and remain acyclic.
-- Runtime events form a closed union and require the aggregate envelope to match the typed payload identifier.
-- Adapter JSON-RPC accepts only the declared method set and keeps success and error responses mutually exclusive.
-- TypeScript and JSON plugin/workflow schemas have permanent parity checks.
-- Seven portable JSON Schemas compile independently under draft 2020-12.
+- Application source imports only the public domain API and application-local files.
+- External API contracts do not leak inward into application ports.
+- Safe internal JSON rejects cycles, non-finite numbers, accessors, symbols, sparse arrays, class instances, and dangerous prototype keys.
+- Application errors preserve typed codes, retryability, immutable safe details, and hidden causes.
+- Operation contexts validate actor identity, roles, correlation, idempotency, canonical timestamps, cancellation, and deadlines.
+- Authoritative writes require explicit unit-of-work transaction participation.
+- Mutable writes require explicit optimistic-concurrency conditions and return versioned records.
+- Immutable mission, evidence, candidate, repair, promotion, and audit records use append-only operations.
+- Models, tools, plugins, kernels, and verifiers use provider-neutral application DTOs.
+- Secret access uses bounded leases; isolated work uses explicit workspace handles.
+- Policy, approvals, and audit history are separate non-interchangeable boundaries.
+- Workflow, configuration, backup, and recovery boundaries are explicit before infrastructure exists.
 
 ### Verification result
 
 - Layer 1-2 domain regression: **92 passing cases across 16 test files**.
-- Layer 3 contract verification: **33 passing cases across 8 test files**.
-- Combined verified behavior: **125 passing cases across 24 test files**.
-- Strict TypeScript contract source and test compilation: passed.
-- Contract declaration emission: **14 declaration files**, with **zero `any` occurrences**.
-- Independent JSON Schema validation: **7 of 7 passed** with Ajv-compatible tests and Python `jsonschema` draft 2020-12 checks.
-- Domain and contract source files: **45**.
-- Largest source file: **452 lines**, below the 500-line architecture limit.
-- Placeholder scan: passed.
-- Forbidden contract dependency scan: passed.
-- JSON parsing and unique schema-ID checks: passed.
+- Layer 3 non-schema contract regression: **29 passing cases across 7 test files**.
+- Layer 3 portable JSON Schemas: **7 of 7 valid**, unique versioned IDs, and four direct sample validations.
+- Layer 4 application verification: **14 passing cases across 6 test files**.
+- Combined executable behavior: **139 passing cases across 30 test files**, counting the four schema-test behaviors and all prior layers.
+- Strict TypeScript checks for domain, contracts, and application: passed.
+- Application declaration emission and public API scan: passed.
+- Application source files: **31**.
+- Application ports: **26**.
+- Largest application source file remains below the 500-line architecture limit.
+- Placeholder and forbidden-dependency scans: passed.
 
 ### Environment limitation
 
-The execution environment cannot access the public npm registry. The committed package uses normal pinned dependencies and Vitest/Ajv imports, while local verification used the available TypeScript compiler plus isolated API-compatible local test shims and an independent Python JSON Schema validator. A networked environment must run `corepack enable && pnpm install && pnpm check` before the pull request is marked ready.
+The environment cannot install packages from the public npm registry. Committed tests use normal pinned dependencies and Vitest imports; local verification used the available TypeScript compiler and isolated compatible test packages. A networked environment must run `corepack enable && pnpm install && pnpm check` before the stacked pull requests are marked ready.
 
 ### Not implemented
 
-Everything outside the domain and contracts packages remains specified but absent. No application ports, application services, persistence, runtime API server, desktop, CLI, gateways, adapter-protocol implementation package, model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows exist yet.
+No application services or use cases, infrastructure implementations, database schema, artifact implementation, runtime API server, desktop, CLI, adapter-protocol package, model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows exist yet.

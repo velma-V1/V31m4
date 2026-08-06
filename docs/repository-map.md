@@ -16,6 +16,13 @@
 | `/packages/contracts/src/*-schemas.ts` | Contract core | Strict bounded API, event, workflow, and adapter payload schemas |
 | `/packages/contracts/src/index.ts` | Contract core | Public contracts package API only |
 | `/packages/contracts/tests` | Contract verification | Runtime contract, protocol, compatibility, JSON Schema, and parity verification |
+| `/packages/application/src/application-json.ts` | Application core | Safe finite acyclic internal JSON values without contract-layer dependency |
+| `/packages/application/src/application-errors.ts` | Application core | Typed orchestration and dependency failures with immutable details |
+| `/packages/application/src/operation-context.ts` | Application core | Actor, correlation, idempotency, cancellation, and deadline context |
+| `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
+| `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
+| `/packages/application/src/index.ts` | Application core | Public application package API only |
+| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, and file-size checks |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
 
 ## Current dependency graph
@@ -23,6 +30,10 @@
 ```text
 Root tooling
     ↓
+packages/application tests
+    ↓
+packages/application public API ─────→ packages/domain public API
+
 packages/contracts tests ─────→ root schemas
     ↓
 packages/contracts public API
@@ -34,7 +45,7 @@ domain entities
 domain value objects, errors, and events
 ```
 
-`packages/domain` imports no other workspace package. `packages/contracts` imports only the domain public API and Zod.
+`packages/domain` imports no other workspace package. `packages/contracts` imports only the domain public API and Zod. `packages/application` imports only the domain public API.
 
 ## Contract ownership
 
@@ -46,6 +57,15 @@ domain value objects, errors, and events
 | Event stream | `runtime-events.schemas.ts` | Closed, versioned, aggregate-consistent client event union |
 | Adapter protocol | `adapter-rpc.schemas.ts` | Closed JSON-RPC requests, notifications, results, and errors |
 | Portable schemas | `/schemas/*.schema.json` | External manifest and portable-record validation independent of TypeScript |
+
+## Application port ownership
+
+| Port group | Files | Strict responsibility |
+|---|---|---|
+| Atomic persistence | `unit-of-work`, project, mission, job, evidence, candidate, capability, workflow, training ports | Transactions, optimistic concurrency, append-only records, and durable aggregate access |
+| External execution | artifact, event, model, tool, plugin, kernel, verifier ports | Provider-neutral execution, cancellation, health, artifact integrity, and committed event publication |
+| Governance | policy, approval, audit ports | Separate authorization decisions, approval lifecycle, and append-only execution history |
+| Operations | scheduler, resource, secret, clock, workspace, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, isolation, configuration, and recovery |
 
 ## Update rule
 

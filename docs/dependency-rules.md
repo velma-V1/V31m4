@@ -1,6 +1,6 @@
 # V31M4 Dependency Rules
 
-## Contracts and Schema Layer 3
+## Application Ports Layer 4
 
 ### `packages/domain`
 
@@ -37,6 +37,35 @@ Forbidden:
 - Unversioned API, event, manifest, workflow, or adapter messages
 - Unbounded recursive `unknown` values
 
+### `packages/application`
+
+Allowed:
+
+- The public `@v31m4/domain` package API
+- Files inside `packages/application/src`
+- Node standard-library imports in application tests only
+
+Forbidden:
+
+- Imports from `@v31m4/contracts` or contract internal paths
+- Imports from runtime, infrastructure, adapters, plugins, UI, or laboratories
+- Provider SDKs, database drivers, process APIs, filesystem APIs, network clients, or secret implementations in application source
+- Optional transaction parameters on authoritative writes
+- Unversioned mutable writes without explicit `WriteCondition`
+- Raw provider errors crossing a port boundary
+- Long-running operations without `OperationContext` and cancellation semantics
+- Direct secret strings retained beyond a bounded secret lease
+
+### Application port rules
+
+- Application source defines interfaces and pure shared primitives only.
+- Every authoritative repository mutation requires `UnitOfWorkTransaction`.
+- Every mutable aggregate write uses `WriteCondition` and returns `Versioned<T>`.
+- External execution ports expose provider-neutral request and result types.
+- Audit storage is append-only and distinct from policy and approval storage.
+- Workspace operations make isolation, sealing, snapshotting, and disposal explicit.
+- Source files remain below 500 lines.
+
 ### Contract construction rules
 
 - Every bounded object uses strict validation.
@@ -60,6 +89,7 @@ Forbidden:
 ## Dependency graph
 
 ```text
+application tests → application public API → domain public API
 contracts tests → contracts public API → domain public API
 JSON Schema tests → root schemas
 packages/domain → nothing outside domain
@@ -70,7 +100,7 @@ packages/domain → nothing outside domain
 ```text
 apps → runtime-sdk / ui-kit / application / infrastructure
 infrastructure → application ports / domain / adapter-protocol
-application → domain
+application → domain public API
 contracts → domain public API
 plugins → plugin-sdk / contracts
 adapters → adapter-protocol / external SDK

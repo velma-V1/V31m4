@@ -4,7 +4,7 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Contracts and Schema Layer 3**. The implemented code contains repository governance, dependency-free domain primitives, the complete immutable domain entity model, strict TypeScript runtime contracts, versioned client events, a closed adapter JSON-RPC protocol, and seven draft 2020-12 JSON Schemas. Runtime services, application use cases, persistence, interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
+The repository is in **Application Ports Layer 4**. The implemented code contains repository governance, the immutable domain model, strict external contracts, seven portable JSON Schemas, and the complete infrastructure-free application boundary. Application services, use cases, persistence implementations, runtime interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
 
 ## Prerequisites
 
@@ -54,3 +54,17 @@ Provides strict Zod schemas and inferred TypeScript payload types for:
 ## Root JSON Schemas
 
 The `schemas/` directory contains machine-readable draft 2020-12 definitions for adapter manifests, plugin manifests, workflows, evidence records, training packets, capability packages, and achievement rules.
+
+### `@v31m4/application`
+
+Provides the complete Layer 4 boundary:
+
+- Typed application errors and safe internal JSON data
+- Immutable operation context with actor, correlation, idempotency, cancellation, and deadlines
+- Optimistic-concurrency and versioned-record primitives
+- Atomic unit-of-work participation for authoritative writes
+- Project, mission, job, evidence, candidate, capability, workflow, and training repositories
+- Artifact, event, model, tool, plugin, kernel, and verifier boundaries
+- Policy, approvals, audit, scheduling, resources, secrets, clock, workspace, configuration, and backup boundaries
+
+The package imports only the public `@v31m4/domain` API.

@@ -51,6 +51,23 @@ Contract rules:
 - Root JSON Schemas are independently compilable draft 2020-12 documents with versioned schema IDs.
 - TypeScript and JSON manifest schemas share parity tests for overlapping contracts.
 
+## Application boundary authority
+
+Layer 4 defines the only supported interfaces through which application services may access persistence, artifacts, events, external models, production tools, plugins, kernels, verification, policy, scheduling, resources, secrets, isolated workspaces, configuration, approvals, audit history, and backups.
+
+Application rules:
+
+- `@v31m4/application` imports only the public `@v31m4/domain` API and application-local files.
+- External API and adapter payload schemas remain in `@v31m4/contracts`; they are translated at runtime boundaries rather than imported into the application core.
+- Every long-running or external call receives an immutable `OperationContext` carrying actor identity, correlation, idempotency, cancellation, and an optional deadline.
+- Every authoritative write participates in a `UnitOfWorkTransaction`.
+- Mutable records use explicit optimistic-concurrency `WriteCondition` values and return `Versioned<T>`.
+- Missions, evidence, candidates, repairs, promotions, audit records, and other immutable records are append-only.
+- Models, tools, and kernels expose provider-neutral results and explicit cancellation.
+- Secrets are accessed through bounded leases rather than retained as long-lived values.
+- Candidate, repair, tool, practice, and verification work occurs through explicit isolated-workspace handles.
+- Policy decisions, approval records, and audit records are separate boundaries so authorization cannot be inferred from logging or vice versa.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
@@ -71,6 +88,6 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Contracts and Schema Layer 3 contains repository governance, domain primitives, all Layer 2 domain entities, the complete `@v31m4/contracts` package, seven root JSON Schemas, public exports, compatibility rules, and behavior tests.
+Application Ports Layer 4 contains repository governance, the complete domain and contract layers, seven root JSON Schemas, and the complete `@v31m4/application` port boundary with shared operation, concurrency, error, and internal JSON primitives.
 
-No application ports, application services, persistence, runtime API server, desktop UI, CLI, gateways, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.
+No application services, use cases, infrastructure implementations, runtime API server, desktop UI, CLI, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.
