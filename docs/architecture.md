@@ -20,16 +20,34 @@ Plugins register bounded capabilities through the plugin SDK.
 Laboratories remain isolated from production state.
 ```
 
-Dependencies always point toward the domain. The domain package has no runtime, infrastructure, adapter, plugin, UI, or provider dependencies.
+Dependencies always point toward the domain. The domain package has no runtime, infrastructure, adapter, plugin, UI, provider, filesystem, process, network, or database dependencies.
 
 ## State authority
 
-The future runtime process will own all authoritative project, mission, job, evidence, checkpoint, artifact, capability, promotion, and avatar state. Interfaces may cache and display that state but never own it.
+The future runtime process will own authoritative project, mission, job, evidence, checkpoint, artifact, capability, promotion, and avatar state. Interfaces may cache and display that state but never own it.
+
+## Domain authority
+
+Layer 2 establishes immutable domain state and transition rules before persistence or orchestration exists. Domain factories validate all externally supplied values. Transition functions return new frozen state and never mutate prior state. Illegal lifecycle movement raises typed domain errors.
+
+Job lifecycle transitions also produce immutable domain events. Models, adapters, tools, and interfaces cannot directly alter domain state.
 
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
 
+The domain enforces:
+
+- Evidence records are immutable and artifact-backed.
+- Verified checkpoints require evidence.
+- Mandatory verification failures prevent a passing result.
+- Missing mandatory checks produce an inconclusive result.
+- Champion delivery requires complete mandatory and requirement coverage.
+- Training data begins quarantined and cannot be promoted before verification.
+- Avatar unlock records require immutable evidence.
+
 ## Current implemented boundary
 
-Foundation/Core Layer 1 contains repository governance and dependency-free domain primitives only. No stateful runtime behavior is implemented in this layer.
+Domain Entity Layer 2 contains repository governance, domain primitives, all domain entities listed in the repository specification, their immutable transitions, public exports, and behavior tests.
+
+No application services, ports, persistence, runtime API, desktop UI, CLI, gateways, adapters, plugins, laboratories, or production workflows are implemented.

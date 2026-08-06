@@ -4,7 +4,7 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Foundation/Core Layer 1**. The implemented code currently contains only dependency-free domain primitives and repository governance. Runtime services, applications, plugins, adapters, and production workflows are intentionally absent until their prerequisite layers are verified.
+The repository is in **Domain Entity Layer 2**. The implemented code contains repository governance, dependency-free domain primitives, and the complete immutable domain entity model. Runtime services, application use cases, persistence, interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
 
 ## Prerequisites
 
@@ -35,4 +35,16 @@ Read these files in order before making changes:
 
 ## Current implemented package
 
-- `@v31m4/domain`: branded identifiers, SHA-256 content hashes, safe project-relative paths, normalized scores, resource budgets, domain errors, and immutable domain events.
+`@v31m4/domain` now provides:
+
+- Branded durable identifiers
+- SHA-256 content hashes
+- Safe project-relative paths
+- Normalized scores and resource budgets
+- Typed domain errors and immutable domain events
+- Projects, missions, requirements, jobs, and checkpoints
+- Artifacts, evidence, claims, and the Production Twin
+- Model, tool, plugin, and capability profiles
+- Solver candidates, verification results, issues, and repairs
+- Champion decisions and delivery receipts
+- Training packets, practice tasks, promotions, and avatar state
