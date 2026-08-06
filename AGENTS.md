@@ -6,19 +6,22 @@ Before changing, adding, moving, renaming, or deleting any repository file, read
 
 1. Read `docs/repository-specification.md`.
 2. Identify the owning layer and package.
-3. Confirm every proposed import is permitted by `docs/dependency-rules.md`.
-4. Reuse existing interfaces instead of creating parallel abstractions.
-5. Write or update tests before production behavior.
-6. Run the narrowest relevant checks, then the complete layer checks.
-7. Update `repo_map.md` and `docs/repository-map.md` in the same change.
-8. Do not mark work complete without recorded verification evidence.
+3. If the change touches contracts, schemas, APIs, events, manifests, workflows, or adapter messages, read `docs/contract-versioning.md`.
+4. Confirm every proposed import is permitted by `docs/dependency-rules.md`.
+5. Reuse existing interfaces instead of creating parallel abstractions.
+6. Write or update tests before production behavior.
+7. Run the narrowest relevant checks, then the complete layer checks.
+8. Update `repo_map.md` and `docs/repository-map.md` in the same change.
+9. Do not mark work complete without recorded verification evidence.
 
 ## Non-negotiable boundaries
 
-- Domain code imports no infrastructure, adapters, plugins, applications, or UI.
+- Domain code imports no infrastructure, adapters, plugins, applications, UI, or contracts.
+- Contract source imports only the domain public API and Zod.
 - UI code never owns authoritative project state.
 - Models never certify their own outputs.
 - External tools and models are invoked only through typed gateways.
 - Production assets are modified only through isolated working copies.
 - Accepted evidence and verified checkpoints are immutable.
 - Optional tools and plugins must never be required for core startup.
+- Unsupported contract or protocol versions are rejected rather than coerced.

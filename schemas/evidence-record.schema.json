@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.v31m4.local/evidence-record/1.0.0",
+  "title": "V31M4 Evidence Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "projectId", "kind", "subjectType", "subjectId", "status", "summary", "artifactIds", "verifierId", "verifierVersion", "createdAt", "immutable"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "id": { "$ref": "#/$defs/id" },
+    "projectId": { "$ref": "#/$defs/id" },
+    "jobId": { "$ref": "#/$defs/id" },
+    "kind": { "enum": ["unit_test", "integration_test", "hidden_test", "property_test", "mutation_test", "static_analysis", "benchmark", "visual_inspection", "audio_inspection", "source", "tool_log", "runtime_log", "artifact_comparison", "human_approval"] },
+    "subjectType": { "$ref": "#/$defs/id" },
+    "subjectId": { "$ref": "#/$defs/id" },
+    "status": { "enum": ["passed", "failed", "inconclusive"] },
+    "summary": { "$ref": "#/$defs/nonEmptyText" },
+    "artifactIds": { "$ref": "#/$defs/nonEmptyIdArray" },
+    "verifierId": { "$ref": "#/$defs/id" },
+    "verifierVersion": { "$ref": "#/$defs/semver" },
+    "createdAt": { "$ref": "#/$defs/timestamp" },
+    "immutable": { "const": true }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
+    "timestamp": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$" },
+    "nonEmptyText": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$" },
+    "idArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 10000 },
+    "nonEmptyIdArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "minItems": 1, "maxItems": 10000 },
+    "jsonValue": { "oneOf": [{ "type": ["string", "number", "boolean", "null"] }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } }, "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] }
+  }
+}

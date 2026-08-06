@@ -4,7 +4,7 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Domain Entity Layer 2**. The implemented code contains repository governance, dependency-free domain primitives, and the complete immutable domain entity model. Runtime services, application use cases, persistence, interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
+The repository is in **Contracts and Schema Layer 3**. The implemented code contains repository governance, dependency-free domain primitives, the complete immutable domain entity model, strict TypeScript runtime contracts, versioned client events, a closed adapter JSON-RPC protocol, and seven draft 2020-12 JSON Schemas. Runtime services, application use cases, persistence, interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
 
 ## Prerequisites
 
@@ -29,22 +29,28 @@ Read these files in order before making changes:
 1. `docs/repository-specification.md`
 2. `docs/architecture.md`
 3. `docs/dependency-rules.md`
-4. `docs/repository-map.md`
-5. `repo_map.md`
-6. `AGENTS.md`
+4. `docs/contract-versioning.md`
+5. `docs/repository-map.md`
+6. `repo_map.md`
+7. `AGENTS.md`
 
-## Current implemented package
+## Implemented packages
 
-`@v31m4/domain` now provides:
+### `@v31m4/domain`
 
-- Branded durable identifiers
-- SHA-256 content hashes
-- Safe project-relative paths
-- Normalized scores and resource budgets
-- Typed domain errors and immutable domain events
-- Projects, missions, requirements, jobs, and checkpoints
-- Artifacts, evidence, claims, and the Production Twin
-- Model, tool, plugin, and capability profiles
-- Solver candidates, verification results, issues, and repairs
-- Champion decisions and delivery receipts
-- Training packets, practice tasks, promotions, and avatar state
+Provides branded identifiers, immutable entities, lifecycle invariants, evidence rules, candidate lineage, verification decisions, quarantined learning state, capability profiles, practice tasks, promotions, and avatar state.
+
+### `@v31m4/contracts`
+
+Provides strict Zod schemas and inferred TypeScript payload types for:
+
+- Projects, missions, jobs, checkpoints, artifacts, evidence, and capabilities
+- Models, tools, plugins, workflows, idle practice, and the capability avatar
+- Client-streamable runtime events
+- Adapter and production-kernel JSON-RPC messages
+- Exact contract and protocol version checks
+- Finite, acyclic, prototype-safe recursive JSON values
+
+## Root JSON Schemas
+
+The `schemas/` directory contains machine-readable draft 2020-12 definitions for adapter manifests, plugin manifests, workflows, evidence records, training packets, capability packages, and achievement rules.

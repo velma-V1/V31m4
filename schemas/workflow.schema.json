@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.v31m4.local/workflow/1.0.0",
+  "title": "V31M4 Workflow Definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "workflowId", "version", "displayName", "inputSchemaRef", "outputSchemaRef", "stages"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "workflowId": { "$ref": "#/$defs/id" },
+    "version": { "$ref": "#/$defs/semver" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "inputSchemaRef": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^\\S+$" },
+    "outputSchemaRef": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^\\S+$" },
+    "stages": { "type": "array", "items": { "$ref": "#/$defs/stage" }, "minItems": 1, "maxItems": 10000 }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
+    "timestamp": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$" },
+    "nonEmptyText": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$" },
+    "idArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 10000 },
+    "nonEmptyIdArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "minItems": 1, "maxItems": 10000 },
+    "jsonValue": { "oneOf": [{ "type": ["string", "number", "boolean", "null"] }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } }, "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] },
+    "stage": { "type": "object", "additionalProperties": false, "required": ["id", "capabilityId", "dependsOn", "timeoutMs", "maxAttempts", "checkpoint"], "properties": { "id": { "$ref": "#/$defs/id" }, "capabilityId": { "$ref": "#/$defs/id" }, "dependsOn": { "$ref": "#/$defs/idArray" }, "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }, "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 100 }, "checkpoint": { "type": "boolean" } } }
+  },
+  "$comment": "Stage IDs, dependency existence, self-dependencies, and graph cycles are semantically validated by @v31m4/contracts."
+}

@@ -6,13 +6,16 @@
 |---|---|---|
 | `/AGENTS.md` | Repository governance | Mandatory human and AI contribution rules |
 | `/repo_map.md` | Repository governance | Exact current implementation state |
-| `/docs` | Architecture governance | Source-of-truth architecture and implementation planning |
+| `/docs` | Architecture governance | Source-of-truth architecture, versioning, and implementation planning |
+| `/schemas` | Contract governance | Portable draft 2020-12 schemas for manifests, workflows, evidence, learning, capabilities, and achievements |
 | `/packages/domain/src/value-objects` | Domain core | Canonical validated primitive values |
 | `/packages/domain/src/entities` | Domain core | Immutable entities, invariants, decisions, and lifecycle transitions |
-| `/packages/domain/src/domain-errors.ts` | Domain core | Typed domain failures |
-| `/packages/domain/src/domain-events.ts` | Domain core | Immutable JSON-compatible domain events |
 | `/packages/domain/src/index.ts` | Domain core | Public domain package API only |
 | `/packages/domain/tests` | Domain verification | Layer 1 regression and Layer 2 behavior verification |
+| `/packages/contracts/src/common.schemas.ts` | Contract core | Versions, branded primitives, safe JSON, pagination, and API errors |
+| `/packages/contracts/src/*-schemas.ts` | Contract core | Strict bounded API, event, workflow, and adapter payload schemas |
+| `/packages/contracts/src/index.ts` | Contract core | Public contracts package API only |
+| `/packages/contracts/tests` | Contract verification | Runtime contract, protocol, compatibility, JSON Schema, and parity verification |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
 
 ## Current dependency graph
@@ -20,7 +23,9 @@
 ```text
 Root tooling
     ↓
-packages/domain tests
+packages/contracts tests ─────→ root schemas
+    ↓
+packages/contracts public API
     ↓
 packages/domain public API
     ↓
@@ -29,19 +34,18 @@ domain entities
 domain value objects, errors, and events
 ```
 
-`packages/domain` imports no other workspace package.
+`packages/domain` imports no other workspace package. `packages/contracts` imports only the domain public API and Zod.
 
-## Domain entity ownership
+## Contract ownership
 
-| Entity group | Files | Strict responsibility |
+| Contract group | Files | Strict responsibility |
 |---|---|---|
-| Project definition | `project.ts`, `requirement.ts`, `mission-contract.ts` | Project and mission intent, constraints, and acceptance |
-| Durable execution | `job.ts`, `checkpoint.ts` | Recoverable lifecycle and immutable checkpoints |
-| Traceability | `artifact.ts`, `evidence-record.ts`, `claim.ts`, `production-twin.ts` | Content lineage, evidence, claims, and requirement-output links |
-| Capability registry | `capability-profile.ts`, `model-profile.ts`, `tool-profile.ts`, `plugin-profile.ts` | Measured capability and availability state |
-| Competitive solving | `solver-candidate.ts`, `verification-result.ts`, `issue-record.ts`, `repair-record.ts` | Candidate lineage, verification, defects, and repair evidence |
-| Verified delivery | `champion-decision.ts`, `delivery-receipt.ts` | Champion/no-solution decisions and final coverage receipts |
-| Improvement | `training-packet.ts`, `practice-task.ts`, `promotion-record.ts`, `avatar-state.ts` | Quarantine, practice, promotion, and evidence-backed visual progression |
+| Common boundary | `common.schemas.ts` | Versioning, canonical primitives, safe recursive JSON, request metadata, pagination, and errors |
+| Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `capabilities.schemas.ts` | Authoritative resource command, query, state, evidence, verification, delivery, and promotion payloads |
+| Capability endpoints | `models.schemas.ts`, `tools.schemas.ts`, `plugins.schemas.ts`, `practice.schemas.ts`, `avatar.schemas.ts` | Provider-neutral capability discovery, invocation, workflow, practice, and avatar payloads |
+| Event stream | `runtime-events.schemas.ts` | Closed, versioned, aggregate-consistent client event union |
+| Adapter protocol | `adapter-rpc.schemas.ts` | Closed JSON-RPC requests, notifications, results, and errors |
+| Portable schemas | `/schemas/*.schema.json` | External manifest and portable-record validation independent of TypeScript |
 
 ## Update rule
 
