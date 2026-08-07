@@ -14,6 +14,7 @@ describe("practice and avatar domain", () => {
       id: "practice-1",
       capabilityId: "capability-domain",
       targetDifficulty: 3,
+      workspaceId: "workspace-practice-1",
       isolatedWorkspacePath: "practice/practice-1",
       resourceBudget: ResourceBudget.create({
         maxWallClockMs: 60_000,
@@ -42,6 +43,7 @@ describe("practice and avatar domain", () => {
       id: "practice-1",
       capabilityId: "capability-domain",
       targetDifficulty: 3,
+      workspaceId: "workspace-practice-1",
       isolatedWorkspacePath: "practice/practice-1",
       resourceBudget: ResourceBudget.create({
         maxWallClockMs: 60_000,

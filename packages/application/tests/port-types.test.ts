@@ -16,6 +16,7 @@ import type {
   ModelGatewayPort,
   PluginRegistryPort,
   PolicyEnginePort,
+  PracticeRepositoryPort,
   ProductionKernelPort,
   ProjectRepositoryPort,
   ResourceMonitorPort,
@@ -45,6 +46,7 @@ type AllPorts = readonly [
   ProductionKernelPort,
   VerifierPort,
   PolicyEnginePort,
+  PracticeRepositoryPort,
   SchedulerPort,
   ResourceMonitorPort,
   TrainingStorePort,
@@ -57,7 +59,6 @@ type AllPorts = readonly [
   ConfigurationStorePort,
   BackupStorePort,
 ];
-
 
 type ProjectSaveTransactionOptional = undefined extends Parameters<ProjectRepositoryPort["save"]>[3]
   ? true
@@ -91,7 +92,7 @@ describe("application port surface", () => {
   });
 
   it("contains the complete Layer 4 port set", () => {
-    const count: AllPorts["length"] = 26;
-    expect(count).toBe(26);
+    const count: AllPorts["length"] = 27;
+    expect(count).toBe(27);
   });
 });

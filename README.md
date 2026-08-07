@@ -4,7 +4,7 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Application Services Layer 5**. The implemented code contains repository governance, the immutable domain model, strict external contracts, seven portable JSON Schemas, the complete infrastructure-free application port boundary, and nine deterministic application decision services. Use cases, persistence implementations, runtime interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
+The repository is in **Application Use Cases Layer 6**. The implemented code contains repository governance, the immutable domain model, strict external contracts, seven portable JSON Schemas, the complete infrastructure-free application port boundary, nine deterministic application decision services, and 21 transactional application use cases. Persistence implementations, runtime interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
 
 ## Prerequisites
 
@@ -57,7 +57,7 @@ The `schemas/` directory contains machine-readable draft 2020-12 definitions for
 
 ### `@v31m4/application`
 
-Provides the complete Layer 4 boundary and Layer 5 decision services:
+Provides the complete Layer 4 boundary, Layer 5 decision services, and Layer 6 orchestration:
 
 - Typed application errors and safe internal JSON data
 - Immutable operation context with actor, correlation, idempotency, cancellation, and deadlines
@@ -67,5 +67,6 @@ Provides the complete Layer 4 boundary and Layer 5 decision services:
 - Artifact, event, model, tool, plugin, kernel, and verifier boundaries
 - Policy, approvals, audit, scheduling, resources, secrets, clock, workspace, configuration, and backup boundaries
 - Compute governance, context compilation, solver diversity, evidence linking, champion selection, improvement policy, capability calculation, practice selection, and avatar unlock evaluation
+- Policy-gated projects and missions, durable job control, solving, verification, repair, delivery, controlled learning, idle practice, avatar evaluation, plugin registration, and governed model/tool invocation
 
 The package imports only the public `@v31m4/domain` API.

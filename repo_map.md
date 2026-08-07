@@ -2,77 +2,72 @@
 
 ## Current State
 
-**Layer:** Application Services Layer 5  
-**Branch:** `agent/application-services-layer-5`  
-**Parent layer:** `agent/application-ports-layer-4`  
+**Layer:** Application Use Cases Layer 6  
+**Branch:** `agent/application-use-cases-layer-6`  
+**Parent layer:** `agent/application-services-layer-5`  
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
 
 ### Implemented and functional
 
 ```text
 packages/
-├── domain/                              # Layers 1-2: primitives and 23 immutable entities
-├── contracts/                           # Layer 3: strict APIs, events, manifests, RPC, schemas
+├── domain/                              # Layers 1-2, including durable practice workspace identity
+├── contracts/                           # Layer 3 plus practice lifecycle parity correction
 └── application/
     ├── src/
-    │   ├── application-json.ts
-    │   ├── application-errors.ts
-    │   ├── operation-context.ts
-    │   ├── port-types.ts
-    │   ├── ports/                       # 26 Layer 4 ports
-    │   └── services/
-    │       ├── compute-governor.ts
-    │       ├── context-compiler.ts
-    │       ├── diversity-planner.ts
-    │       ├── evidence-linker.ts
-    │       ├── champion-selector.ts
-    │       ├── improvement-policy.ts
-    │       ├── capability-calculator.ts
-    │       ├── practice-selector.ts
-    │       └── avatar-unlock-engine.ts
-    └── tests/                            # 15 application test files
+    │   ├── application primitives
+    │   ├── ports/                       # 27 infrastructure-free ports
+    │   ├── services/                    # 9 deterministic Layer 5 services
+    │   └── use-cases/
+    │       ├── project, mission, and execution planning
+    │       ├── durable job lifecycle
+    │       ├── solver, verification, issue, and repair
+    │       ├── champion, delivery, training, and promotion
+    │       ├── idle practice and avatar progression
+    │       └── governed plugin, model, and tool operations
+    └── tests/                            # 23 application test files
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/
-├── architecture.md
-├── dependency-rules.md
-├── repository-map.md
-├── contract-versioning.md
-├── reviews/layers-1-5-improvement-ledger.md
-└── superpowers/plans/2026-08-06-application-services-layer-5.md
+├── reviews/layers-1-6-improvement-ledger.md
+└── superpowers/plans/2026-08-06-application-use-cases-layer-6.md
 ```
 
-### Verified Layer 5 behavior
+### Verified Layer 6 behavior
 
-- Compute selection supports direct, checked, competitive, and adversarial execution with resource and verification gates.
-- Context compilation preserves mandatory information, prunes optional overflow, and produces stable fingerprints.
-- Solver plans are pairwise materially distinct and deterministic for a seed.
-- Evidence coverage preserves missing, failed, inconclusive, conflicting, and orphan records.
-- Champion selection excludes mandatory failures and unresolved critical issues.
-- Improvement policy rejects cosmetic, repeated, exhausted, and unverifiable repair loops.
-- Capability updates require unique leakage-checked evidence and bound practice influence.
-- Practice selection enforces idle time, safety, cooldown, rotation, resources, and independent verification.
-- Avatar unlocks require passed independent evidence explicitly bound to each required capability.
+- Project creation is policy-gated, revisioned, transactional, and audited.
+- Missions are immutable and accepted only for active projects.
+- Planning composes compute governance, smallest-sufficient context, and material solver diversity.
+- Job start, checkpoint, resume, and stop follow durable prepare, external invoke, finalize-or-fail phases.
+- Solver candidates and repairs run in isolated workspaces and preserve immutable lineage.
+- Independent verification evidence, issues, repairs, champion decisions, and delivery receipts are persisted through ports.
+- Training packets remain quarantined until verified, then promote atomically with capability history.
+- Idle practice persists the opaque workspace ID and reliably disposes it when stopped.
+- Avatar and practice evaluation consume complete pagination rather than silently truncating records.
+- Plugins, models, and tools are governed by policy, approval, gateway, and audit boundaries.
 
 ### Correctness review
 
-- Fixed a high-severity avatar progression weakness that permitted evidence about an unrelated subject.
-- Added a regression test proving unrelated acceptance-criterion evidence cannot unlock a capability achievement.
-- Reconfirmed that application services import no contracts, infrastructure, Node APIs, provider SDKs, or external implementations.
+- Added durable practice workspace identity across domain, contract, port, and use-case layers.
+- Corrected practice contract lifecycle parity.
+- Replaced ambiguous critical `afterCommit` orchestration with explicit two-phase job operations.
+- Fixed stale `startJob` return state.
+- Added complete pagination and repeated-cursor protection.
+- Fixed exact approval-expiration semantics.
 
 ### Verification result
 
 - Layer 1-2 domain regression: **92 passing cases across 16 files**.
-- Layer 3 contracts and portable schemas: **33 passing cases across 8 files**.
-- Layer 4-5 application verification: **43 passing cases across 15 files**.
-- Combined Layer 1-5 behavior: **168 passing cases across 39 files**.
+- Layer 3 contracts and portable schemas: **35 passing cases across 9 files**.
+- Layer 4-6 application verification: **60 passing cases across 23 files**.
+- Combined Layer 1-6 behavior: **187 passing cases across 48 files**.
 - Strict TypeScript checks for domain, contracts, and application: passed.
-- Application source declarations: **40**, with zero explicit `any` types.
-- Application source files: **40**.
-- Application ports: **26**.
+- Application source files and declarations: **63**.
+- Application ports: **27**.
 - Application services: **9**.
+- Public use cases: **21** plus one internal support module.
 - Largest application source file: **142 lines**.
-- Placeholder, forbidden dependency, JSON Schema, and file-size checks: passed.
+- Placeholder, forbidden dependency, JSON Schema, pagination, and file-size checks: passed.
 
 ### Environment limitation
 
@@ -80,4 +75,4 @@ The environment cannot install packages from the public npm registry. Committed 
 
 ### Not implemented
 
-No Layer 6 use cases, Layer 7 persistence, runtime API server, desktop, CLI, adapter-protocol implementation package, external adapters, plugin SDK, plugins, laboratories, or production workflows exist yet.
+No Layer 7 persistence, runtime API server, desktop, CLI, adapter-protocol implementation package, external adapters, plugin SDK, plugins, laboratories, or production workflows exist yet.

@@ -20,8 +20,9 @@
 | `/packages/application/src/application-errors.ts` | Application core | Typed orchestration and dependency failures with immutable details |
 | `/packages/application/src/operation-context.ts` | Application core | Actor, correlation, idempotency, cancellation, and deadline context |
 | `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
-| `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
+| `/packages/application/src/ports` | Application boundary | Twenty-seven infrastructure-free persistence, execution, governance, and operations ports |
 | `/packages/application/src/services` | Application services | Nine deterministic compute, context, diversity, evidence, champion, improvement, capability, practice, and avatar decision services |
+| `/packages/application/src/use-cases` | Application orchestration | Twenty-one transactional project, mission, job, solver, verification, repair, delivery, learning, practice, avatar, plugin, model, and tool use cases |
 | `/packages/application/src/index.ts` | Application core | Public application package API only |
 | `/packages/application/tests` | Application verification | Runtime primitives, ports, services, public API, dependency boundaries, failure paths, and file-size checks |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
@@ -32,6 +33,8 @@
 Root tooling
     ↓
 packages/application tests
+    ↓
+packages/application use cases
     ↓
 packages/application services and ports
     ↓
@@ -65,7 +68,7 @@ domain value objects, errors, and events
 
 | Port group | Files | Strict responsibility |
 |---|---|---|
-| Atomic persistence | `unit-of-work`, project, mission, job, evidence, candidate, capability, workflow, training ports | Transactions, optimistic concurrency, append-only records, and durable aggregate access |
+| Atomic persistence | `unit-of-work`, project, mission, job, evidence, candidate, capability, workflow, training, practice ports | Transactions, optimistic concurrency, append-only records, and durable aggregate access |
 | External execution | artifact, event, model, tool, plugin, kernel, verifier ports | Provider-neutral execution, cancellation, health, artifact integrity, and committed event publication |
 | Governance | policy, approval, audit ports | Separate authorization decisions, approval lifecycle, and append-only execution history |
 | Operations | scheduler, resource, secret, clock, workspace, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, isolation, configuration, and recovery |
@@ -87,3 +90,15 @@ domain value objects, errors, and events
 ## Update rule
 
 Every layer must update this ownership map and the root `repo_map.md` in the same commit. A path may not be added without an owner and one strict responsibility.
+
+
+## Application use-case ownership
+
+| Use-case group | Strict responsibility |
+|---|---|
+| Project and planning | Create governed projects, submit immutable missions, and compose execution plans |
+| Durable jobs | Start, checkpoint, resume, and stop through durable prepare and finalized outcomes |
+| Solver and repair | Create isolated candidates, verify independently, record issues, and apply targeted repairs |
+| Delivery and learning | Select champions, deliver verified results, quarantine training, and promote capabilities |
+| Practice and progression | Run isolated idle practice and evaluate evidence-backed avatar unlocks |
+| External capability governance | Register plugins and invoke models or tools through policy, approvals, and audit |

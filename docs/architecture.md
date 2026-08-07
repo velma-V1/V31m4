@@ -104,6 +104,11 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Application Services Layer 5 contains repository governance, the complete domain and contract layers, seven root JSON Schemas, the complete application port boundary, and all nine deterministic application services.
+Application Use Cases Layer 6 contains repository governance, the complete domain and contract layers, seven root JSON Schemas, the complete application port boundary, all nine deterministic application services, and 21 transactional use cases.
 
-No Layer 6 use cases, infrastructure implementations, runtime API server, desktop UI, CLI, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.
+No Layer 7 persistence, runtime API server, desktop UI, CLI, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.
+
+
+## Use-case orchestration authority
+
+Layer 6 coordinates domain transitions, Layer 5 decisions, and Layer 4 ports. Authoritative mutations occur inside explicit units of work. External kernel, model, tool, plugin, verifier, and workspace operations are invoked only through ports. Durable job operations commit their prepared state before external execution and then commit either the successful final state or a typed failed state. Application evaluation follows every repository page and rejects repeated cursors rather than making decisions from incomplete state.
