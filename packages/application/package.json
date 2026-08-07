@@ -14,5 +14,8 @@
   },
   "dependencies": {
     "@v31m4/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1"
   }
 }

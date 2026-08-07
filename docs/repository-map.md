@@ -21,8 +21,11 @@
 | `/packages/application/src/operation-context.ts` | Application core | Actor, correlation, idempotency, cancellation, and deadline context |
 | `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
 | `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
-| `/packages/application/src/index.ts` | Application core | Public application package API only |
-| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, and file-size checks |
+| `/packages/application/src/services` | Application services | Nine deterministic, infrastructure-free decision and planning services (Layer 5) |
+| `/packages/application/src/services/internal` | Application services | Private deterministic helpers (fingerprint, canonical stringify, seeded RNG); never exported |
+| `/packages/application/src/index.ts` | Application core | Public application package API only (ports and services) |
+| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, file-size checks, and the nine service suites |
+| `/packages/contracts/src/forbidden-key-guard.ts` | Contract core | Prototype-pollution property-name guard for external message boundaries |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
 
 ## Current dependency graph
@@ -66,6 +69,20 @@ domain value objects, errors, and events
 | External execution | artifact, event, model, tool, plugin, kernel, verifier ports | Provider-neutral execution, cancellation, health, artifact integrity, and committed event publication |
 | Governance | policy, approval, audit ports | Separate authorization decisions, approval lifecycle, and append-only execution history |
 | Operations | scheduler, resource, secret, clock, workspace, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, isolation, configuration, and recovery |
+
+## Application service ownership
+
+| Service | File | Strict responsibility |
+|---|---|---|
+| Compute governor | `compute-governor.ts` | Select execution depth and a clamped budget; refuse or defer when resources, deadline, or verification make a safe selection impossible |
+| Context compiler | `context-compiler.ts` | Build the smallest sufficient deterministic context; preserve mandatory material; report omissions and a fingerprint |
+| Diversity planner | `diversity-planner.ts` | Generate materially distinct seeded solver configurations within budget |
+| Evidence linker | `evidence-linker.ts` | Link records; compute coverage; surface orphan, wrong-subject, missing, and conflicting evidence |
+| Champion selector | `champion-selector.ts` | Select a verified champion, a Pareto set, or no verified solution using verified metrics only |
+| Improvement policy | `improvement-policy.ts` | Decide whether a concrete, verifiable, material repair round is justified; report remaining risk |
+| Capability calculator | `capability-calculator.ts` | Compute bounded evidence-backed capability updates with difficulty and recency weighting |
+| Practice selector | `practice-selector.ts` | Select a safe, isolated practice task for a weak capability, or none |
+| Avatar unlock engine | `avatar-unlock-engine.ts` | Apply permanent evidence-backed unlocks; reject claims and unverified practice; preserve prior unlocks |
 
 ## Update rule
 

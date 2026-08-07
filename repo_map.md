@@ -2,93 +2,81 @@
 
 ## Current State
 
-**Layer:** Application Ports Layer 4  
-**Branch:** `agent/application-ports-layer-4`  
-**Parent layer:** `agent/contracts-schema-layer-3`  
+**Layer:** Application Services Layer 5
+**Branch:** `claude/v31m4-layers-validation-impl-dmlccn`
+**Parent layer:** `agent/application-ports-layer-4`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
+
+Layer 5 adds the deterministic, infrastructure-free application services on top of the
+Layer 4 ports, and repairs the proven Layer 1–4 defects surfaced by running the real
+pinned toolchain (`corepack enable && pnpm install && pnpm typecheck && pnpm test && pnpm build`).
 
 ### Implemented and functional
 
 ```text
 packages/
 ├── domain/                              # Layer 1-2: primitives and 23 immutable entities
-├── contracts/                           # Layer 3: strict APIs, events, manifests, and RPC
+├── contracts/                           # Layer 3: strict APIs, events, manifests, RPC, + forbidden-key guard
 └── application/
-    ├── README.md
-    ├── package.json
-    ├── tsconfig.json
     ├── src/
-    │   ├── index.ts
+    │   ├── index.ts                     # public application API (ports + services)
     │   ├── application-json.ts
     │   ├── application-errors.ts
     │   ├── operation-context.ts
     │   ├── port-types.ts
-    │   └── ports/
-    │       ├── unit-of-work.port.ts
-    │       ├── project-repository.port.ts
-    │       ├── mission-repository.port.ts
-    │       ├── job-repository.port.ts
-    │       ├── evidence-repository.port.ts
-    │       ├── candidate-repository.port.ts
-    │       ├── capability-repository.port.ts
-    │       ├── artifact-store.port.ts
-    │       ├── event-bus.port.ts
-    │       ├── model-gateway.port.ts
-    │       ├── tool-gateway.port.ts
-    │       ├── plugin-registry.port.ts
-    │       ├── production-kernel.port.ts
-    │       ├── verifier.port.ts
-    │       ├── policy-engine.port.ts
-    │       ├── scheduler.port.ts
-    │       ├── resource-monitor.port.ts
-    │       ├── training-store.port.ts
-    │       ├── secret-store.port.ts
-    │       ├── clock.port.ts
-    │       ├── workflow-repository.port.ts
-    │       ├── workspace-manager.port.ts
-    │       ├── audit-store.port.ts
-    │       ├── approval-store.port.ts
-    │       ├── configuration-store.port.ts
-    │       └── backup-store.port.ts
-    └── tests/                            # 6 Layer 4 test files
+    │   ├── ports/                        # 26 Layer 4 infrastructure-free ports
+    │   └── services/                     # Layer 5: 9 application services
+    │       ├── compute-governor.ts
+    │       ├── context-compiler.ts
+    │       ├── diversity-planner.ts
+    │       ├── evidence-linker.ts
+    │       ├── champion-selector.ts
+    │       ├── improvement-policy.ts
+    │       ├── capability-calculator.ts
+    │       ├── practice-selector.ts
+    │       ├── avatar-unlock-engine.ts
+    │       └── internal/deterministic.ts # private deterministic helpers (not exported)
+    └── tests/                            # Layer 4 + Layer 5 verification (16 files)
 
 schemas/                                 # 7 portable draft 2020-12 schemas
-docs/                                    # Architecture, maps, versioning, and Layer 1-4 plans
+docs/                                    # Architecture, maps, versioning, plans, and the Layer 1-5 improvement ledger
 ```
 
-### Verified application behavior
+### Verified application-service behavior
 
-- Application source imports only the public domain API and application-local files.
-- External API contracts do not leak inward into application ports.
-- Safe internal JSON rejects cycles, non-finite numbers, accessors, symbols, sparse arrays, class instances, and dangerous prototype keys.
-- Application errors preserve typed codes, retryability, immutable safe details, and hidden causes.
-- Operation contexts validate actor identity, roles, correlation, idempotency, canonical timestamps, cancellation, and deadlines.
-- Authoritative writes require explicit unit-of-work transaction participation.
-- Mutable writes require explicit optimistic-concurrency conditions and return versioned records.
-- Immutable mission, evidence, candidate, repair, promotion, and audit records use append-only operations.
-- Models, tools, plugins, kernels, and verifiers use provider-neutral application DTOs.
-- Secret access uses bounded leases; isolated work uses explicit workspace handles.
-- Policy, approvals, and audit history are separate non-interchangeable boundaries.
-- Workflow, configuration, backup, and recovery boundaries are explicit before infrastructure exists.
+- Services import only the public domain API and application-local files; no infrastructure, contracts, adapters, plugins, UI, or provider SDKs.
+- Services are deterministic: no hidden clock, no hidden randomness; time and seeds enter through inputs.
+- Services return frozen decisions and plans; they never persist or publish directly.
+- The compute governor never selects a high-confidence mode without verification and never exceeds the approved budget.
+- The champion selector never uses model confidence or model size and excludes unverified, missing-check, or critically-risky candidates.
+- The capability calculator uses only verified production measurements, isolates practice evidence, and bounds every score step.
+- The avatar unlock engine never unlocks from model claims or unverified practice, preserves prior permanent unlocks, and never equips a locked item.
 
-### Verification result
+### Verification result (dependency-backed)
 
-- Layer 1-2 domain regression: **92 passing cases across 16 test files**.
-- Layer 3 non-schema contract regression: **29 passing cases across 7 test files**.
-- Layer 3 portable JSON Schemas: **7 of 7 valid**, unique versioned IDs, and four direct sample validations.
-- Layer 4 application verification: **14 passing cases across 6 test files**.
-- Combined executable behavior: **139 passing cases across 30 test files**, counting the four schema-test behaviors and all prior layers.
-- Strict TypeScript checks for domain, contracts, and application: passed.
-- Application declaration emission and public API scan: passed.
-- Application source files: **31**.
-- Application ports: **26**.
-- Largest application source file remains below the 500-line architecture limit.
-- Placeholder and forbidden-dependency scans: passed.
+- **Layer 1** foundation/primitive regression: **62 passing cases across 8 test files**.
+- **Layer 2** domain-entity regression: **30 passing cases across 8 test files**.
+- **Layer 3** runtime contract regression (non-schema): **29 passing cases across 7 test files**.
+- **Layer 3** portable JSON Schemas: **7 of 7 compiled under Ajv draft 2020-12**, unique versioned `$id`s, **4 passing schema tests**.
+- **Layer 4** application-port regression: **16 passing cases across 6 test files**.
+- **Layer 5** application-service regression: **91 passing cases across 10 test files**.
+- **Full Layer 1–5 regression:** **232 passing cases across 40 test files**.
+- **Typecheck:** `pnpm typecheck` → 3/3 packages pass. **Build:** `pnpm build` → 3/3 pass. Application declaration emission: **41 `.d.ts` modules, 0 errors**.
+- **Static:** total source files **87** (domain 31, contracts 15, application 41); **9 services**; largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit `any`** across Layers 1–5 source; no provider SDK imports; no placeholders in Layer 5.
+- **Improvements made:** **4** proven Layer 1–4 corrections (see `docs/reviews/layers-1-5-improvement-ledger.md`).
 
-### Environment limitation
+### Known limitation
 
-The environment cannot install packages from the public npm registry. Committed tests use normal pinned dependencies and Vitest imports; local verification used the available TypeScript compiler and isolated compatible test packages. A networked environment must run `corepack enable && pnpm install && pnpm check` before the stacked pull requests are marked ready.
+`pnpm lint` (`biome ci .`) still reports **pre-existing** formatting violations on Layer 1–4
+files that predate any Biome run (the earlier layer branches had no registry access to run
+Biome). Those files are intentionally left untouched to keep unrelated style churn out of
+this focused diff; all files added or substantively changed by Layer 5 pass `biome ci`.
+Because native `pnpm check` therefore stays red on that pre-existing formatting, the Layer 5
+pull request remains a draft.
 
 ### Not implemented
 
-No application services or use cases, infrastructure implementations, database schema, artifact implementation, runtime API server, desktop, CLI, adapter-protocol package, model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows exist yet.
+No Layer 6 use cases, infrastructure implementations, database schema, artifact
+implementation, runtime API server, desktop, CLI, adapter-protocol package,
+model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows
+exist. Layer 6 was not implemented.

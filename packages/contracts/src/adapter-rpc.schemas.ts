@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { solverConfigurationSchema } from "./capabilities.schemas.js";
 import {
   adapterIdSchema,
   adapterProtocolVersionSchema,
@@ -6,6 +7,7 @@ import {
   canonicalIdSchema,
   canonicalStatementSchema,
   checkpointIdSchema,
+  guardForbiddenKeys,
   invocationIdSchema,
   jobIdSchema,
   missionIdSchema,
@@ -19,7 +21,6 @@ import {
   toolIdSchema,
   workflowIdSchema,
 } from "./common.schemas.js";
-import { solverConfigurationSchema } from "./capabilities.schemas.js";
 
 export const jsonRpcVersionSchema = z.literal("2.0");
 export const rpcIdSchema = z.union([
@@ -49,7 +50,11 @@ export const adapterInitializeRequestSchema = z
       .strict()
       .superRefine((value, context) => {
         if (new Set(value.capabilities).size !== value.capabilities.length) {
-          context.addIssue({ code: "custom", message: "Adapter capabilities must be unique.", path: ["capabilities"] });
+          context.addIssue({
+            code: "custom",
+            message: "Adapter capabilities must be unique.",
+            path: ["capabilities"],
+          });
         }
       }),
   })
@@ -237,8 +242,7 @@ export const rpcErrorCodeSchema = z
   .int()
   .refine(
     (code) =>
-      [-32700, -32600, -32601, -32602, -32603].includes(code) ||
-      (code >= -32099 && code <= -32000),
+      [-32700, -32600, -32601, -32602, -32603].includes(code) || (code >= -32099 && code <= -32000),
     "RPC error code must be a standard JSON-RPC code or V31M4 server error code.",
   );
 
@@ -272,11 +276,9 @@ export const adapterRpcResponseSchema = z.union([
   adapterRpcErrorResponseSchema,
 ]);
 
-export const adapterRpcMessageSchema = z.union([
-  adapterRpcRequestSchema,
-  adapterRpcNotificationSchema,
-  adapterRpcResponseSchema,
-]);
+export const adapterRpcMessageSchema = guardForbiddenKeys(
+  z.union([adapterRpcRequestSchema, adapterRpcNotificationSchema, adapterRpcResponseSchema]),
+);
 
 export type AdapterRpcRequest = z.infer<typeof adapterRpcRequestSchema>;
 export type AdapterRpcNotification = z.infer<typeof adapterRpcNotificationSchema>;

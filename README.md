@@ -4,7 +4,19 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Application Ports Layer 4**. The implemented code contains repository governance, the immutable domain model, strict external contracts, seven portable JSON Schemas, and the complete infrastructure-free application boundary. Application services, use cases, persistence implementations, runtime interfaces, adapters, plugins, laboratories, and production workflows remain intentionally absent until their prerequisite layers are verified.
+The repository is in **Application Services Layer 5**. The implemented code contains
+repository governance, the immutable domain model, strict external contracts, seven
+portable JSON Schemas, the complete infrastructure-free application port boundary, and the
+nine deterministic application services built on those ports. Layers 1–5 have been
+dependency-backed and regression tested against the pinned toolchain: **232 passing cases
+across 40 test files**, full workspace typecheck and build pass, **9 services**, **0
+explicit `any`** across Layers 1–5 source, and the largest source file is **468 lines**.
+Layer 6 use cases, persistence implementations, runtime interfaces, adapters, plugins,
+laboratories, and production workflows remain intentionally absent.
+
+Note: `pnpm lint` still reports pre-existing Biome formatting violations on Layer 1–4 files
+that predate any Biome run; those untouched files are deliberately left out of this focused
+diff. Every file added or substantively changed for Layer 5 passes `biome ci`.
 
 ## Prerequisites
 
@@ -57,7 +69,9 @@ The `schemas/` directory contains machine-readable draft 2020-12 definitions for
 
 ### `@v31m4/application`
 
-Provides the complete Layer 4 boundary:
+Provides the complete Layer 4 port boundary and the Layer 5 application services.
+
+Layer 4 ports:
 
 - Typed application errors and safe internal JSON data
 - Immutable operation context with actor, correlation, idempotency, cancellation, and deadlines
@@ -66,5 +80,17 @@ Provides the complete Layer 4 boundary:
 - Project, mission, job, evidence, candidate, capability, workflow, and training repositories
 - Artifact, event, model, tool, plugin, kernel, and verifier boundaries
 - Policy, approvals, audit, scheduling, resources, secrets, clock, workspace, configuration, and backup boundaries
+
+Layer 5 services (deterministic, infrastructure-free decision and planning functions):
+
+- **Compute governor** — execution-depth and budget selection
+- **Context compiler** — smallest sufficient deterministic context packages
+- **Diversity planner** — materially distinct solver configurations
+- **Evidence linker** — traceability, coverage, and evidence-gap detection
+- **Champion selector** — verified champion, Pareto set, or no verified solution
+- **Improvement policy** — justified refinement/repair decisions
+- **Capability calculator** — bounded evidence-backed capability updates
+- **Practice selector** — safe isolated practice-task selection
+- **Avatar unlock engine** — permanent evidence-backed avatar unlocks
 
 The package imports only the public `@v31m4/domain` API.

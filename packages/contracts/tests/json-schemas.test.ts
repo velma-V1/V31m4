@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import addFormatsModule from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import { pluginManifestContractSchema, workflowDefinitionSchema } from "../src/plugins.schemas.js";
 
@@ -32,8 +32,10 @@ function loadSchema(name: (typeof schemaNames)[number]): Record<string, unknown>
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
+const addFormats = addFormatsModule.default;
+
 function createAjv(): Ajv2020 {
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
   addFormats(ajv);
   return ajv;
 }

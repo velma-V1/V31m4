@@ -56,6 +56,15 @@ Forbidden:
 - Long-running operations without `OperationContext` and cancellation semantics
 - Direct secret strings retained beyond a bounded secret lease
 
+### Application service rules
+
+- Service source imports only `@v31m4/domain` and application-local files.
+- Services are deterministic: no `Date.now()`, no `Math.random()`, no hidden global state. Time enters through inputs or `ClockPort`; seeds enter explicitly.
+- Services return frozen decisions and plans; they never persist, publish, or invoke external systems directly.
+- Every rejection is a typed application error or an explicit decision result.
+- Service internals under `services/internal` are private and never exported from `src/index.ts`.
+- Source files remain below 500 lines.
+
 ### Application port rules
 
 - Application source defines interfaces and pure shared primitives only.

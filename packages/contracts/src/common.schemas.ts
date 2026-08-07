@@ -1,82 +1,85 @@
 import {
   AchievementRuleId,
-  AdapterId,
-  ArtifactId,
-  AvatarId,
-  AvatarItemId,
-  CandidateId,
-  CapabilityId,
-  ChampionDecisionId,
-  CheckpointId,
-  ClaimId,
-  ContentHash,
-  DeliveryReceiptId,
-  EventId,
-  EvidenceId,
-  IssueId,
-  JobId,
-  MissionId,
-  ModelId,
-  PluginId,
-  PracticeTaskId,
-  ProjectId,
-  PromotionId,
-  RepairId,
-  RequirementId,
-  ResourceBudget,
-  SafePath,
-  Score,
-  ToolId,
-  TrainingPacketId,
-  TwinEdgeId,
-  TwinNodeId,
-  VerificationPlanId,
-  VerificationResultId,
   type AchievementRuleId as AchievementRuleIdType,
+  AdapterId,
   type AdapterId as AdapterIdType,
+  ArtifactId,
   type ArtifactId as ArtifactIdType,
+  AvatarId,
   type AvatarId as AvatarIdType,
+  AvatarItemId,
   type AvatarItemId as AvatarItemIdType,
+  CandidateId,
   type CandidateId as CandidateIdType,
+  CapabilityId,
   type CapabilityId as CapabilityIdType,
+  ChampionDecisionId,
   type ChampionDecisionId as ChampionDecisionIdType,
+  CheckpointId,
   type CheckpointId as CheckpointIdType,
+  ClaimId,
   type ClaimId as ClaimIdType,
+  ContentHash,
   type ContentHash as ContentHashType,
+  DeliveryReceiptId,
   type DeliveryReceiptId as DeliveryReceiptIdType,
+  EventId,
   type EventId as EventIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  IssueId,
   type IssueId as IssueIdType,
+  JobId,
   type JobId as JobIdType,
+  MissionId,
   type MissionId as MissionIdType,
+  ModelId,
   type ModelId as ModelIdType,
+  PluginId,
   type PluginId as PluginIdType,
+  PracticeTaskId,
   type PracticeTaskId as PracticeTaskIdType,
+  ProjectId,
   type ProjectId as ProjectIdType,
+  PromotionId,
   type PromotionId as PromotionIdType,
+  RepairId,
   type RepairId as RepairIdType,
+  RequirementId,
   type RequirementId as RequirementIdType,
+  ResourceBudget,
   type ResourceBudget as ResourceBudgetType,
+  SafePath,
   type SafePath as SafePathType,
+  Score,
   type Score as ScoreType,
+  ToolId,
   type ToolId as ToolIdType,
+  TrainingPacketId,
   type TrainingPacketId as TrainingPacketIdType,
+  TwinEdgeId,
   type TwinEdgeId as TwinEdgeIdType,
+  TwinNodeId,
   type TwinNodeId as TwinNodeIdType,
+  VerificationPlanId,
   type VerificationPlanId as VerificationPlanIdType,
+  VerificationResultId,
   type VerificationResultId as VerificationResultIdType,
 } from "@v31m4/domain";
 import { z } from "zod";
+import { FORBIDDEN_JSON_KEYS } from "./forbidden-key-guard.js";
+
+export { guardForbiddenKeys } from "./forbidden-key-guard.js";
 
 export const CONTRACT_SCHEMA_VERSION = "1.0.0" as const;
 export const ADAPTER_PROTOCOL_VERSION = "1.0.0" as const;
 
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const SEMANTIC_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
+const SEMANTIC_VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
 const ISO_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const MEDIA_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/u;
 const EVENT_OR_METHOD_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
-const FORBIDDEN_JSON_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 export type SafeJsonPrimitive = string | number | boolean | null;
 export type SafeJsonValue = SafeJsonPrimitive | SafeJsonArray | SafeJsonObject;
@@ -89,7 +92,7 @@ export interface ContractRefinementContext {
   addIssue(issue: {
     readonly code: "custom";
     readonly message: string;
-    readonly path?: readonly (string | number)[];
+    readonly path?: (string | number)[];
   }): void;
 }
 
@@ -101,7 +104,10 @@ function isCanonicalIsoDateTime(value: unknown): value is string {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function isDomainValue<T>(value: unknown, predicate: (candidate: unknown) => candidate is T): value is T {
+function isDomainValue<T>(
+  value: unknown,
+  predicate: (candidate: unknown) => candidate is T,
+): value is T {
   return predicate(value);
 }
 
@@ -281,7 +287,10 @@ export const verificationResultIdSchema = createDomainValueSchema<VerificationRe
   VerificationResultId.is,
   "Invalid VerificationResultId.",
 );
-export const repairIdSchema = createDomainValueSchema<RepairIdType>(RepairId.is, "Invalid RepairId.");
+export const repairIdSchema = createDomainValueSchema<RepairIdType>(
+  RepairId.is,
+  "Invalid RepairId.",
+);
 export const championDecisionIdSchema = createDomainValueSchema<ChampionDecisionIdType>(
   ChampionDecisionId.is,
   "Invalid ChampionDecisionId.",
@@ -302,7 +311,10 @@ export const promotionIdSchema = createDomainValueSchema<PromotionIdType>(
   PromotionId.is,
   "Invalid PromotionId.",
 );
-export const avatarIdSchema = createDomainValueSchema<AvatarIdType>(AvatarId.is, "Invalid AvatarId.");
+export const avatarIdSchema = createDomainValueSchema<AvatarIdType>(
+  AvatarId.is,
+  "Invalid AvatarId.",
+);
 export const avatarItemIdSchema = createDomainValueSchema<AvatarItemIdType>(
   AvatarItemId.is,
   "Invalid AvatarItemId.",
@@ -320,14 +332,16 @@ export const safePathSchema = createDomainValueSchema<SafePathType>(
   "Invalid project-relative safe path.",
 );
 export const scoreSchema = createDomainValueSchema<ScoreType>(
-  (value): value is ScoreType => typeof value === "number" && (() => {
-    try {
-      Score.parse(value);
-      return true;
-    } catch {
-      return false;
-    }
-  })(),
+  (value): value is ScoreType =>
+    typeof value === "number" &&
+    (() => {
+      try {
+        Score.parse(value);
+        return true;
+      } catch {
+        return false;
+      }
+    })(),
   "Score must be a finite number between 0 and 1.",
 );
 
@@ -436,7 +450,9 @@ export function isContractVersionCompatible(version: string): boolean {
   return version === CONTRACT_SCHEMA_VERSION;
 }
 
-export function assertContractVersionCompatible(version: string): asserts version is typeof CONTRACT_SCHEMA_VERSION {
+export function assertContractVersionCompatible(
+  version: string,
+): asserts version is typeof CONTRACT_SCHEMA_VERSION {
   if (!isContractVersionCompatible(version)) {
     throw new Error(
       `Unsupported contract version ${JSON.stringify(version)}; expected ${CONTRACT_SCHEMA_VERSION}.`,
