@@ -1,50 +1,126 @@
-# Claude Code Project Instructions
+# V31M4 Claude Operating Contract
 
-## Session start
+```text
+CONST PRIORITY := CORRECTNESS > COMPLETENESS > VERIFICATION > ARCHITECTURE > EFFICIENCY
+INVARIANT := EFFICIENCY MUST_NOT weaken {CORRECTNESS, COMPLETENESS, VERIFICATION, ARCHITECTURE}
 
-1. Read `docs/current-state.md` first.
-2. Verify the current branch, HEAD commit, git status, and active task before repository discovery.
-3. Use the repository's architecture and specification documents as the source of truth.
-4. Never invent repository state. Verify it from git and the repository.
+PROC START():
+  READ("docs/current-state.md")
+  VERIFY(git.branch, git.HEAD, git.status, git.diff, active_task)
+  REQUIRE(repo_state == evidence_backed)
+  NEVER infer what Git/repo can verify
 
-## Context efficiency
+CONST GOV := "AGENTS.md"
+CONST SRC_ORDER :=
+  repository-specification
+  > architecture
+  > accepted_ADRs
+  > dependency-rules
+  > state-model
+  > domain_interfaces
+  > application_ports
+  > API_adapter_contracts
+  > plugin_manifests
+  > implementation
+  > tests
 
-- Do not rescan the entire repository when `docs/current-state.md` already records verified information needed for the task.
-- Search before reading large files.
-- Read only files and sections relevant to the current task.
-- Batch related searches and reads.
-- Do not reread unchanged files unless a failure, contradiction, changed interface, or new requirement makes it necessary.
-- Prefer targeted diffs and focused inspection over whole-file dumps.
-- Do not print entire files or large successful command logs unless required as evidence.
-- Use focused tests during implementation; run full repository regression at defined layer or gate checkpoints.
+PROC BEFORE_WRITE(target):
+  FOLLOW(GOV)
+  READ(required_source_docs_for(target))
+  READ(nearest_module_README(target))
+  VERIFY(owner_layer(target), dependency_direction(target), affected_invariants(target))
+  IF implementation_conflicts_with_architecture => STOP + REPORT(conflict)
 
-## Architecture discipline
+PROC CONTEXT(task):
+  SEARCH(task) > broad_scan
+  READ(minimum_sufficient_context)
+  BATCH(related_searches, related_reads) WHEN clarity_preserved
 
-Before changing, adding, moving, renaming, or deleting repository files, follow the repository's existing architecture instructions and source-of-truth order. Do not infer architecture from implementation alone.
+  REREAD(file) IFF
+    changed(file)
+    OR failure_refs(file)
+    OR contradiction(file)
+    OR uncertainty(file)
+    OR dependency_changed(file)
+    OR invariant_affected(file)
 
-- Current canonical contracts and interfaces are authoritative over older/reference branches.
-- Old or reference branches may provide behavioral evidence but must not override current architecture.
-- Do not create compatibility shims merely to imitate obsolete implementation names.
-- Do not restart, redesign, or redo verified work unless evidence requires it.
+  FORBID rediscovery(verified_unchanged_fact)
+  FORBID full_repo_scan UNLESS task_or_impact_requires
+  FORBID whole_file_dump WHEN targeted_excerpt_sufficient
+  FORBID large_success_logs
+  PRESERVE(errors, warnings, failures, required_evidence)
 
-## Persistent handoff
+  IF sufficient_verified_evidence => IMPLEMENT
+  IF new_uncertainty OR failure OR contradiction => INVESTIGATE
 
-Update `docs/current-state.md` whenever a meaningful implementation, verification, branch, commit, architecture decision, blocker, or remaining-work state changes.
+PROC ENGINEER(task):
+  REQUIRE(outcome_known, acceptance_criteria_known)
+  PREFER(existing_abstraction) OVER parallel_abstraction
+  PREFER(root_cause_fix) OVER symptom_patch
+  PRESERVE(verified_behavior) UNLESS requirement_changes_it
+  CHECK(callers, dependencies, boundaries, invariants, failure_paths)
+  FORBID(architecture_bypass, second_source_of_truth)
+  FORBID weakening(types, tests, validation, security, determinism, recovery)
+  REJECT cheaper_path IF result_quality_decreases
 
-Before a natural stopping point, usage-limit boundary, or completed checkpoint, update `docs/current-state.md` so another Claude Code session can continue without rediscovering the repository.
+PROC IMPLEMENT(task):
+  GROUP(related_work)
+  APPLY(smallest_complete_correct_change)
+  AUTOFIX(routine_compile | test | lint | migration | integration_failure)
+  DO_NOT_PAUSE(for_routine_engineering_decisions)
+  DO_NOT_RESTART(verified_completed_work)
+  DO_NOT_REDESIGN(settled_architecture) UNLESS evidence_requires
 
-Keep `docs/current-state.md` concise, factual, and operational. It is a handoff record, not a second architecture specification.
+PROC DEFECT(x):
+  reproduce(x)
+  classify(x)
+  add_regression_test(x)
+  fix(root_cause(x))
+  focused_verify(x)
+  rerun(affected_regression(x))
 
-Record only verified facts, including:
+PROC VERIFY(change):
+  DURING_WORK := focused_tests + relevant_static_checks
+  CHECKPOINT := required_full_regression + typecheck + build + lint + architecture_dependency_gates
+  RUN(broader_checks_early) IF cross_layer | shared_contract | persistence | security | recovery affected
+  FORBID test_weakening_for_PASS
+  CLAIM_COMPLETE IFF acceptance_criteria_met AND required_gates == PASS
+  CLAIM_PASS IFF executed_evidence == PASS
 
-- current branch and HEAD
-- current layer/task
-- completed and verified work
-- work in progress
-- important interfaces/contracts already inspected
-- decisions already resolved
-- known defects/blockers
-- areas already inspected that normally do not need rereading
-- last verification results
-- exact remaining work
-- next action
+PROC AGENTS(task):
+  SPAWN IFF
+    independent_verification(task)
+    OR meaningful_parallelism(task)
+    OR specialist_value(task)
+    OR material_risk_reduction(task)
+  FORBID(redundant_agent, duplicate_repo_discovery)
+
+PROC GIT():
+  VERIFY(branch) BEFORE writes
+  canonical_current_contracts > superseded_reference_implementations
+  reference_branch := behavioral_evidence_only
+  FORBID compatibility_shim_for_obsolete_names
+  FORBID merge | rebase | branch_delete | destructive_history_change UNLESS explicitly_authorized
+  FORBID committing(temp | session | toolchain_scaffolding)
+
+PROC HANDOFF():
+  FILE := "docs/current-state.md"
+  UPDATE IFF meaningful_checkpoint | branch_change | verified_completion | blocker | major_decision
+  CONTENT := {branch, active_task, verified_complete, in_progress, blockers, last_gate, next_action}
+  REPLACE(stale_state)
+  FORBID(session_diary, duplicate_history, throwaway_handoff_file)
+  Git_history := historical_record
+
+STOP IFF
+  genuine_architecture_decision_required
+  OR destructive_action_needs_approval
+  OR credential_or_permission_required
+  OR irreconcilable_spec_conflict
+  OR required_external_input_unavailable
+ELSE CONTINUE_AUTONOMOUSLY
+
+TOKEN_POLICY:
+  SAVE := remove(redundant_work | rediscovery | narration | duplicate_search | unnecessary_history | redundant_agents | unnecessary_output)
+  NEVER_SAVE := remove(required_reasoning | required_context | required_testing | required_verification | required_security_analysis)
+  RULE := stronger_result > lower_token_count
+```
