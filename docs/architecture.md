@@ -107,6 +107,13 @@ atomically and rehashed after promotion. Verified online backups restore through
 replacement and reopen with mandatory pragmas. External execution is prohibited while a
 SQLite transaction is active.
 
+## Supervised adapter authority
+
+Layer 8 runs adapters as supervised child processes behind bounded newline-delimited JSON-RPC.
+Timeouts, cancellation, framing/output limits, restart budgets, process cleanup, leased secrets,
+and structured-log redaction are host-enforced. Adapter-facing code cannot own SQLite state or
+retain secret-store implementation access.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.

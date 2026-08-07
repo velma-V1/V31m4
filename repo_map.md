@@ -66,7 +66,7 @@ docs/                                    # Architecture, maps, versioning, plans
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–7 regression:** **276 passing cases across 56 test files**.
+- **Full Layer 1–8 regression:** **286 passing cases across 60 test files**.
 - **Layer 7** real-infrastructure regression: **11 passing cases across 5 test files**.
 - **Typecheck:** `pnpm typecheck` → 3/3 packages pass. **Build:** `pnpm build` → 3/3 pass. Application declaration emission: **41 `.d.ts` modules, 0 errors**.
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
@@ -74,7 +74,7 @@ docs/                                    # Architecture, maps, versioning, plans
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**276 cases across 56 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**286 cases across 60 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved

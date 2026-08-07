@@ -1,3 +1,4 @@
+export * from "./adapters/adapter-registry.js";
 export * from "./artifacts/content-addressed-artifact-store.js";
 export * from "./backup/sqlite-backup-manager.js";
 export * from "./database/schema.js";
@@ -5,3 +6,10 @@ export * from "./database/sqlite-idempotency-store.js";
 export * from "./database/sqlite-record-store.js";
 export * from "./database/sqlite-runtime-database.js";
 export * from "./events/sqlite-outbox.js";
+export * from "./logging/redacted-logger.js";
+export * from "./processes/process-supervisor.js";
+export * from "./resources/process-resource-monitor.js";
+export * from "./rpc/json-rpc-client.js";
+export * from "./rpc/json-rpc-framer.js";
+export * from "./scheduling/bounded-scheduler.js";
+export * from "./secrets/leased-secret-store.js";

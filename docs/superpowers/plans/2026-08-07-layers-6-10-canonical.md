@@ -71,11 +71,11 @@
 - Consumes: adapter RPC contracts and Layer 4 operational ports.
 - Produces: `ProcessSupervisor`, `JsonRpcClient`, `AdapterRegistry`, `AdapterSupervisor`, scheduler, resource monitor, secret store, and logger implementations.
 
-- [ ] Write failing tests for spawn failure, timeout, cancellation, malformed/oversized RPC, protocol mismatch, stdout corruption, stderr flood, crash, restart storm, and process-tree cleanup.
-- [ ] Implement bounded process supervision and strict JSON-RPC framing.
-- [ ] Implement registration, health, restart policy, scheduling, resource readings, bounded secret leases, and redacted structured logs.
-- [ ] Verify adapters cannot import SQLite or retain secrets; run focused and complete gates.
-- [ ] Update documentation/ADRs/evidence and commit `feat: add supervised adapter infrastructure layer`.
+- [x] Write failing tests for spawn failure, timeout, cancellation, malformed/oversized RPC, protocol mismatch, stdout corruption, stderr flood, crash, restart storm, and process-tree cleanup.
+- [x] Implement bounded process supervision and strict JSON-RPC framing.
+- [x] Implement registration, health, restart policy, scheduling, resource readings, bounded secret leases, and redacted structured logs.
+- [x] Verify adapters cannot import SQLite or retain secrets; run focused and complete gates.
+- [x] Update documentation/ADRs/evidence and commit `feat: add supervised adapter infrastructure layer`.
 
 ### Task 4: Layer 9 governed production gateways
 
