@@ -68,6 +68,22 @@ Application rules:
 - Candidate, repair, tool, practice, and verification work occurs through explicit isolated-workspace handles.
 - Policy decisions, approval records, and audit records are separate boundaries so authorization cannot be inferred from logging or vice versa.
 
+## Application service authority
+
+Layer 5 implements deterministic decision logic above the Layer 4 ports. Services return immutable plans, coverage results, selections, and policy decisions without directly accessing persistence or external systems.
+
+Service rules:
+
+- Compute depth is selected from risk, reversibility, ambiguity, verification availability, deadlines, and approved resources.
+- Context compilation preserves mandatory requirements and evidence rules before optional material.
+- Solver diversity must differ materially by model, strategy, or tool set rather than wording or temperature alone.
+- Evidence linking keeps failed, inconclusive, conflicting, and orphan evidence visible.
+- Champion selection requires complete mandatory verification and rejects unresolved critical issues.
+- Improvement continues only for material, novel, independently verifiable corrections.
+- Capability updates require unique leakage-checked evidence with bounded practice influence.
+- Idle practice cannot require production writes, secrets, or unverifiable outcomes.
+- Avatar progression requires passed evidence explicitly bound to the capability named by the achievement rule.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
@@ -88,6 +104,6 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Application Ports Layer 4 contains repository governance, the complete domain and contract layers, seven root JSON Schemas, and the complete `@v31m4/application` port boundary with shared operation, concurrency, error, and internal JSON primitives.
+Application Services Layer 5 contains repository governance, the complete domain and contract layers, seven root JSON Schemas, the complete application port boundary, and all nine deterministic application services.
 
-No application services, use cases, infrastructure implementations, runtime API server, desktop UI, CLI, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.
+No Layer 6 use cases, infrastructure implementations, runtime API server, desktop UI, CLI, adapter implementations, plugin SDK, plugins, laboratories, or production workflows are implemented.

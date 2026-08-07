@@ -21,8 +21,9 @@
 | `/packages/application/src/operation-context.ts` | Application core | Actor, correlation, idempotency, cancellation, and deadline context |
 | `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
 | `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
+| `/packages/application/src/services` | Application services | Nine deterministic compute, context, diversity, evidence, champion, improvement, capability, practice, and avatar decision services |
 | `/packages/application/src/index.ts` | Application core | Public application package API only |
-| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, and file-size checks |
+| `/packages/application/tests` | Application verification | Runtime primitives, ports, services, public API, dependency boundaries, failure paths, and file-size checks |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
 
 ## Current dependency graph
@@ -31,6 +32,8 @@
 Root tooling
     ↓
 packages/application tests
+    ↓
+packages/application services and ports
     ↓
 packages/application public API ─────→ packages/domain public API
 
@@ -66,6 +69,20 @@ domain value objects, errors, and events
 | External execution | artifact, event, model, tool, plugin, kernel, verifier ports | Provider-neutral execution, cancellation, health, artifact integrity, and committed event publication |
 | Governance | policy, approval, audit ports | Separate authorization decisions, approval lifecycle, and append-only execution history |
 | Operations | scheduler, resource, secret, clock, workspace, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, isolation, configuration, and recovery |
+
+## Application service ownership
+
+| Service | Strict responsibility |
+|---|---|
+| `compute-governor.ts` | Select governed execution depth and bounded resources |
+| `context-compiler.ts` | Build deterministic smallest-sufficient context |
+| `diversity-planner.ts` | Create materially distinct solver configurations |
+| `evidence-linker.ts` | Calculate evidence traceability and criterion coverage |
+| `champion-selector.ts` | Select a verified champion, Pareto set, or no solution |
+| `improvement-policy.ts` | Permit only material verifiable repair rounds |
+| `capability-calculator.ts` | Calculate bounded evidence-backed capability measurements |
+| `practice-selector.ts` | Choose safe isolated idle practice |
+| `avatar-unlock-engine.ts` | Apply permanent capability-bound evidence unlocks |
 
 ## Update rule
 

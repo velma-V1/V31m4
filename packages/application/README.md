@@ -1,13 +1,32 @@
 # @v31m4/application
 
-Layer 4 defines the inward-facing contracts used by application services and use cases. It contains no persistence, process, network, provider, adapter, plugin, runtime-server, or interface implementation.
+Layers 4 and 5 define the inward-facing application boundary and deterministic decision services. The package contains no persistence, process, network, provider, adapter, plugin, runtime-server, or interface implementation.
+
+## Layer 4 ports
+
+- Twenty-six ports cover repositories, artifacts, events, models, tools, plugins, kernels, verification, policy, approvals, audit, scheduling, resources, secrets, time, isolated workspaces, configuration, and backup.
+- Every authoritative write requires a unit-of-work transaction.
+- Mutable writes require optimistic-concurrency conditions.
+- Long-running operations receive immutable cancellation and deadline context.
+
+## Layer 5 services
+
+- Compute governor
+- Context compiler
+- Diversity planner
+- Evidence linker
+- Champion selector
+- Improvement policy
+- Capability calculator
+- Practice selector
+- Avatar unlock engine
 
 ## Rules
 
 - Imports are limited to `@v31m4/domain` and files inside this package.
-- Every long-running or externally backed operation accepts `OperationContext`.
-- Repository writes use explicit optimistic-concurrency conditions.
-- Immutable records such as evidence and audit entries are append-only.
-- Cancellation, deadlines, idempotency, and correlation are shared concerns, not redefined per port.
-- Ports expose provider-neutral types only.
-- Port implementations may reject with `ApplicationError`; they must never leak provider SDK errors across this boundary.
+- External API contracts are translated outside the application core.
+- Services are deterministic and return immutable decisions.
+- Services do not access persistence or external systems directly.
+- Immutable records such as evidence, candidates, and audit entries remain append-only.
+- Models cannot verify their own work, and model confidence is not evidence.
+- Port implementations may reject with `ApplicationError`; provider SDK errors never cross this boundary.

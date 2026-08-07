@@ -1,6 +1,6 @@
 # V31M4 Dependency Rules
 
-## Application Ports Layer 4
+## Application Services Layer 5
 
 ### `packages/domain`
 
@@ -58,12 +58,14 @@ Forbidden:
 
 ### Application port rules
 
-- Application source defines interfaces and pure shared primitives only.
+- Application source defines ports, pure shared primitives, and deterministic decision services only.
 - Every authoritative repository mutation requires `UnitOfWorkTransaction`.
 - Every mutable aggregate write uses `WriteCondition` and returns `Versioned<T>`.
 - External execution ports expose provider-neutral request and result types.
 - Audit storage is append-only and distinct from policy and approval storage.
 - Workspace operations make isolation, sealing, snapshotting, and disposal explicit.
+- Services produce immutable decisions and do not perform direct persistence or external execution.
+- Service time, resources, and randomness are explicit inputs.
 - Source files remain below 500 lines.
 
 ### Contract construction rules
@@ -89,7 +91,7 @@ Forbidden:
 ## Dependency graph
 
 ```text
-application tests → application public API → domain public API
+application tests → application services and ports → application public API → domain public API
 contracts tests → contracts public API → domain public API
 JSON Schema tests → root schemas
 packages/domain → nothing outside domain
