@@ -47,6 +47,36 @@ Do not treat these historical results as proof for new changes. Re-run the appro
 - Application use cases orchestrate through existing domain/services/ports and preserve transaction/external-call boundaries.
 - World/runtime/API concerns belong to their owning later layers rather than being forced into earlier core layers.
 
+## Deferred production departments
+
+```text
+VIDEO := {
+  role: removable_plugin,
+  implementation: DEFER_UNTIL_CORE_COMPLETE,
+  core_dependency: false,
+  now: RESERVE(extension_slot + required_interfaces),
+  later: DESIGN_AND_BUILD_SEPARATELY,
+  open_gen_ai: MAY_EVALUATE_OR_REUSE_PARTS_LATER
+}
+
+GAME_3D := {
+  role: removable_plugin,
+  implementation: DEFER_UNTIL_CORE_COMPLETE,
+  core_dependency: false,
+  now: RESERVE(extension_slot + required_interfaces),
+  later: DESIGN_AND_BUILD_SEPARATELY
+}
+
+CORE := {
+  build_now: true,
+  MUST_NOT depend_on(VIDEO | GAME_3D),
+  MUST preserve_extension_points(VIDEO | GAME_3D),
+  MUST_NOT include(Open_Generative_AI)
+}
+```
+
+These deferred departments do not gate completion of the core system. Open Generative AI is not part of core; only its potentially useful components may be evaluated later during Video Production design.
+
 ## Areas already mapped
 
 Unless new evidence, compile/test failures, changed interfaces, or contradictions require reinspection, avoid broad rediscovery of:
@@ -67,7 +97,8 @@ Documentation lag exists between `repo_map.md`, `docs/repository-map.md`, and th
 1. Verify the actual latest Layer 8 tree and tests on `canonical/layers-6-10` rather than relying on stale map text.
 2. Reconcile repository maps/ownership documentation with the implemented state.
 3. Continue the approved canonical Layers 6-10 plan from the latest verified incomplete layer.
-4. Use grouped implementation, focused tests during development, and the native full regression gate at layer checkpoints.
+4. Keep Video Production and 3D/Game Production deferred while preserving only their required extension points during core work.
+5. Use grouped implementation, focused tests during development, and the native full regression gate at layer checkpoints.
 
 ## Session-start rule
 
