@@ -53,6 +53,13 @@ PROC CONTEXT(task):
   IF sufficient_verified_evidence => IMPLEMENT
   IF new_uncertainty OR failure OR contradiction => INVESTIGATE
 
+PROC REASON(task):
+  DEPTH := adaptive(risk | uncertainty | complexity | blast_radius)
+  STOP_ANALYSIS IFF sufficient_verified_evidence AND no_unresolved_material_risk
+  ESCALATE IF architecture | security | persistence | recovery | cross_layer | novel_failure affected
+  FORBID circular_analysis | repeated_reasoning_without_new_evidence
+  NEVER cap required_reasoning_to_save_tokens
+
 PROC ENGINEER(task):
   REQUIRE(outcome_known, acceptance_criteria_known)
   PREFER(existing_abstraction) OVER parallel_abstraction
