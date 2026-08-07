@@ -5,7 +5,8 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 ## Repository state
 
 - Branch: `canonical/layers-6-10`
-- Current HEAD at handoff-file creation: `2fe85cd708c6dffd4d05872f3a85926648e6a676`
+- Handoff baseline commit before this file was added: `2fe85cd708c6dffd4d05872f3a85926648e6a676`
+- Live HEAD: verify from git at every session start; do not trust a stored SHA as current after subsequent commits.
 - Architecture baseline: `V31M4-SRS-001 / 1.0.0`
 - Hardened ancestor: `5746e5f2571a08dea3cce0493adeac92ae025135`
 - Canonical continuation is based on the hardened Layer 5 line. Older Layer 6 implementations are reference material only.
