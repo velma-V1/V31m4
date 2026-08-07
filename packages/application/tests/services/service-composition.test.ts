@@ -125,4 +125,68 @@ describe("application service composition", () => {
       expect(Object.isFrozen(context.items[0])).toBe(true);
     }
   });
+
+  it("does not mutate frozen input collections (services are pure)", () => {
+    // Deeply frozen inputs: any in-place mutation by a service would throw.
+    const strategies: readonly SolverStrategy[] = Object.freeze([
+      "direct",
+      "minimal_change",
+      "specification_first",
+    ]);
+    const diversity = planDiversity({
+      count: 2,
+      seed: 5,
+      allowedStrategies: strategies,
+      allowedModelIds: Object.freeze(["model:a", "model:b"]),
+      toolCatalog: Object.freeze(["tool:x", "tool:y"]),
+      contextArtifactIds: Object.freeze(["artifact:ctx"]),
+      missionConstraints: Object.freeze(["Preserve the public API."]),
+      budget: ResourceBudget.create({
+        maxWallClockMs: 60_000,
+        maxModelInvocations: 8,
+        maxToolInvocations: 4,
+        maxRepairRounds: 3,
+        maxConcurrentWorkers: 6,
+      }),
+    });
+    expect(diversity.outcome).toBe("planned");
+    expect(Object.isFrozen(strategies)).toBe(true);
+
+    const candidates: readonly CandidateEvaluation[] = Object.freeze([
+      {
+        candidateId: "candidate:b",
+        verification: makeVerification("passed"),
+        metrics: {
+          correctness: 0.9,
+          coverage: 0.9,
+          security: 0.9,
+          performance: 0.9,
+          complexity: 0.2,
+          evidenceStrength: 0.9,
+        },
+        unresolvedCriticalRisks: Object.freeze([]),
+        evidenceIds: Object.freeze(["evidence:1"]),
+      },
+      {
+        candidateId: "candidate:a",
+        verification: makeVerification("passed"),
+        metrics: {
+          correctness: 0.8,
+          coverage: 0.8,
+          security: 0.8,
+          performance: 0.8,
+          complexity: 0.3,
+          evidenceStrength: 0.8,
+        },
+        unresolvedCriticalRisks: Object.freeze([]),
+        evidenceIds: Object.freeze(["evidence:2"]),
+      },
+    ]);
+    // champion-selector sorts internally; it must not sort the frozen input in place.
+    expect(() => selectChampion({ candidates })).not.toThrow();
+    expect(candidates.map((candidate) => candidate.candidateId)).toEqual([
+      "candidate:b",
+      "candidate:a",
+    ]);
+  });
 });

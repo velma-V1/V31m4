@@ -252,10 +252,18 @@ export function selectChampion(input: ChampionSelectorInput): ChampionSelectorRe
   }
 
   // No single dominator: preserve the Pareto set and recommend deterministically.
-  const recommended = stableSortBy(
-    orderedPareto,
-    (candidate) => `${(1 - aggregateScore(candidate.metrics)).toFixed(6)}:${candidate.candidateId}`,
-  )[0] as CandidateEvaluation;
+  // Pick the highest aggregate score; `orderedPareto` is already sorted ascending by
+  // candidateId, so replacing only on a strictly greater score keeps the smallest
+  // candidateId as the deterministic tie-break among equal aggregates.
+  let recommended = orderedPareto[0] as CandidateEvaluation;
+  let recommendedScore = aggregateScore(recommended.metrics);
+  for (const candidate of orderedPareto) {
+    const score = aggregateScore(candidate.metrics);
+    if (score > recommendedScore) {
+      recommended = candidate;
+      recommendedScore = score;
+    }
+  }
   return Object.freeze({
     outcome: "pareto",
     paretoCandidateIds: paretoIds,

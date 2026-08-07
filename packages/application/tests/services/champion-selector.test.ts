@@ -64,6 +64,43 @@ describe("ChampionSelector.select", () => {
     }
   });
 
+  it("recommends the highest-aggregate candidate within a Pareto set", () => {
+    // Neither dominates: A wins performance, B wins security. A has the higher
+    // aggregate, so A must be recommended. This guards against a sort-key sign bug.
+    const result = selectChampion({
+      candidates: [
+        candidate({
+          candidateId: "candidate:a",
+          metrics: {
+            correctness: 0.95,
+            coverage: 0.9,
+            security: 0.7,
+            performance: 0.95,
+            complexity: 0.2,
+            evidenceStrength: 0.9,
+          },
+        }),
+        candidate({
+          candidateId: "candidate:b",
+          metrics: {
+            correctness: 0.9,
+            coverage: 0.9,
+            security: 0.99,
+            performance: 0.6,
+            complexity: 0.2,
+            evidenceStrength: 0.9,
+          },
+        }),
+      ],
+    });
+    expect(result.outcome).toBe("pareto");
+    if (result.outcome === "pareto") {
+      expect(result.paretoCandidateIds).toHaveLength(2);
+      // aggregate(A)=5.20 > aggregate(B)=5.09
+      expect(result.recommendedCandidateId).toBe("candidate:a");
+    }
+  });
+
   it("preserves a Pareto set when no candidate dominates", () => {
     const result = selectChampion({
       candidates: [
@@ -181,5 +218,20 @@ describe("ChampionSelector.select", () => {
     expect(ChampionSelector.select({ candidates })).toStrictEqual(
       ChampionSelector.select({ candidates }),
     );
+  });
+
+  it("produces the same decision regardless of candidate input order", () => {
+    const a = candidate({
+      candidateId: "candidate:a",
+      metrics: { ...strongMetrics, performance: 0.95, security: 0.7 },
+    });
+    const b = candidate({
+      candidateId: "candidate:b",
+      metrics: { ...strongMetrics, performance: 0.6, security: 0.99 },
+    });
+    const c = candidate({ candidateId: "candidate:c", metrics: weakMetrics });
+    const forward = selectChampion({ candidates: [a, b, c] });
+    const reversed = selectChampion({ candidates: [c, b, a] });
+    expect(reversed).toStrictEqual(forward);
   });
 });

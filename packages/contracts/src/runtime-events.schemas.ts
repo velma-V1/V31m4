@@ -3,12 +3,13 @@ import {
   artifactIdSchema,
   avatarIdSchema,
   avatarItemIdSchema,
-  capabilityIdSchema,
   canonicalIdSchema,
-  contractVersionSchema,
+  capabilityIdSchema,
   contentHashSchema,
+  contractVersionSchema,
   eventIdSchema,
   evidenceIdSchema,
+  guardForbiddenKeys,
   isoDateTimeSchema,
   jobIdSchema,
   missionIdSchema,
@@ -22,9 +23,9 @@ import {
 } from "./common.schemas.js";
 import { evidenceStatusSchema } from "./evidence.schemas.js";
 import { jobStatusSchema } from "./jobs.schemas.js";
+import { profileAvailabilitySchema } from "./models.schemas.js";
 import { pluginStatusSchema } from "./plugins.schemas.js";
 import { practiceTaskStatusSchema } from "./practice.schemas.js";
-import { profileAvailabilitySchema } from "./models.schemas.js";
 
 const runtimeEventBaseShape = {
   schemaVersion: contractVersionSchema,
@@ -205,7 +206,7 @@ const runtimeEventUnionSchema = z.discriminatedUnion("type", [
   avatarUnlockedEventSchema,
 ]);
 
-export const runtimeEventSchema = runtimeEventUnionSchema.superRefine((event, context) => {
+const runtimeEventValidatedSchema = runtimeEventUnionSchema.superRefine((event, context) => {
   const expected = (() => {
     switch (event.type) {
       case "project.updated":
@@ -254,6 +255,10 @@ export const runtimeEventSchema = runtimeEventUnionSchema.superRefine((event, co
     });
   }
 });
+
+// External client event ingress: reject prototype-pollution property names before
+// parsing, keeping the guarantee uniform with the adapter RPC message boundary.
+export const runtimeEventSchema = guardForbiddenKeys(runtimeEventValidatedSchema);
 
 export type RuntimeEventPayload = z.infer<typeof runtimeEventSchema>;
 export type RuntimeEventType = RuntimeEventPayload["type"];

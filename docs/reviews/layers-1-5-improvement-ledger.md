@@ -129,3 +129,64 @@ Each correction below is the smallest complete change that resolves a **proven**
    boundary; other strict typed objects share the underlying Zod behavior. Follow-up: apply
    `guardForbiddenKeys` at additional untrusted-JSON ingress points.
 3. **Performance** was not measured; no performance claim is made anywhere in this work.
+
+---
+
+## Gold-standard hardening (four-pass review)
+
+After Layer 5 was implemented, a four-pass hardening review was run against the implemented
+surface (Layers 1–5: domain, contracts, application ports + services). Layer 6+ subsystems
+(persistence/SQLite, runtime API server, adapters, plugins, kernel, backup, processes,
+event outbox) are not implemented, so the failure/recovery/concurrency and infrastructure
+areas of a full production review are Not Applicable here and are marked as such — no
+evidence was fabricated for them.
+
+**Pass 1 — deterministic correctness & invariant attack.** Read every service invariant;
+attacked boundaries, thresholds, duplicates, and determinism; added a 1 000-iteration
+seeded budget fuzz plus order-invariance suites.
+
+- **HARD-01 (P2, fixed).** `champion-selector` `recommendedCandidateId`: the tie-break key
+  was `(1 - aggregateScore).toFixed(6)` string-sorted, but `aggregateScore ∈ [0,6]` makes the
+  key negative, and lexicographic ordering of negative strings inverts the numeric order — so
+  the *lower*-aggregate candidate was recommended within a Pareto set. Evidence: new test
+  `champion-selector.test.ts › recommends the highest-aggregate candidate within a Pareto set`
+  was red (`expected 'candidate:b' to be 'candidate:a'`). Fix: numeric max-aggregate selection
+  preserving candidateId-ascending tie-break. The champion / Pareto / no-solution outcome was
+  never affected — only the recommendation hint. Regression green; full suite green.
+- Confirmed safe (rejected as non-defects): every other `.toFixed()` sort key
+  (`context-compiler`, `improvement-policy`, `practice-selector`) operates on values in
+  `[0,1]` (non-negative), where lexicographic and numeric order agree.
+
+**Pass 2 — adversarial security / hostile input.** Attacked the JSON trust boundaries.
+
+- **HARD-03 (P3→hardened).** The runtime **event** ingress (`runtimeEventSchema`) accepted a
+  `__proto__` property (like every Zod `.strict()` object), inconsistent with the adapter-RPC
+  boundary and the architecture rule that external messages are prototype-safe. **Verified
+  first that no actual `Object.prototype` pollution occurs anywhere** (global prototype stays
+  clean; strict output never carries a `__proto__` own key), so this was a strictness-laxity,
+  not an exploitable hole. Hardened by wrapping the event boundary with `guardForbiddenKeys`,
+  making the guarantee uniform. Added permanent suite `contracts/tests/security.schemas.test.ts`
+  (5 tests): forbidden-name rejection at depth/in-arrays/`constructor`/`prototype` for both
+  external boundaries; safe-JSON rejection of NaN/Infinity/cycles/functions/symbols/class
+  instances; and a global-non-pollution assertion.
+
+**Pass 3 — determinism / purity (failure & concurrency N/A: no I/O in Layers 1–5).**
+
+- **HARD-02 (P2, fixed).** `avatar-unlock-engine` validated `now` with a regex only, so a
+  format-valid but semantically-invalid timestamp (`2026-13-45T…`) was **silently accepted
+  when no rule unlocked**, and otherwise surfaced as a `DomainError` deep inside
+  `AvatarState.unlock`. Evidence: new test was red (did not throw). Fix: full canonical
+  round-trip validation throwing a typed `ApplicationError`, consistent with
+  `capability-calculator`. Added a purity guardrail proving services do not mutate frozen
+  inputs.
+
+**Pass 4 — clean-room architecture.** Re-verified from the docs: dependency direction intact
+(domain → nothing; contracts → domain + Zod; application/services → domain + app-local);
+no source file exceeds 500 lines (largest 468); no provider SDK, filesystem, process, or
+network imports in Layers 1–5; no circular imports (`forbidden-key-guard` imports only Zod);
+the recursive `dependency-boundaries` test already covers the new service files.
+
+**Hardening totals:** 2 confirmed defects fixed (2×P2), 1 consistency hardening (P3), 0
+outstanding Critical/High. New permanent guardrails: budget fuzz, two order-invariance
+suites, a purity suite, and a security suite. No Critical or High defects were found or remain.
+

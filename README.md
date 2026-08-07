@@ -8,9 +8,10 @@ The repository is in **Application Services Layer 5**. The implemented code cont
 repository governance, the immutable domain model, strict external contracts, seven
 portable JSON Schemas, the complete infrastructure-free application port boundary, and the
 nine deterministic application services built on those ports. Layers 1–5 have been
-dependency-backed and regression tested against the pinned toolchain: **232 passing cases
-across 40 test files**, full workspace typecheck and build pass, **9 services**, **0
-explicit `any`** across Layers 1–5 source, and the largest source file is **468 lines**.
+dependency-backed, regression tested, and put through a four-pass hardening review against
+the pinned toolchain: **243 passing cases across 41 test files**, full workspace typecheck
+and build pass, **9 services**, **0 explicit `any`** across Layers 1–5 source, and the
+largest source file is **468 lines**.
 Layer 6 use cases, persistence implementations, runtime interfaces, adapters, plugins,
 laboratories, and production workflows remain intentionally absent.
 

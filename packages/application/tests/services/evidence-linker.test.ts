@@ -138,4 +138,31 @@ describe("EvidenceLinker.link", () => {
     const evidence = [makeEvidence({ id: "evidence:dup" }), makeEvidence({ id: "evidence:dup" })];
     expect(() => EvidenceLinker.link({ evidence, links: [] })).toThrowError(/Duplicate evidence/);
   });
+
+  it("produces the same traceability regardless of evidence and link order", () => {
+    const evidence = [
+      makeEvidence({ id: "evidence:1", status: "passed", kind: "hidden_test" }),
+      makeEvidence({ id: "evidence:2", status: "failed" }),
+      makeEvidence({ id: "evidence:3", status: "inconclusive" }),
+    ];
+    const links: readonly EvidenceLink[] = [
+      { evidenceId: "evidence:1", subjectType: "acceptance_criterion", subjectId: "criterion:1" },
+      { evidenceId: "evidence:2", subjectType: "candidate", subjectId: "candidate:1" },
+      { evidenceId: "evidence:3", subjectType: "requirement", subjectId: "req:1" },
+    ];
+    const args = {
+      acceptanceCriteria: [
+        { id: "criterion:1", mandatory: true, requiredEvidenceKinds: ["hidden_test"] as const },
+      ],
+      candidateIds: ["candidate:1"],
+      requirements: [{ id: "req:1", mandatory: true }],
+    };
+    const forward = linkEvidence({ evidence, links, ...args });
+    const reversed = linkEvidence({
+      evidence: [...evidence].reverse(),
+      links: [...links].reverse(),
+      ...args,
+    });
+    expect(reversed).toStrictEqual(forward);
+  });
 });

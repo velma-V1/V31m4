@@ -180,4 +180,17 @@ describe("AvatarUnlockEngine.evaluate", () => {
     const input = baseInput();
     expect(AvatarUnlockEngine.evaluate(input)).toStrictEqual(AvatarUnlockEngine.evaluate(input));
   });
+
+  it("rejects a semantically invalid timestamp even when no rule unlocks", () => {
+    // `2026-13-45T...` matches the ISO shape but is not a real date. It must be
+    // rejected up front regardless of whether any rule would have unlocked.
+    expect(() =>
+      evaluateAvatarUnlocks(
+        baseInput({
+          now: "2026-13-45T00:00:00.000Z",
+          capabilityScores: { "capability:render": 0.1 },
+        }),
+      ),
+    ).toThrowError(/canonical UTC/);
+  });
 });

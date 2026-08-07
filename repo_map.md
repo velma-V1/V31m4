@@ -58,12 +58,13 @@ docs/                                    # Architecture, maps, versioning, plans
 - **Layer 2** domain-entity regression: **30 passing cases across 8 test files**.
 - **Layer 3** runtime contract regression (non-schema): **29 passing cases across 7 test files**.
 - **Layer 3** portable JSON Schemas: **7 of 7 compiled under Ajv draft 2020-12**, unique versioned `$id`s, **4 passing schema tests**.
+- **Layer 3** prototype-pollution / hostile-input hardening: **5 passing cases** (`security.schemas.test.ts`).
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
-- **Layer 5** application-service regression: **91 passing cases across 10 test files**.
-- **Full Layer 1–5 regression:** **232 passing cases across 40 test files**.
+- **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
+- **Full Layer 1–5 regression:** **243 passing cases across 41 test files**.
 - **Typecheck:** `pnpm typecheck` → 3/3 packages pass. **Build:** `pnpm build` → 3/3 pass. Application declaration emission: **41 `.d.ts` modules, 0 errors**.
 - **Static:** total source files **87** (domain 31, contracts 15, application 41); **9 services**; largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit `any`** across Layers 1–5 source; no provider SDK imports; no placeholders in Layer 5.
-- **Improvements made:** **4** proven Layer 1–4 corrections (see `docs/reviews/layers-1-5-improvement-ledger.md`).
+- **Improvements made:** **4** proven Layer 1–4 corrections plus a four-pass hardening review that fixed **2** additional Layer 5 correctness defects and hardened the event boundary (see `docs/reviews/layers-1-5-improvement-ledger.md`).
 
 ### Known limitation
 

@@ -66,6 +66,14 @@ export interface AvatarUnlockResult {
 const MODEL_CLAIM_SOURCE = "model_claim";
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
+function isCanonicalTimestamp(value: string): boolean {
+  if (!ISO_PATTERN.test(value)) {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
 interface RuleEvaluation {
   readonly ok: boolean;
   readonly reason?: RuleRejectionReason;
@@ -155,7 +163,7 @@ function evaluateRule(
 
 /** Evaluates achievement rules and applies earned permanent unlocks deterministically. */
 export function evaluateAvatarUnlocks(input: AvatarUnlockEngineInput): AvatarUnlockResult {
-  if (!ISO_PATTERN.test(input.now)) {
+  if (!isCanonicalTimestamp(input.now)) {
     throw new ApplicationError(
       "INVALID_APPLICATION_INPUT",
       "now must be canonical UTC ISO-8601 with milliseconds.",
