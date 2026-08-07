@@ -2,14 +2,14 @@
 
 ## Current State
 
-**Layer:** Application Services Layer 5
-**Branch:** `claude/v31m4-layers-validation-impl-dmlccn`
-**Parent layer:** `agent/application-ports-layer-4`
+**Layer:** Application Use Cases Layer 6
+**Branch:** `canonical/layers-6-10`
+**Parent layer:** hardened Layer 5 `5746e5f2571a08dea3cce0493adeac92ae025135`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
 
-Layer 5 adds the deterministic, infrastructure-free application services on top of the
-Layer 4 ports, and repairs the proven Layer 1–4 defects surfaced by running the real
-pinned toolchain (`corepack enable && pnpm install && pnpm typecheck && pnpm test && pnpm build`).
+Layer 6 adds 21 transactional use cases on the hardened Layer 5 services and ports. The
+superseded Layer 6 was used only as reference and reconciled according to
+`docs/reviews/layer-6-reconciliation-matrix.md`.
 
 ### Implemented and functional
 
@@ -25,7 +25,7 @@ packages/
     │   ├── operation-context.ts
     │   ├── port-types.ts
     │   ├── ports/                        # 26 Layer 4 infrastructure-free ports
-    │   └── services/                     # Layer 5: 9 application services
+    │   ├── services/                     # Layer 5: 9 application services
     │       ├── compute-governor.ts
     │       ├── context-compiler.ts
     │       ├── diversity-planner.ts
@@ -36,7 +36,8 @@ packages/
     │       ├── practice-selector.ts
     │       ├── avatar-unlock-engine.ts
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
-    └── tests/                            # Layer 4 + Layer 5 verification (16 files)
+    │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
+    └── tests/                            # Layer 4–6 verification
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/                                    # Architecture, maps, versioning, plans, and the Layer 1-5 improvement ledger
@@ -61,14 +62,15 @@ docs/                                    # Architecture, maps, versioning, plans
 - **Layer 3** prototype-pollution / hostile-input hardening: **5 passing cases** (`security.schemas.test.ts`).
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
-- **Full Layer 1–5 regression:** **243 passing cases across 41 test files**.
+- **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
+- **Full Layer 1–6 regression:** **265 passing cases across 51 test files**.
 - **Typecheck:** `pnpm typecheck` → 3/3 packages pass. **Build:** `pnpm build` → 3/3 pass. Application declaration emission: **41 `.d.ts` modules, 0 errors**.
-- **Static:** total source files **87** (domain 31, contracts 15, application 41); **9 services**; largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit `any`** across Layers 1–5 source; no provider SDK imports; no placeholders in Layer 5.
-- **Improvements made:** **4** proven Layer 1–4 corrections plus a four-pass hardening review that fixed **2** additional Layer 5 correctness defects and hardened the event boundary (see `docs/reviews/layers-1-5-improvement-ledger.md`).
+- **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
+- **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**244 cases across 42 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**265 cases across 51 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
@@ -79,7 +81,7 @@ lines and no file exceeds 500.
 
 ### Not implemented
 
-No Layer 6 use cases, infrastructure implementations, database schema, artifact
+No infrastructure implementations, database schema, artifact
 implementation, runtime API server, desktop, CLI, adapter-protocol package,
 model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows
-exist. Layer 6 was not implemented.
+exist.

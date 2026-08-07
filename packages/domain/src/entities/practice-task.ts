@@ -28,6 +28,7 @@ export interface PracticeTask {
   readonly capabilityId: CapabilityIdType;
   readonly targetDifficulty: number;
   readonly status: PracticeTaskStatus;
+  readonly workspaceId: string;
   readonly isolatedWorkspacePath: SafePathType;
   readonly resourceBudget: ResourceBudgetType;
   readonly traceArtifactIds: readonly ArtifactIdType[];
@@ -80,9 +81,15 @@ export const PracticeTask = Object.freeze({
     readonly id: string;
     readonly capabilityId: string;
     readonly targetDifficulty: number;
+    readonly workspaceId: string;
     readonly isolatedWorkspacePath: string;
     readonly resourceBudget: ResourceBudgetType;
   }): PracticeTask {
+    assertDomain(
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.workspaceId),
+      "INVALID_PRACTICE_TASK",
+      "Practice workspace ID must be canonical.",
+    );
     assertDomain(
       Number.isFinite(input.targetDifficulty) && input.targetDifficulty >= 0,
       "INVALID_PRACTICE_TASK",
@@ -93,6 +100,7 @@ export const PracticeTask = Object.freeze({
       capabilityId: CapabilityId.parse(input.capabilityId),
       targetDifficulty: input.targetDifficulty,
       status: "planned" as const,
+      workspaceId: input.workspaceId,
       isolatedWorkspacePath: SafePath.parse(input.isolatedWorkspacePath),
       resourceBudget: ResourceBudget.create(input.resourceBudget),
       traceArtifactIds: Object.freeze([]),

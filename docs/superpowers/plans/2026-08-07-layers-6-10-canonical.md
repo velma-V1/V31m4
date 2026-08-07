@@ -33,13 +33,13 @@
 - Consumes: hardened domain public API, `OperationContext`, `WriteCondition`, `UnitOfWorkPort`, 26 application ports, and nine Layer 5 services.
 - Produces: the 21 exported use-case functions named in the repository specification and one bounded practice repository port if not already expressible.
 
-- [ ] Add failing public-API tests for all 21 use cases.
-- [ ] Add failing behavior tests for transaction rollback, phased external execution, kernel/model/tool/verifier failure, cancellation/deadline, pagination repetition, approval exact expiry, stale revisions, and practice workspace cleanup.
-- [ ] Port the 16 correction-classified use cases against hardened interfaces without copying superseded dependencies.
-- [ ] Implement the five bounded redesigns using current Layer 5 service contracts.
-- [ ] Run focused application tests and prove every new regression test fails without its corresponding behavior.
-- [ ] Run all native gates and dependency/source-size/explicit-any checks.
-- [ ] Update architecture, ownership maps, acceptance checklist, and Layer 6 evidence; commit `feat: reconcile canonical application use cases layer`.
+- [x] Add failing public-API tests for all 21 use cases.
+- [x] Add failing behavior tests for transaction rollback, phased external execution, kernel/model/tool/verifier failure, cancellation/deadline, pagination repetition, approval exact expiry, stale revisions, and practice workspace cleanup.
+- [x] Port the 16 correction-classified use cases against hardened interfaces without copying superseded dependencies.
+- [x] Implement the five bounded redesigns using current Layer 5 service contracts.
+- [x] Run focused application tests and prove every new regression test fails without its corresponding behavior.
+- [x] Run all native gates and dependency/source-size/explicit-any checks.
+- [x] Update architecture, ownership maps, acceptance checklist, and Layer 6 evidence; commit `feat: reconcile canonical application use cases layer`.
 
 ### Task 2: Layer 7 SQLite persistence and artifacts
 

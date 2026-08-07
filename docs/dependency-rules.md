@@ -75,6 +75,17 @@ Forbidden:
 - Workspace operations make isolation, sealing, snapshotting, and disposal explicit.
 - Source files remain below 500 lines.
 
+### Application use-case rules
+
+- Use cases import only the domain public API and application-local ports, services, and helpers.
+- Every authoritative mutation executes through `UnitOfWorkPort`.
+- External execution occurs only before or after a committed transaction, never inside one.
+- Mutable writes supply the currently read revision; immutable records are appended.
+- Authoritative paginated reads consume all pages and reject repeated cursors.
+- Approval expiry is inclusive: `expiresAt <= now` is expired.
+- Workspace cleanup uses the persisted opaque workspace ID, not a display path.
+- Source files remain below 500 lines.
+
 ### Contract construction rules
 
 - Every bounded object uses strict validation.
@@ -98,7 +109,7 @@ Forbidden:
 ## Dependency graph
 
 ```text
-application tests → application public API → domain public API
+application tests → application public API (ports, services, use cases) → domain public API
 contracts tests → contracts public API → domain public API
 JSON Schema tests → root schemas
 packages/domain → nothing outside domain

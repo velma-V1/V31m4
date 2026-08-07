@@ -119,6 +119,7 @@ describe("capability endpoint contracts", () => {
       capabilityId: "capability:contracts",
       targetDifficulty: 3,
       status: "quarantined",
+      workspaceId: "workspace-practice-1",
       isolatedWorkspacePath: "practice/task-1",
       resourceBudget: {
         maxWallClockMs: 60_000,

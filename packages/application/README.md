@@ -1,8 +1,10 @@
 # @v31m4/application
 
 This package defines the inward-facing Layer 4 ports used by application services and use
-cases, and implements the Layer 5 application services that turn domain state and those
-ports into decisions and plans. It contains no persistence, process, network, provider,
+cases, implements the Layer 5 application services that turn domain state and those ports
+into decisions and plans, and implements the Layer 6 use cases that coordinate
+authoritative state and external side effects. It contains no persistence, process,
+network, provider,
 adapter, plugin, runtime-server, or interface implementation.
 
 ## Port rules (Layer 4)
@@ -29,3 +31,10 @@ The nine services under `src/services` are pure decision and planning functions:
 Services: `compute-governor`, `context-compiler`, `diversity-planner`, `evidence-linker`,
 `champion-selector`, `improvement-policy`, `capability-calculator`, `practice-selector`,
 and `avatar-unlock-engine`.
+
+## Use-case rules (Layer 6)
+
+The 21 use cases under `src/use-cases` use units of work for authoritative mutations,
+explicit revisions for mutable writes, append-only immutable stores, complete pagination,
+and typed application errors. External execution follows prepare/commit, invoke, and
+finalize-or-fail/commit phases. Use cases do not import contracts or infrastructure.

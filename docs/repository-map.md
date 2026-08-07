@@ -23,8 +23,10 @@
 | `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
 | `/packages/application/src/services` | Application services | Nine deterministic, infrastructure-free decision and planning services (Layer 5) |
 | `/packages/application/src/services/internal` | Application services | Private deterministic helpers (fingerprint, canonical stringify, seeded RNG); never exported |
+| `/packages/application/src/use-cases` | Application use cases | Twenty-one transactional orchestration entrypoints and private pagination/authorization helpers |
 | `/packages/application/src/index.ts` | Application core | Public application package API only (ports and services) |
-| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, file-size checks, and the nine service suites |
+| `/packages/application/tests/use-cases` | Application verification | Layer 6 correctness, failure, pagination, approval, workspace, and orchestration tests |
+| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, file-size checks, services, and use cases |
 | `/packages/contracts/src/forbidden-key-guard.ts` | Contract core | Prototype-pollution property-name guard for external message boundaries |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
 
@@ -83,6 +85,13 @@ domain value objects, errors, and events
 | Capability calculator | `capability-calculator.ts` | Compute bounded evidence-backed capability updates with difficulty and recency weighting |
 | Practice selector | `practice-selector.ts` | Select a safe, isolated practice task for a weak capability, or none |
 | Avatar unlock engine | `avatar-unlock-engine.ts` | Apply permanent evidence-backed unlocks; reject claims and unverified practice; preserve prior unlocks |
+
+## Application use-case ownership
+
+`packages/application/src/use-cases` owns project/mission planning, durable job lifecycle,
+solver/verification/repair, champion/delivery/training/promotion, practice/avatar, plugin
+registration, and governed model/tool invocation. Exact reconciliation decisions are in
+`docs/reviews/layer-6-reconciliation-matrix.md`.
 
 ## Update rule
 

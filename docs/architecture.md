@@ -87,6 +87,17 @@ The nine services are: compute governor, context compiler, diversity planner, ev
 linker, champion selector, improvement policy, capability calculator, practice selector,
 and avatar unlock engine.
 
+## Application use-case authority
+
+Layer 6 coordinates the 21 production use cases through Layer 4 ports and Layer 5
+services. Authoritative mutations occur inside units of work and publish their domain
+events through the transactional event boundary. Mutable records use current revisions;
+immutable records remain append-only. External model, tool, verifier, workspace, and
+kernel calls never run inside an authoritative transaction. Job operations use explicit
+prepare, invoke, and finalize-or-fail phases. Authoritative collection decisions consume
+all pages and fail on repeated cursors. Exact-expiry approvals are expired, and idle
+practice persists the opaque workspace identity used for cleanup.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
@@ -107,12 +118,11 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Application Services Layer 5 contains repository governance, the complete domain and
+Application Use Cases Layer 6 contains repository governance, the complete domain and
 contract layers, seven root JSON Schemas, the complete `@v31m4/application` port boundary,
-and the nine deterministic application services built on those ports. Layers 1–5 have been
-dependency-backed and regression tested against the pinned toolchain (232 passing cases
-across 40 test files; full workspace typecheck and build pass).
+the nine deterministic services, and 21 transactional application use cases. Layers 1–6
+are dependency-backed and regression tested against the pinned toolchain.
 
-No Layer 6 use cases, infrastructure implementations, runtime API server, desktop UI, CLI,
+No infrastructure implementations, runtime API server, desktop UI, CLI,
 adapter implementations, plugin SDK, plugins, laboratories, or production workflows are
 implemented.

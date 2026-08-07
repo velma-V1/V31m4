@@ -4,6 +4,7 @@ import {
   apiRequestMetadataShape,
   apiResponseMetadataShape,
   artifactIdSchema,
+  canonicalIdSchema,
   capabilityIdSchema,
   evidenceIdSchema,
   paginationRequestSchema,
@@ -28,6 +29,7 @@ export const practiceTaskSchema = z
     capabilityId: capabilityIdSchema,
     targetDifficulty: z.number().finite().nonnegative().max(100),
     status: practiceTaskStatusSchema,
+    workspaceId: canonicalIdSchema,
     isolatedWorkspacePath: safePathSchema,
     resourceBudget: resourceBudgetSchema,
     traceArtifactIds: z.array(artifactIdSchema).max(10_000),
@@ -52,10 +54,13 @@ export const practiceTaskSchema = z
         path: ["evidenceIds"],
       });
     }
-    if (value.status !== "planned" && value.traceArtifactIds.length === 0) {
+    if (
+      ["checkpointed", "completed", "quarantined"].includes(value.status) &&
+      value.traceArtifactIds.length === 0
+    ) {
       context.addIssue({
         code: "custom",
-        message: "Started practice tasks require trace artifacts.",
+        message: "Checkpointed and completed practice tasks require trace artifacts.",
         path: ["traceArtifactIds"],
       });
     }

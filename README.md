@@ -4,20 +4,13 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Application Services Layer 5**. The implemented code contains
+The repository is in **Application Use Cases Layer 6**. The implemented code contains
 repository governance, the immutable domain model, strict external contracts, seven
 portable JSON Schemas, the complete infrastructure-free application port boundary, and the
-nine deterministic application services built on those ports. Layers 1–5 have been
-dependency-backed, regression tested, and put through a four-pass hardening review against
-the pinned toolchain: **243 passing cases across 41 test files**, full workspace typecheck
-and build pass, **9 services**, **0 explicit `any`** across Layers 1–5 source, and the
-largest source file is **468 lines**.
-Layer 6 use cases, persistence implementations, runtime interfaces, adapters, plugins,
+nine deterministic services and 21 transactional use cases built on those ports. Layers
+1–6 are dependency-backed and regression tested against the pinned toolchain.
+Persistence implementations, runtime interfaces, adapters, plugins,
 laboratories, and production workflows remain intentionally absent.
-
-Note: `pnpm lint` still reports pre-existing Biome formatting violations on Layer 1–4 files
-that predate any Biome run; those untouched files are deliberately left out of this focused
-diff. Every file added or substantively changed for Layer 5 passes `biome ci`.
 
 ## Prerequisites
 
@@ -70,7 +63,7 @@ The `schemas/` directory contains machine-readable draft 2020-12 definitions for
 
 ### `@v31m4/application`
 
-Provides the complete Layer 4 port boundary and the Layer 5 application services.
+Provides the complete Layer 4 port boundary, Layer 5 services, and Layer 6 use cases.
 
 Layer 4 ports:
 
@@ -93,5 +86,9 @@ Layer 5 services (deterministic, infrastructure-free decision and planning funct
 - **Capability calculator** — bounded evidence-backed capability updates
 - **Practice selector** — safe isolated practice-task selection
 - **Avatar unlock engine** — permanent evidence-backed avatar unlocks
+
+Layer 6 exports 21 use cases covering projects, missions, planning, durable jobs, solver
+and verification workflows, issue repair, champion delivery, controlled learning,
+practice/avatar progression, plugins, models, and tools.
 
 The package imports only the public `@v31m4/domain` API.
