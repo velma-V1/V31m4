@@ -13,6 +13,19 @@ on the canonical Layer 6. The
 superseded Layer 6 was used only as reference and reconciled according to
 `docs/reviews/layer-6-reconciliation-matrix.md`.
 
+### Core completion scope decision
+
+Video Production and 3D/Game Production are deferred until after V31M4 core completion.
+They remain first-party removable production plugins in the architecture, but neither is a
+core dependency, startup dependency, release gate, packaging prerequisite, or acceptance
+prerequisite. Their preserved designs live under `docs/deferred/video-production/` and
+`docs/deferred/game-production/`.
+
+Core work may build only generic extension seams needed by production plugins. No
+video-specific or game-specific implementation belongs in the core completion path.
+Open Generative AI is not a core dependency; it may be evaluated later only for optional
+reuse inside the deferred Video Production department.
+
 ### Implemented and functional
 
 ```text
@@ -43,7 +56,7 @@ packages/
 └── infrastructure/                      # Layer 7 SQLite, artifacts, outbox, backup
 
 schemas/                                 # 7 portable draft 2020-12 schemas
-docs/                                    # Architecture, maps, versioning, plans, and the Layer 1-5 improvement ledger
+docs/                                    # Architecture, maps, plans, reviews, and deferred extension designs
 ```
 
 ### Verified application-service behavior
@@ -87,4 +100,5 @@ lines and no file exceeds 500.
 
 No process/adapter infrastructure, runtime API server, desktop, CLI, adapter-protocol package,
 model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows
-exist.
+exist. Video Production and 3D/Game Production are intentionally deferred and are not
+counted as missing core implementation.
