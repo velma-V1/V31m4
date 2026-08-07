@@ -35,6 +35,17 @@
 | `/packages/infrastructure/src/backup` | Recovery infrastructure | Verified SQLite backup manifests and staged restore |
 | `/packages/infrastructure/tests` | Infrastructure verification | Real SQLite, concurrency, rollback, outbox, artifact, backup, and architecture tests |
 
+## Deferred extension design ownership
+
+| Path | Owner | Responsibility |
+|---|---|---|
+| `/docs/deferred/video-production` | Deferred Video Production | Preserved post-core Video Production design, long-form autonomy direction, small-model orchestration requirements, vision-QC direction, generation-quality upgrades, and optional later evaluation of reusable Open Generative AI parts |
+| `/docs/deferred/game-production` | Deferred 3D/Game Production | Preserved post-core Game Production scope and future generic plugin integration boundary |
+| `/docs/superpowers/specs/2026-08-07-defer-video-game-departments-design.md` | Architecture governance | Approved decision separating both departments from core completion |
+| `/docs/superpowers/plans/2026-08-07-defer-video-game-departments.md` | Architecture governance | Documentation-only implementation plan for the separation |
+
+These deferred paths contain design documentation only. They are not runtime packages, core dependencies, startup dependencies, release gates, or packaging prerequisites. Core must remain fully functional with both departments absent.
+
 ## Current dependency graph
 
 ```text
