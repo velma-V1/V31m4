@@ -4,6 +4,7 @@ import type { Brand } from "./ids.js";
 export type SafePath = Brand<string, "SafeProjectRelativePath">;
 
 const MAX_PATH_LENGTH = 4096;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the control-character range is intentional — safe paths must reject control characters.
 const FORBIDDEN_SEGMENT_CHARACTERS = /[<>:"|?*\u0000-\u001F]/u;
 const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
 const DRIVE_PREFIX = /^[A-Za-z]:/u;
