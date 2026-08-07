@@ -55,7 +55,7 @@ domain value objects, errors, and events
 | Contract group | Files | Strict responsibility |
 |---|---|---|
 | Common boundary | `common.schemas.ts` | Versioning, canonical primitives, safe recursive JSON, request metadata, pagination, and errors |
-| Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `capabilities.schemas.ts` | Authoritative resource command, query, state, evidence, verification, delivery, and promotion payloads |
+| Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `capabilities.schemas.ts`, `learning.schemas.ts` | Authoritative resource command, query, state, evidence, verification, delivery, promotion, training-packet, and capability-profile payloads |
 | Capability endpoints | `models.schemas.ts`, `tools.schemas.ts`, `plugins.schemas.ts`, `practice.schemas.ts`, `avatar.schemas.ts` | Provider-neutral capability discovery, invocation, workflow, practice, and avatar payloads |
 | Event stream | `runtime-events.schemas.ts` | Closed, versioned, aggregate-consistent client event union |
 | Adapter protocol | `adapter-rpc.schemas.ts` | Closed JSON-RPC requests, notifications, results, and errors |

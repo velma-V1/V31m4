@@ -190,3 +190,31 @@ the recursive `dependency-boundaries` test already covers the new service files.
 outstanding Critical/High. New permanent guardrails: budget fuzz, two order-invariance
 suites, a purity suite, and a security suite. No Critical or High defects were found or remain.
 
+---
+
+## Clean Layer 1–5 baseline (repo-wide formatting + native green gates)
+
+The earlier layer branches were authored without npm-registry access, so the tree had never
+been Biome-formatted. This baseline cleared that debt and brought every native gate green.
+
+- **FMT (formatting-only commit).** Applied `biome check --write` across the whole tree
+  (format + import-organization only; no logic, interface, dependency, or test-assertion
+  change — verified by an unchanged 243-test suite and a whitespace-insensitive diff).
+- **LINT-CONFLICT (config resolution).** Two `biome ci` failures remained, both genuine tool
+  conflicts, not defects: `complexity/useLiteralKeys` is irreconcilable with the repo's
+  tsconfig `noPropertyAccessFromIndexSignature` (Biome wants `x.$id`, TypeScript requires
+  `x["$id"]` on index signatures) — resolved by turning `useLiteralKeys` off; and
+  `suspicious/noControlCharactersInRegex` fires on `safe-path.ts`'s intentional control-char
+  rejection — suppressed at that one site with a justified `biome-ignore`. Result:
+  `pnpm lint` and `pnpm check` are now green.
+- **FMT-EXPOSED-01 (P2, fixed).** Formatting exposed a real architecture violation: Biome's
+  line-wrapping expanded `contracts/src/capabilities.schemas.ts` from 400 to **535 lines**,
+  over the hard 500-line limit. Root cause included a missing file-size gate for the contracts
+  package (only `@v31m4/application` had one). Fix: split the learning/capability/promotion/
+  endpoint schemas into a focused `contracts/src/learning.schemas.ts` (re-exported for a
+  stable public API), bringing both files well under 500 (352 / 210), and added a permanent
+  `contracts/tests/source-size.test.ts` guardrail. Behavior preserved (full suite green).
+
+**Baseline totals:** all native gates green (`typecheck`, `test`, `build`, `lint`, `check`);
+244 tests across 42 files; 0 explicit `any`; largest source file 468 lines; 0 files over 500.
+

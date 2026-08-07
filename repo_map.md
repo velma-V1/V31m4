@@ -66,14 +66,16 @@ docs/                                    # Architecture, maps, versioning, plans
 - **Static:** total source files **87** (domain 31, contracts 15, application 41); **9 services**; largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit `any`** across Layers 1–5 source; no provider SDK imports; no placeholders in Layer 5.
 - **Improvements made:** **4** proven Layer 1–4 corrections plus a four-pass hardening review that fixed **2** additional Layer 5 correctness defects and hardened the event boundary (see `docs/reviews/layers-1-5-improvement-ledger.md`).
 
-### Known limitation
+### Native gate status
 
-`pnpm lint` (`biome ci .`) still reports **pre-existing** formatting violations on Layer 1–4
-files that predate any Biome run (the earlier layer branches had no registry access to run
-Biome). Those files are intentionally left untouched to keep unrelated style churn out of
-this focused diff; all files added or substantively changed by Layer 5 pass `biome ci`.
-Because native `pnpm check` therefore stays red on that pre-existing formatting, the Layer 5
-pull request remains a draft.
+All native gates are green: `pnpm typecheck`, `pnpm test` (**244 cases across 42 files**),
+`pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
+earlier no-network layer branches was cleared in an isolated formatting-only commit; two
+Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
+(`useLiteralKeys` off — conflicts with `noPropertyAccessFromIndexSignature`; a justified
+`biome-ignore` for the safe-path control-character regex). Contracts and application both
+enforce the 500-line source limit via a `source-size` test; the largest source file is 468
+lines and no file exceeds 500.
 
 ### Not implemented
 
