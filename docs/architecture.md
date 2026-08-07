@@ -98,6 +98,15 @@ prepare, invoke, and finalize-or-fail phases. Authoritative collection decisions
 all pages and fail on repeated cursors. Exact-expiry approvals are expired, and idle
 practice persists the opaque workspace identity used for cleanup.
 
+## Persistence and artifact authority
+
+Layer 7 implements the application persistence boundary with SQLite, ordered migrations,
+serialized units of work, optimistic record revisions, append-only records, durable
+idempotency outcomes, and a transactional outbox. Content-addressed artifacts are written
+atomically and rehashed after promotion. Verified online backups restore through a staged
+replacement and reopen with mandatory pragmas. External execution is prohibited while a
+SQLite transaction is active.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
@@ -118,11 +127,12 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Application Use Cases Layer 6 contains repository governance, the complete domain and
+Persistence and Artifacts Layer 7 contains repository governance, the complete domain and
 contract layers, seven root JSON Schemas, the complete `@v31m4/application` port boundary,
-the nine deterministic services, and 21 transactional application use cases. Layers 1–6
+the nine deterministic services, 21 transactional application use cases, and the SQLite
+persistence/artifact package. Layers 1–7
 are dependency-backed and regression tested against the pinned toolchain.
 
-No infrastructure implementations, runtime API server, desktop UI, CLI,
+No process/adapter infrastructure, runtime API server, desktop UI, CLI,
 adapter implementations, plugin SDK, plugins, laboratories, or production workflows are
 implemented.

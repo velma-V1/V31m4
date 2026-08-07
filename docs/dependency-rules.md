@@ -104,6 +104,15 @@ Forbidden:
 - Every schema has an immutable versioned `$id`.
 - Bounded objects set `additionalProperties` to `false`.
 - Identifier arrays use `uniqueItems` where order does not imply duplication.
+
+### `packages/infrastructure`
+
+- Source may import only `@v31m4/application`, `@v31m4/domain`, Drizzle, and Node infrastructure APIs.
+- SQLite writes execute only inside the owning `SqliteRuntimeDatabase` unit of work.
+- Mutable records require explicit `WriteCondition`; immutable records are insert-only.
+- Outbox writes share the authoritative state transaction.
+- Artifact promotion is atomic and hash-verified; backup restore verifies before replacement.
+- Source files remain below 500 lines.
 - Semantic rules that JSON Schema cannot express are documented with `$comment` and enforced by `@v31m4/contracts`.
 
 ## Dependency graph

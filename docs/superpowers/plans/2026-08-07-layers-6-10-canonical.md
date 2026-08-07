@@ -53,12 +53,12 @@
 - Consumes: Layer 4 ports and domain public API.
 - Produces: `SqliteUnitOfWork`, repository implementations, `SqliteOutbox`, `SqliteIdempotencyStore`, `ContentAddressedArtifactStore`, and `SqliteBackupStore`.
 
-- [ ] Write failing real-SQLite tests for empty startup, ordered migrations, rollback, nested transaction rejection, compare-and-swap, project scoping, immutable append conflicts, and atomic outbox commits.
-- [ ] Implement migrations and unit-of-work transaction ownership.
-- [ ] Implement mutable and append-only repositories with exact revision behavior.
-- [ ] Write failing tests for duplicate outbox delivery, restart recovery, artifact deduplication, partial writes, hash mismatch, corruption, backup tampering, and restore rollback.
-- [ ] Implement transactional outbox, idempotency records, content-addressed artifacts, and backup/restore.
-- [ ] Run focused and complete gates, update documentation/ADRs/evidence, and commit `feat: add durable persistence and artifact layer`.
+- [x] Write failing real-SQLite tests for empty startup, ordered migrations, rollback, nested transaction rejection, compare-and-swap, project scoping, immutable append conflicts, and atomic outbox commits.
+- [x] Implement migrations and unit-of-work transaction ownership.
+- [x] Implement mutable and append-only repositories with exact revision behavior.
+- [x] Write failing tests for duplicate outbox delivery, restart recovery, artifact deduplication, partial writes, hash mismatch, corruption, backup tampering, and restore rollback.
+- [x] Implement transactional outbox, idempotency records, content-addressed artifacts, and backup/restore.
+- [x] Run focused and complete gates, update documentation/ADRs/evidence, and commit `feat: add durable persistence and artifact layer`.
 
 ### Task 3: Layer 8 supervised adapter infrastructure
 

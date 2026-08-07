@@ -29,6 +29,11 @@
 | `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, file-size checks, services, and use cases |
 | `/packages/contracts/src/forbidden-key-guard.ts` | Contract core | Prototype-pollution property-name guard for external message boundaries |
 | Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
+| `/packages/infrastructure/src/database` | Persistence infrastructure | SQLite authority, migrations, revisions, records, and durable idempotency |
+| `/packages/infrastructure/src/events` | Event infrastructure | Ordered transactional outbox and publication state |
+| `/packages/infrastructure/src/artifacts` | Artifact infrastructure | Atomic SHA-256 content-addressed artifact storage |
+| `/packages/infrastructure/src/backup` | Recovery infrastructure | Verified SQLite backup manifests and staged restore |
+| `/packages/infrastructure/tests` | Infrastructure verification | Real SQLite, concurrency, rollback, outbox, artifact, backup, and architecture tests |
 
 ## Current dependency graph
 

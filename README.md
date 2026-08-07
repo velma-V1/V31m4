@@ -4,12 +4,13 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Application Use Cases Layer 6**. The implemented code contains
+The repository is in **Persistence and Artifacts Layer 7**. The implemented code contains
 repository governance, the immutable domain model, strict external contracts, seven
 portable JSON Schemas, the complete infrastructure-free application port boundary, and the
 nine deterministic services and 21 transactional use cases built on those ports. Layers
-1–6 are dependency-backed and regression tested against the pinned toolchain.
-Persistence implementations, runtime interfaces, adapters, plugins,
+1–7 are dependency-backed and regression tested against the pinned toolchain. SQLite
+units of work, revisions, durable idempotency/outbox records, content-addressed artifacts,
+and verified backup/restore are implemented. Runtime interfaces, adapters, plugins,
 laboratories, and production workflows remain intentionally absent.
 
 ## Prerequisites
@@ -90,5 +91,10 @@ Layer 5 services (deterministic, infrastructure-free decision and planning funct
 Layer 6 exports 21 use cases covering projects, missions, planning, durable jobs, solver
 and verification workflows, issue repair, champion delivery, controlled learning,
 practice/avatar progression, plugins, models, and tools.
+
+### `@v31m4/infrastructure`
+
+Provides the Layer 7 SQLite transaction and record substrate, transactional outbox,
+durable idempotency store, atomic SHA-256 artifact storage, and verified backup/restore.
 
 The package imports only the public `@v31m4/domain` API.

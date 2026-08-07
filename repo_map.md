@@ -2,12 +2,14 @@
 
 ## Current State
 
-**Layer:** Application Use Cases Layer 6
+**Layer:** Persistence and Artifacts Layer 7
 **Branch:** `canonical/layers-6-10`
 **Parent layer:** hardened Layer 5 `5746e5f2571a08dea3cce0493adeac92ae025135`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
 
-Layer 6 adds 21 transactional use cases on the hardened Layer 5 services and ports. The
+Layer 7 adds real SQLite transactions, revisioned/append-only records, transactional
+outbox and idempotency storage, content-addressed artifacts, and verified backup/restore
+on the canonical Layer 6. The
 superseded Layer 6 was used only as reference and reconciled according to
 `docs/reviews/layer-6-reconciliation-matrix.md`.
 
@@ -17,7 +19,7 @@ superseded Layer 6 was used only as reference and reconciled according to
 packages/
 ├── domain/                              # Layer 1-2: primitives and 23 immutable entities
 ├── contracts/                           # Layer 3: strict APIs, events, manifests, RPC, + forbidden-key guard
-└── application/
+├── application/
     ├── src/
     │   ├── index.ts                     # public application API (ports + services)
     │   ├── application-json.ts
@@ -38,6 +40,7 @@ packages/
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
     └── tests/                            # Layer 4–6 verification
+└── infrastructure/                      # Layer 7 SQLite, artifacts, outbox, backup
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/                                    # Architecture, maps, versioning, plans, and the Layer 1-5 improvement ledger
@@ -63,14 +66,15 @@ docs/                                    # Architecture, maps, versioning, plans
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–6 regression:** **265 passing cases across 51 test files**.
+- **Full Layer 1–7 regression:** **276 passing cases across 56 test files**.
+- **Layer 7** real-infrastructure regression: **11 passing cases across 5 test files**.
 - **Typecheck:** `pnpm typecheck` → 3/3 packages pass. **Build:** `pnpm build` → 3/3 pass. Application declaration emission: **41 `.d.ts` modules, 0 errors**.
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**265 cases across 51 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**276 cases across 56 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
@@ -81,7 +85,6 @@ lines and no file exceeds 500.
 
 ### Not implemented
 
-No infrastructure implementations, database schema, artifact
-implementation, runtime API server, desktop, CLI, adapter-protocol package,
+No process/adapter infrastructure, runtime API server, desktop, CLI, adapter-protocol package,
 model/tool/kernel adapters, plugin SDK, plugins, laboratories, or production workflows
 exist.
