@@ -1,12 +1,12 @@
 import { z } from "zod";
 import {
   addDuplicateStringIssue,
-  type ContractRefinementContext,
   apiRequestMetadataShape,
   apiResponseMetadataShape,
-  capabilityIdSchema,
+  type ContractRefinementContext,
   canonicalIdSchema,
   canonicalNameSchema,
+  capabilityIdSchema,
   contractVersionSchema,
   paginationRequestSchema,
   paginationResultSchema,
@@ -55,7 +55,11 @@ export const workflowStageSchema = z
   .superRefine((value, context) => {
     addDuplicateStringIssue(value.dependsOn, context, ["dependsOn"], "Workflow dependencies");
     if (value.dependsOn.includes(value.id)) {
-      context.addIssue({ code: "custom", message: "Workflow stage cannot depend on itself.", path: ["dependsOn"] });
+      context.addIssue({
+        code: "custom",
+        message: "Workflow stage cannot depend on itself.",
+        path: ["dependsOn"],
+      });
     }
   });
 
@@ -103,7 +107,11 @@ function validateWorkflowGraph(
 
   for (const stageId of stageIds) {
     if (!visit(stageId)) {
-      context.addIssue({ code: "custom", message: "Workflow dependency graph must be acyclic.", path: ["stages"] });
+      context.addIssue({
+        code: "custom",
+        message: "Workflow dependency graph must be acyclic.",
+        path: ["stages"],
+      });
       break;
     }
   }
@@ -170,11 +178,25 @@ export const pluginProfileSchema = z
   .strict()
   .superRefine((value, context) => {
     addDuplicateStringIssue(value.capabilities, context, ["capabilities"], "Capabilities");
-    addDuplicateStringIssue(value.requiredToolIds, context, ["requiredToolIds"], "Required tool IDs");
-    addDuplicateStringIssue(value.optionalToolIds, context, ["optionalToolIds"], "Optional tool IDs");
+    addDuplicateStringIssue(
+      value.requiredToolIds,
+      context,
+      ["requiredToolIds"],
+      "Required tool IDs",
+    );
+    addDuplicateStringIssue(
+      value.optionalToolIds,
+      context,
+      ["optionalToolIds"],
+      "Optional tool IDs",
+    );
     const required = new Set(value.requiredToolIds);
     if (value.optionalToolIds.some((toolId) => required.has(toolId))) {
-      context.addIssue({ code: "custom", message: "Tool requirement sets must be disjoint.", path: ["optionalToolIds"] });
+      context.addIssue({
+        code: "custom",
+        message: "Tool requirement sets must be disjoint.",
+        path: ["optionalToolIds"],
+      });
     }
   });
 

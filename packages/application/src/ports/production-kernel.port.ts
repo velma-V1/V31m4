@@ -1,4 +1,11 @@
-import type { CheckpointId, JobId, MissionId, ProjectId, ResourceBudget, Score } from "@v31m4/domain";
+import type {
+  CheckpointId,
+  JobId,
+  MissionId,
+  ProjectId,
+  ResourceBudget,
+  Score,
+} from "@v31m4/domain";
 import type { ApplicationJsonObject } from "../application-json.js";
 import type { OperationContext } from "../operation-context.js";
 import type { OperationReceipt, PortHealth } from "../port-types.js";
@@ -33,8 +40,16 @@ export interface KernelStatus {
 export interface ProductionKernelPort {
   start(request: KernelStartRequest, context: OperationContext): Promise<OperationReceipt>;
   checkpoint(jobId: JobId, context: OperationContext): Promise<CheckpointId>;
-  resume(jobId: JobId, checkpointId: CheckpointId, context: OperationContext): Promise<OperationReceipt>;
-  stop(jobId: JobId, mode: "finish_and_stop" | "emergency_stop", context: OperationContext): Promise<void>;
+  resume(
+    jobId: JobId,
+    checkpointId: CheckpointId,
+    context: OperationContext,
+  ): Promise<OperationReceipt>;
+  stop(
+    jobId: JobId,
+    mode: "finish_and_stop" | "emergency_stop",
+    context: OperationContext,
+  ): Promise<void>;
   status(jobId: JobId, context: OperationContext): Promise<KernelStatus>;
   health(context: OperationContext): Promise<PortHealth>;
 }

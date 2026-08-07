@@ -4,7 +4,23 @@
   "title": "V31M4 Training Packet",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "missionId", "status", "taskArtifactId", "contextArtifactIds", "originalCandidateIds", "preferredCandidateId", "rejectedCandidateIds", "issueIds", "repairIds", "verificationEvidenceIds", "trainingViews", "provenanceHash", "evaluationLeakageChecked"],
+  "required": [
+    "schemaVersion",
+    "id",
+    "missionId",
+    "status",
+    "taskArtifactId",
+    "contextArtifactIds",
+    "originalCandidateIds",
+    "preferredCandidateId",
+    "rejectedCandidateIds",
+    "issueIds",
+    "repairIds",
+    "verificationEvidenceIds",
+    "trainingViews",
+    "provenanceHash",
+    "evaluationLeakageChecked"
+  ],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
     "id": { "$ref": "#/$defs/id" },
@@ -18,21 +34,82 @@
     "issueIds": { "$ref": "#/$defs/idArray" },
     "repairIds": { "$ref": "#/$defs/idArray" },
     "verificationEvidenceIds": { "$ref": "#/$defs/nonEmptyIdArray" },
-    "trainingViews": { "type": "array", "items": { "$ref": "#/$defs/trainingView" }, "minItems": 1, "maxItems": 10000 },
+    "trainingViews": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/trainingView" },
+      "minItems": 1,
+      "maxItems": 10000
+    },
     "provenanceHash": { "$ref": "#/$defs/hash" },
     "evaluationLeakageChecked": { "type": "boolean" }
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
-    "timestamp": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
     "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$" },
-    "nonEmptyText": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$" },
-    "idArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 10000 },
-    "nonEmptyIdArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "minItems": 1, "maxItems": 10000 },
-    "jsonValue": { "oneOf": [{ "type": ["string", "number", "boolean", "null"] }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } }, "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] },
-    "trainingView": { "type": "object", "additionalProperties": false, "required": ["kind", "artifactId"], "properties": { "kind": { "enum": ["sft", "preference", "failure_diagnosis", "repair", "tool_use", "verification", "planning"] }, "artifactId": { "$ref": "#/$defs/id" } } }
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$"
+    },
+    "nonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$"
+    },
+    "idArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "maxItems": 10000
+    },
+    "nonEmptyIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "trainingView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifactId"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "sft",
+            "preference",
+            "failure_diagnosis",
+            "repair",
+            "tool_use",
+            "verification",
+            "planning"
+          ]
+        },
+        "artifactId": { "$ref": "#/$defs/id" }
+      }
+    }
   },
   "$comment": "Preferred-candidate membership, rejected-candidate separation, and promotion leakage rules are enforced by @v31m4/contracts."
 }

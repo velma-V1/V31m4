@@ -1,12 +1,12 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   CandidateId,
-  ChampionDecisionId,
-  EvidenceId,
-  MissionId,
   type CandidateId as CandidateIdType,
+  ChampionDecisionId,
   type ChampionDecisionId as ChampionDecisionIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  MissionId,
   type MissionId as MissionIdType,
 } from "../value-objects/ids.js";
 
@@ -137,7 +137,9 @@ function create(input: {
 }
 
 export const ChampionDecision = Object.freeze({
-  createChampion(input: Omit<Parameters<typeof create>[0], "decision"> & { readonly candidateId: string }): ChampionDecision {
+  createChampion(
+    input: Omit<Parameters<typeof create>[0], "decision"> & { readonly candidateId: string },
+  ): ChampionDecision {
     return create({ ...input, decision: "champion" });
   },
 

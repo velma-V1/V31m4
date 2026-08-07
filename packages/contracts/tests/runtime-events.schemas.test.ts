@@ -27,7 +27,8 @@ describe("runtime event contracts", () => {
     } as const;
     expect(runtimeEventSchema.parse(event).type).toBe("job.status_changed");
     expect(
-      runtimeEventSchema.safeParse({ ...event, payload: { ...event.payload, hidden: true } }).success,
+      runtimeEventSchema.safeParse({ ...event, payload: { ...event.payload, hidden: true } })
+        .success,
     ).toBe(false);
   });
 

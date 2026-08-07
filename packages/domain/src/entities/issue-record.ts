@@ -1,10 +1,10 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   CandidateId,
-  EvidenceId,
-  IssueId,
   type CandidateId as CandidateIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  IssueId,
   type IssueId as IssueIdType,
 } from "../value-objects/ids.js";
 
@@ -51,7 +51,11 @@ export const IssueRecord = Object.freeze({
     readonly verificationMethod: string;
     readonly regressionRisk: string;
   }): IssueRecord {
-    assertDomain(SEVERITIES.has(input.severity), "INVALID_ISSUE_RECORD", "Issue severity is invalid.");
+    assertDomain(
+      SEVERITIES.has(input.severity),
+      "INVALID_ISSUE_RECORD",
+      "Issue severity is invalid.",
+    );
     const evidenceIds = input.evidenceIds.map((id) => EvidenceId.parse(id));
     assertDomain(
       evidenceIds.length > 0 && new Set(evidenceIds).size === evidenceIds.length,
@@ -78,12 +82,20 @@ export const IssueRecord = Object.freeze({
   },
 
   accept(issue: IssueRecord): IssueRecord {
-    assertDomain(issue.status === "open", "INVALID_STATE_TRANSITION", "Only open issues can be accepted.");
+    assertDomain(
+      issue.status === "open",
+      "INVALID_STATE_TRANSITION",
+      "Only open issues can be accepted.",
+    );
     return Object.freeze({ ...issue, status: "accepted" as const });
   },
 
   reject(issue: IssueRecord): IssueRecord {
-    assertDomain(issue.status === "open", "INVALID_STATE_TRANSITION", "Only open issues can be rejected.");
+    assertDomain(
+      issue.status === "open",
+      "INVALID_STATE_TRANSITION",
+      "Only open issues can be rejected.",
+    );
     return Object.freeze({ ...issue, status: "rejected" as const });
   },
 

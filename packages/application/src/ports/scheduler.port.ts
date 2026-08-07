@@ -16,7 +16,11 @@ export interface ScheduledWork {
 }
 
 export interface SchedulerPort {
-  schedule(work: ScheduledWork, condition: WriteCondition, context: OperationContext): Promise<OperationReceipt>;
+  schedule(
+    work: ScheduledWork,
+    condition: WriteCondition,
+    context: OperationContext,
+  ): Promise<OperationReceipt>;
   cancel(workId: string, context: OperationContext): Promise<void>;
   get(workId: string, context: OperationContext): Promise<ScheduledWork | null>;
   list(request: PortPageRequest, context: OperationContext): Promise<PortPage<ScheduledWork>>;

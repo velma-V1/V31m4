@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  cloneAndFreezeApplicationJson,
-  isApplicationJsonValue,
-} from "../src/application-json.js";
+import { cloneAndFreezeApplicationJson, isApplicationJsonValue } from "../src/application-json.js";
 
 describe("application JSON values", () => {
   it("accepts finite acyclic JSON and returns recursively frozen copies", () => {

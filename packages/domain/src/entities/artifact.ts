@@ -2,10 +2,10 @@ import { assertDomain } from "../domain-errors.js";
 import { ContentHash, type ContentHash as ContentHashType } from "../value-objects/content-hash.js";
 import {
   ArtifactId,
-  JobId,
-  ProjectId,
   type ArtifactId as ArtifactIdType,
+  JobId,
   type JobId as JobIdType,
+  ProjectId,
   type ProjectId as ProjectIdType,
 } from "../value-objects/ids.js";
 import { SafePath, type SafePath as SafePathType } from "../value-objects/safe-path.js";

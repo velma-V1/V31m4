@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  Checkpoint,
-  DomainError,
-  Job,
-} from "../src/index.js";
+import { Checkpoint, DomainError, Job } from "../src/index.js";
 
 const T0 = "2026-08-06T20:00:00.000Z";
 const T1 = "2026-08-06T20:01:00.000Z";
@@ -35,7 +31,6 @@ describe("job and checkpoint domain", () => {
     expect(completed.event.type).toBe("job.completed");
     expect(Object.isFrozen(completed.event.payload)).toBe(true);
   });
-
 
   it("resumes only paused jobs and emits a resumed event", () => {
     const created = Job.create({
@@ -96,9 +91,9 @@ describe("job and checkpoint domain", () => {
       occurredAt: T0,
     });
 
-    expect(() =>
-      Job.complete(created.job, { eventId: "event-2", occurredAt: T1 }),
-    ).toThrowError(DomainError);
+    expect(() => Job.complete(created.job, { eventId: "event-2", occurredAt: T1 })).toThrowError(
+      DomainError,
+    );
   });
 
   it("requires evidence for verified checkpoints", () => {

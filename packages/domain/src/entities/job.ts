@@ -2,12 +2,12 @@ import { assertDomain } from "../domain-errors.js";
 import { createDomainEvent, type DomainEvent } from "../domain-events.js";
 import {
   CheckpointId,
-  JobId,
-  MissionId,
-  ProjectId,
   type CheckpointId as CheckpointIdType,
+  JobId,
   type JobId as JobIdType,
+  MissionId,
   type MissionId as MissionIdType,
+  ProjectId,
   type ProjectId as ProjectIdType,
 } from "../value-objects/ids.js";
 
@@ -192,8 +192,17 @@ export const Job = Object.freeze({
     return performTransition(job, "running", ["paused"], context, "job.resumed");
   },
 
-  updateProgress(job: Job, context: JobTransitionContext & { readonly progress: number }): JobTransitionResult {
-    return performTransition(job, job.status, ["running", "checkpointing"], context, "job.progressed");
+  updateProgress(
+    job: Job,
+    context: JobTransitionContext & { readonly progress: number },
+  ): JobTransitionResult {
+    return performTransition(
+      job,
+      job.status,
+      ["running", "checkpointing"],
+      context,
+      "job.progressed",
+    );
   },
 
   beginCheckpoint(job: Job, context: JobTransitionContext): JobTransitionResult {
@@ -253,13 +262,27 @@ export const Job = Object.freeze({
     return performTransition(
       job,
       "failed",
-      ["created", "queued", "running", "checkpointing", "paused", "finish_stopping", "emergency_stopping"],
+      [
+        "created",
+        "queued",
+        "running",
+        "checkpointing",
+        "paused",
+        "finish_stopping",
+        "emergency_stopping",
+      ],
       context,
       "job.failed",
     );
   },
 
   cancel(job: Job, context: JobTransitionContext): JobTransitionResult {
-    return performTransition(job, "cancelled", ["created", "queued", "paused", "emergency_stopping"], context, "job.cancelled");
+    return performTransition(
+      job,
+      "cancelled",
+      ["created", "queued", "paused", "emergency_stopping"],
+      context,
+      "job.cancelled",
+    );
   },
 });

@@ -53,7 +53,12 @@ export const artifactSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.parentArtifactIds, context, ["parentArtifactIds"], "Parent artifact IDs");
+    addDuplicateStringIssue(
+      value.parentArtifactIds,
+      context,
+      ["parentArtifactIds"],
+      "Parent artifact IDs",
+    );
     if (value.parentArtifactIds.includes(value.id)) {
       context.addIssue({
         code: "custom",
@@ -181,7 +186,11 @@ export const listEvidenceResponseSchema = z
   .strict()
   .superRefine((value, context) => {
     if (!hasUniqueStrings(value.evidence.map((item) => item.id))) {
-      context.addIssue({ code: "custom", message: "Evidence records must be unique.", path: ["evidence"] });
+      context.addIssue({
+        code: "custom",
+        message: "Evidence records must be unique.",
+        path: ["evidence"],
+      });
     }
   });
 

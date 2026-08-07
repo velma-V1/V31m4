@@ -103,7 +103,11 @@ export const SafePath = Object.freeze({
   },
 
   join(base: SafePath, ...segments: readonly string[]): SafePath {
-    assertDomain(segments.length > 0, "INVALID_SAFE_PATH", "At least one path segment is required.");
+    assertDomain(
+      segments.length > 0,
+      "INVALID_SAFE_PATH",
+      "At least one path segment is required.",
+    );
     return SafePath.parse([base, ...segments].join("/"));
   },
 

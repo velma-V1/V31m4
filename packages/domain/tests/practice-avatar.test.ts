@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  AvatarState,
-  DomainError,
-  PracticeTask,
-  ResourceBudget,
-} from "../src/index.js";
+import { AvatarState, DomainError, PracticeTask, ResourceBudget } from "../src/index.js";
 
 const T0 = "2026-08-06T20:00:00.000Z";
 
@@ -26,11 +21,7 @@ describe("practice and avatar domain", () => {
     const running = PracticeTask.start(task);
     const checkpointed = PracticeTask.checkpoint(running, ["artifact-trace-1"]);
     const resumed = PracticeTask.start(checkpointed);
-    const completed = PracticeTask.complete(
-      resumed,
-      ["artifact-trace-2"],
-      ["evidence-1"],
-    );
+    const completed = PracticeTask.complete(resumed, ["artifact-trace-2"], ["evidence-1"]);
     const quarantined = PracticeTask.quarantine(completed);
 
     expect(quarantined.status).toBe("quarantined");
@@ -53,9 +44,7 @@ describe("practice and avatar domain", () => {
     });
     const running = PracticeTask.start(task);
 
-    expect(() => PracticeTask.complete(running, ["artifact-trace"], [])).toThrowError(
-      DomainError,
-    );
+    expect(() => PracticeTask.complete(running, ["artifact-trace"], [])).toThrowError(DomainError);
   });
 
   it("creates evidence-backed permanent avatar unlocks", () => {

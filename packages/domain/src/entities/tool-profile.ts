@@ -1,8 +1,8 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   AdapterId,
-  ToolId,
   type AdapterId as AdapterIdType,
+  ToolId,
   type ToolId as ToolIdType,
 } from "../value-objects/ids.js";
 import type { ProfileAvailability } from "./model-profile.js";

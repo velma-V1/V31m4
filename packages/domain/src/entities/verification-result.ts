@@ -1,14 +1,14 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   CandidateId,
-  EvidenceId,
-  MissionId,
-  VerificationPlanId,
-  VerificationResultId,
   type CandidateId as CandidateIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  MissionId,
   type MissionId as MissionIdType,
+  VerificationPlanId,
   type VerificationPlanId as VerificationPlanIdType,
+  VerificationResultId,
   type VerificationResultId as VerificationResultIdType,
 } from "../value-objects/ids.js";
 import type { EvidenceKind, EvidenceStatus } from "./evidence-record.js";

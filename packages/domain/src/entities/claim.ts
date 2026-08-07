@@ -1,10 +1,10 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   ClaimId,
-  EvidenceId,
-  ProjectId,
   type ClaimId as ClaimIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  ProjectId,
   type ProjectId as ProjectIdType,
 } from "../value-objects/ids.js";
 

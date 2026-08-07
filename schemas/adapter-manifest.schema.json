@@ -33,16 +33,124 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
-    "timestamp": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
     "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$" },
-    "nonEmptyText": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$" },
-    "idArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 10000 },
-    "nonEmptyIdArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "minItems": 1, "maxItems": 10000 },
-    "jsonValue": { "oneOf": [{ "type": ["string", "number", "boolean", "null"] }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } }, "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] },
-    "entrypoint": { "type": "object", "additionalProperties": false, "required": ["command", "args"], "properties": { "command": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000-\\u001F;&|><`]+$" }, "args": { "type": "array", "items": { "type": "string", "maxLength": 4096, "pattern": "^[^\\u0000-\\u001F]*$" }, "maxItems": 1000 }, "workingDirectory": { "$ref": "#/$defs/safePath" } } },
-    "permissions": { "type": "object", "additionalProperties": false, "required": ["filesystem", "network", "process", "secretNames"], "properties": { "filesystem": { "type": "array", "items": { "enum": ["project_read", "working_copy_write", "artifact_read", "artifact_write", "cache_read", "cache_write"] }, "uniqueItems": true, "maxItems": 16 }, "network": { "type": "array", "items": { "type": "string", "format": "uri", "maxLength": 2048 }, "uniqueItems": true, "maxItems": 1000 }, "process": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^\\u0000-\\u001F;&|><`]+$" }, "uniqueItems": true, "maxItems": 1000 }, "secretNames": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }, "uniqueItems": true, "maxItems": 1000 } } },
-    "health": { "type": "object", "additionalProperties": false, "required": ["timeoutMs", "intervalMs"], "properties": { "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 900000 }, "intervalMs": { "type": "integer", "minimum": 1000, "maximum": 86400000 } } }
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$"
+    },
+    "nonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$"
+    },
+    "idArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "maxItems": 10000
+    },
+    "nonEmptyIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "entrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "args"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000-\\u001F;&|><`]+$"
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 4096, "pattern": "^[^\\u0000-\\u001F]*$" },
+          "maxItems": 1000
+        },
+        "workingDirectory": { "$ref": "#/$defs/safePath" }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "network", "process", "secretNames"],
+      "properties": {
+        "filesystem": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "project_read",
+              "working_copy_write",
+              "artifact_read",
+              "artifact_write",
+              "cache_read",
+              "cache_write"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 16
+        },
+        "network": {
+          "type": "array",
+          "items": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "uniqueItems": true,
+          "maxItems": 1000
+        },
+        "process": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\u0000-\\u001F;&|><`]+$"
+          },
+          "uniqueItems": true,
+          "maxItems": 1000
+        },
+        "secretNames": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+          "uniqueItems": true,
+          "maxItems": 1000
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeoutMs", "intervalMs"],
+      "properties": {
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 900000 },
+        "intervalMs": { "type": "integer", "minimum": 1000, "maximum": 86400000 }
+      }
+    }
   }
 }

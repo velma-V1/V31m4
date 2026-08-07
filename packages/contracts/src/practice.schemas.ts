@@ -35,7 +35,12 @@ export const practiceTaskSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.traceArtifactIds, context, ["traceArtifactIds"], "Trace artifact IDs");
+    addDuplicateStringIssue(
+      value.traceArtifactIds,
+      context,
+      ["traceArtifactIds"],
+      "Trace artifact IDs",
+    );
     addDuplicateStringIssue(value.evidenceIds, context, ["evidenceIds"], "Practice evidence IDs");
     if (
       (value.status === "completed" || value.status === "quarantined") &&

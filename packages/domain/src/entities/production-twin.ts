@@ -1,12 +1,12 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   EvidenceId,
-  ProjectId,
-  TwinEdgeId,
-  TwinNodeId,
   type EvidenceId as EvidenceIdType,
+  ProjectId,
   type ProjectId as ProjectIdType,
+  TwinEdgeId,
   type TwinEdgeId as TwinEdgeIdType,
+  TwinNodeId,
   type TwinNodeId as TwinNodeIdType,
 } from "../value-objects/ids.js";
 
@@ -88,7 +88,11 @@ export const ProductionTwin = Object.freeze({
     readonly label: string;
     readonly externalReference?: string;
   }): ProductionTwinNode {
-    assertDomain(NODE_KINDS.has(input.kind), "INVALID_PRODUCTION_TWIN", "Twin node kind is invalid.");
+    assertDomain(
+      NODE_KINDS.has(input.kind),
+      "INVALID_PRODUCTION_TWIN",
+      "Twin node kind is invalid.",
+    );
     assertDomain(
       input.label.length > 0 && input.label === input.label.trim() && input.label.length <= 240,
       "INVALID_PRODUCTION_TWIN",
@@ -122,7 +126,11 @@ export const ProductionTwin = Object.freeze({
     readonly kind: TwinEdgeKind;
     readonly evidenceIds?: readonly string[];
   }): ProductionTwinEdge {
-    assertDomain(EDGE_KINDS.has(input.kind), "INVALID_PRODUCTION_TWIN", "Twin edge kind is invalid.");
+    assertDomain(
+      EDGE_KINDS.has(input.kind),
+      "INVALID_PRODUCTION_TWIN",
+      "Twin edge kind is invalid.",
+    );
     const fromNodeId = TwinNodeId.parse(input.fromNodeId);
     const toNodeId = TwinNodeId.parse(input.toNodeId);
     assertDomain(

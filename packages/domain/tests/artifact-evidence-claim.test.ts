@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  Artifact,
-  Claim,
-  DomainError,
-  EvidenceRecord,
-} from "../src/index.js";
+import { Artifact, Claim, DomainError, EvidenceRecord } from "../src/index.js";
 
 const T0 = "2026-08-06T20:00:00.000Z";
 const T1 = "2026-08-06T20:01:00.000Z";

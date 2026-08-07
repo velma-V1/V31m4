@@ -2,18 +2,18 @@ import { assertDomain } from "../domain-errors.js";
 import { ContentHash, type ContentHash as ContentHashType } from "../value-objects/content-hash.js";
 import {
   ArtifactId,
-  CandidateId,
-  EvidenceId,
-  IssueId,
-  MissionId,
-  RepairId,
-  TrainingPacketId,
   type ArtifactId as ArtifactIdType,
+  CandidateId,
   type CandidateId as CandidateIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  IssueId,
   type IssueId as IssueIdType,
+  MissionId,
   type MissionId as MissionIdType,
+  RepairId,
   type RepairId as RepairIdType,
+  TrainingPacketId,
   type TrainingPacketId as TrainingPacketIdType,
 } from "../value-objects/ids.js";
 
@@ -59,7 +59,11 @@ const VIEW_KINDS = new Set<TrainingViewKind>([
   "planning",
 ]);
 
-function unique<T extends string>(values: readonly T[], field: string, require = false): readonly T[] {
+function unique<T extends string>(
+  values: readonly T[],
+  field: string,
+  require = false,
+): readonly T[] {
   assertDomain(
     (!require || values.length > 0) && new Set(values).size === values.length,
     "INVALID_TRAINING_PACKET",
@@ -80,7 +84,10 @@ export const TrainingPacket = Object.freeze({
     readonly issueIds?: readonly string[];
     readonly repairIds?: readonly string[];
     readonly verificationEvidenceIds: readonly string[];
-    readonly trainingViews: readonly { readonly kind: TrainingViewKind; readonly artifactId: string }[];
+    readonly trainingViews: readonly {
+      readonly kind: TrainingViewKind;
+      readonly artifactId: string;
+    }[];
     readonly provenanceHash: string;
     readonly evaluationLeakageChecked: boolean;
   }): TrainingPacket {

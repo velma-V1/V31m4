@@ -15,6 +15,10 @@ export interface VerificationExecutionResult {
 
 export interface VerifierPort {
   supports(verifierId: string, context: OperationContext): Promise<boolean>;
-  execute(plan: VerificationPlan, candidate: SolverCandidate, context: OperationContext): Promise<VerificationExecutionResult>;
+  execute(
+    plan: VerificationPlan,
+    candidate: SolverCandidate,
+    context: OperationContext,
+  ): Promise<VerificationExecutionResult>;
   cancel(planId: string, context: OperationContext): Promise<void>;
 }

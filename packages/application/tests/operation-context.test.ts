@@ -27,9 +27,18 @@ describe("OperationContext", () => {
 
   it("rejects invalid identifiers, duplicate roles, and reversed deadlines", () => {
     expect(() => createOperationContext({ ...base, requestId: "bad id" })).toThrow();
-    expect(() => createOperationContext({ ...base, actor: { ...base.actor, kind: "invalid" as "user" } })).toThrow();
-    expect(() => createOperationContext({ ...base, actor: { ...base.actor, roles: ["operator", "operator"] } })).toThrow();
-    expect(() => createOperationContext({ ...base, deadlineAt: "2026-08-06T19:59:59.999Z" })).toThrow();
+    expect(() =>
+      createOperationContext({ ...base, actor: { ...base.actor, kind: "invalid" as "user" } }),
+    ).toThrow();
+    expect(() =>
+      createOperationContext({
+        ...base,
+        actor: { ...base.actor, roles: ["operator", "operator"] },
+      }),
+    ).toThrow();
+    expect(() =>
+      createOperationContext({ ...base, deadlineAt: "2026-08-06T19:59:59.999Z" }),
+    ).toThrow();
   });
 
   it("enforces cancellation and deadlines", () => {

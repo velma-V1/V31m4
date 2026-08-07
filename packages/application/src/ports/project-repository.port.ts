@@ -4,7 +4,20 @@ import type { PortPage, PortPageRequest, Versioned, WriteCondition } from "../po
 import type { UnitOfWorkTransaction } from "./unit-of-work.port.js";
 
 export interface ProjectRepositoryPort {
-  getById(id: ProjectId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Project> | null>;
-  list(request: PortPageRequest, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<Project>>>;
-  save(project: Project, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<Project>>;
+  getById(
+    id: ProjectId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Project> | null>;
+  list(
+    request: PortPageRequest,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<Project>>>;
+  save(
+    project: Project,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<Project>>;
 }

@@ -2,12 +2,12 @@ import { assertDomain } from "../domain-errors.js";
 import { ContentHash, type ContentHash as ContentHashType } from "../value-objects/content-hash.js";
 import {
   ArtifactId,
-  CheckpointId,
-  EvidenceId,
-  JobId,
   type ArtifactId as ArtifactIdType,
+  CheckpointId,
   type CheckpointId as CheckpointIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  JobId,
   type JobId as JobIdType,
 } from "../value-objects/ids.js";
 

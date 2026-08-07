@@ -24,11 +24,32 @@ export interface ArtifactWriteRequest {
 }
 
 export interface ArtifactStorePort {
-  write(request: ArtifactWriteRequest, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<Artifact>>;
-  get(id: ArtifactId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Artifact> | null>;
-  findByHash(hash: ContentHash, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Artifact> | null>;
-  listByProject(projectId: ProjectId, request: PortPageRequest, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<Artifact>>>;
+  write(
+    request: ArtifactWriteRequest,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<Artifact>>;
+  get(
+    id: ArtifactId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Artifact> | null>;
+  findByHash(
+    hash: ContentHash,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Artifact> | null>;
+  listByProject(
+    projectId: ProjectId,
+    request: PortPageRequest,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<Artifact>>>;
   open(id: ArtifactId, context: OperationContext): Promise<AsyncIterable<Uint8Array>>;
   verify(id: ArtifactId, context: OperationContext): Promise<boolean>;
-  discardUncommitted(id: ArtifactId, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<void>;
+  discardUncommitted(
+    id: ArtifactId,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<void>;
 }

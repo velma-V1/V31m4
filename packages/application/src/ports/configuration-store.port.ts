@@ -12,8 +12,25 @@ export interface ConfigurationEntry {
 }
 
 export interface ConfigurationStorePort {
-  get(key: string, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<ConfigurationEntry> | null>;
-  save(entry: ConfigurationEntry, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<ConfigurationEntry>>;
-  list(prefix: string, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Readonly<Record<string, Versioned<ConfigurationEntry>>>>;
-  validate(entry: ConfigurationEntry, schema: ApplicationJsonObject, context: OperationContext): Promise<void>;
+  get(
+    key: string,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<ConfigurationEntry> | null>;
+  save(
+    entry: ConfigurationEntry,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<ConfigurationEntry>>;
+  list(
+    prefix: string,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Readonly<Record<string, Versioned<ConfigurationEntry>>>>;
+  validate(
+    entry: ConfigurationEntry,
+    schema: ApplicationJsonObject,
+    context: OperationContext,
+  ): Promise<void>;
 }

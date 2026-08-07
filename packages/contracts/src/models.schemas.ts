@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { capabilityScoreSchema, solverConfigurationSchema } from "./capabilities.schemas.js";
 import {
-  addDuplicateStringIssue,
   adapterIdSchema,
+  addDuplicateStringIssue,
   apiRequestMetadataShape,
   apiResponseMetadataShape,
   artifactIdSchema,
@@ -15,7 +16,6 @@ import {
   paginationResultSchema,
   safeJsonObjectSchema,
 } from "./common.schemas.js";
-import { capabilityScoreSchema, solverConfigurationSchema } from "./capabilities.schemas.js";
 
 export const profileAvailabilitySchema = z.enum(["available", "unavailable", "degraded"]);
 export const modelModalitySchema = z.enum(["text", "image", "audio", "video", "embedding"]);
@@ -88,15 +88,32 @@ export const modelInvocationResultSchema = z
   .strict()
   .superRefine((value, context) => {
     if (Date.parse(value.completedAt) < Date.parse(value.startedAt)) {
-      context.addIssue({ code: "custom", message: "Model invocation completion cannot precede start.", path: ["completedAt"] });
+      context.addIssue({
+        code: "custom",
+        message: "Model invocation completion cannot precede start.",
+        path: ["completedAt"],
+      });
     }
     if (value.status === "completed" && value.responseArtifactId === undefined) {
-      context.addIssue({ code: "custom", message: "Completed model invocation requires a response artifact.", path: ["responseArtifactId"] });
+      context.addIssue({
+        code: "custom",
+        message: "Completed model invocation requires a response artifact.",
+        path: ["responseArtifactId"],
+      });
     }
     if ((value.status === "failed") !== (value.error !== undefined)) {
-      context.addIssue({ code: "custom", message: "Only failed model invocations carry an error.", path: ["error"] });
+      context.addIssue({
+        code: "custom",
+        message: "Only failed model invocations carry an error.",
+        path: ["error"],
+      });
     }
-    addDuplicateStringIssue(value.outputArtifactIds, context, ["outputArtifactIds"], "Output artifact IDs");
+    addDuplicateStringIssue(
+      value.outputArtifactIds,
+      context,
+      ["outputArtifactIds"],
+      "Output artifact IDs",
+    );
   });
 
 export const invokeModelResponseSchema = z

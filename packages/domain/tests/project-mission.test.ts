@@ -35,9 +35,7 @@ describe("project and mission domain", () => {
     });
     const archived = Project.archive(project, T1);
 
-    expect(() => Project.activate(archived, "2026-08-06T20:02:00.000Z")).toThrowError(
-      DomainError,
-    );
+    expect(() => Project.activate(archived, "2026-08-06T20:02:00.000Z")).toThrowError(DomainError);
   });
 
   it("creates an immutable mission with mandatory evidence coverage", () => {

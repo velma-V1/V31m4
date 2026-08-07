@@ -12,15 +12,11 @@ describe("ContentHash", () => {
     expect(ContentHash.equals(hash, ContentHash.parse(VALID_HASH))).toBe(true);
   });
 
-  it.each([
-    "",
-    "a".repeat(63),
-    "a".repeat(65),
-    "A".repeat(64),
-    "g".repeat(64),
-    ` ${VALID_HASH}`,
-  ])("rejects non-canonical SHA-256 content %j", (value) => {
-    expect(() => ContentHash.parse(value)).toThrow();
-    expect(ContentHash.is(value)).toBe(false);
-  });
+  it.each(["", "a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), ` ${VALID_HASH}`])(
+    "rejects non-canonical SHA-256 content %j",
+    (value) => {
+      expect(() => ContentHash.parse(value)).toThrow();
+      expect(ContentHash.is(value)).toBe(false);
+    },
+  );
 });

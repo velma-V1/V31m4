@@ -1,8 +1,5 @@
 import { assertDomain } from "../domain-errors.js";
-import {
-  RequirementId,
-  type RequirementId as RequirementIdType,
-} from "../value-objects/ids.js";
+import { RequirementId, type RequirementId as RequirementIdType } from "../value-objects/ids.js";
 
 export type RequirementPriority = "required" | "important" | "optional";
 export type RequirementSource = "user" | "system" | "plugin" | "derived";

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { WriteConditions } from "../src/index.js";
 import type {
   ApprovalStorePort,
   ArtifactStorePort,
@@ -28,6 +27,7 @@ import type {
   WorkflowRepositoryPort,
   WorkspaceManagerPort,
 } from "../src/index.js";
+import { WriteConditions } from "../src/index.js";
 
 type AllPorts = readonly [
   UnitOfWorkPort,
@@ -58,11 +58,12 @@ type AllPorts = readonly [
   BackupStorePort,
 ];
 
-
 type ProjectSaveTransactionOptional = undefined extends Parameters<ProjectRepositoryPort["save"]>[3]
   ? true
   : false;
-type EvidenceAppendTransactionOptional = undefined extends Parameters<EvidenceRepositoryPort["append"]>[2]
+type EvidenceAppendTransactionOptional = undefined extends Parameters<
+  EvidenceRepositoryPort["append"]
+>[2]
   ? true
   : false;
 type EventPublishTransactionOptional = undefined extends Parameters<EventBusPort["publish"]>[2]

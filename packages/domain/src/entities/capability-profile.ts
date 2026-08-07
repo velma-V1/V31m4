@@ -1,8 +1,8 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   CapabilityId,
-  EvidenceId,
   type CapabilityId as CapabilityIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
 } from "../value-objects/ids.js";
 import { Score, type Score as ScoreType } from "../value-objects/score.js";
@@ -52,10 +52,7 @@ function createScore(input: {
   );
   const [minimum, maximum] = input.difficultyRange;
   assertDomain(
-    Number.isFinite(minimum) &&
-      Number.isFinite(maximum) &&
-      minimum >= 0 &&
-      maximum >= minimum,
+    Number.isFinite(minimum) && Number.isFinite(maximum) && minimum >= 0 && maximum >= minimum,
     "INVALID_CAPABILITY_PROFILE",
     "Capability difficulty range must be finite, non-negative, and ordered.",
   );
@@ -112,7 +109,10 @@ export const CapabilityProfile = Object.freeze({
     });
   },
 
-  record(profile: CapabilityProfile, scoreInput: Parameters<typeof createScore>[0]): CapabilityProfile {
+  record(
+    profile: CapabilityProfile,
+    scoreInput: Parameters<typeof createScore>[0],
+  ): CapabilityProfile {
     assertDomain(
       scoreInput.capabilityId === profile.capabilityId,
       "INVALID_CAPABILITY_PROFILE",

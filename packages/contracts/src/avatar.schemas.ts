@@ -6,8 +6,8 @@ import {
   apiResponseMetadataShape,
   avatarIdSchema,
   avatarItemIdSchema,
-  capabilityIdSchema,
   canonicalNameSchema,
+  capabilityIdSchema,
   evidenceIdSchema,
   isoDateTimeSchema,
   scoreSchema,
@@ -67,7 +67,11 @@ export const achievementRuleSchema = z
         path: ["minimumScores"],
       });
     }
-    if (value.requiredCapabilityIds.some((capabilityId) => value.minimumScores[capabilityId] === undefined)) {
+    if (
+      value.requiredCapabilityIds.some(
+        (capabilityId) => value.minimumScores[capabilityId] === undefined,
+      )
+    ) {
       context.addIssue({
         code: "custom",
         message: "Every required capability needs a minimum score.",
@@ -86,8 +90,18 @@ export const avatarStateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.unlockedItemIds, context, ["unlockedItemIds"], "Unlocked item IDs");
-    addDuplicateStringIssue(value.equippedItemIds, context, ["equippedItemIds"], "Equipped item IDs");
+    addDuplicateStringIssue(
+      value.unlockedItemIds,
+      context,
+      ["unlockedItemIds"],
+      "Unlocked item IDs",
+    );
+    addDuplicateStringIssue(
+      value.equippedItemIds,
+      context,
+      ["equippedItemIds"],
+      "Equipped item IDs",
+    );
     addDuplicateStringIssue(
       value.unlockHistory.map((unlock) => unlock.itemId),
       context,

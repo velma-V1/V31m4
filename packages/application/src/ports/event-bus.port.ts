@@ -4,6 +4,14 @@ import type { PortListener, PortSubscription } from "../port-types.js";
 import type { UnitOfWorkTransaction } from "./unit-of-work.port.js";
 
 export interface EventBusPort {
-  publish(events: readonly DomainEvent[], context: OperationContext, transaction: UnitOfWorkTransaction): Promise<void>;
-  subscribe(eventTypes: readonly string[], listener: PortListener<DomainEvent>, context: OperationContext): Promise<PortSubscription>;
+  publish(
+    events: readonly DomainEvent[],
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<void>;
+  subscribe(
+    eventTypes: readonly string[],
+    listener: PortListener<DomainEvent>,
+    context: OperationContext,
+  ): Promise<PortSubscription>;
 }

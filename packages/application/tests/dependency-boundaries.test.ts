@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -34,7 +34,10 @@ describe("application dependency boundary", () => {
 
   it("keeps every source file below the architecture limit", () => {
     const oversized = sourceFiles(sourceRoot)
-      .map((path) => ({ path: relative(packageRoot, path), lines: readFileSync(path, "utf8").split("\n").length }))
+      .map((path) => ({
+        path: relative(packageRoot, path),
+        lines: readFileSync(path, "utf8").split("\n").length,
+      }))
       .filter(({ lines }) => lines > 500);
     expect(oversized).toEqual([]);
   });

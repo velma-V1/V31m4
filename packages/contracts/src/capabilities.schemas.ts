@@ -5,16 +5,16 @@ import {
   apiResponseMetadataShape,
   artifactIdSchema,
   candidateIdSchema,
-  capabilityIdSchema,
   canonicalIdSchema,
   canonicalNameSchema,
   canonicalStatementSchema,
+  capabilityIdSchema,
   championDecisionIdSchema,
   contentHashSchema,
   deliveryReceiptIdSchema,
   evidenceIdSchema,
-  issueIdSchema,
   isoDateTimeSchema,
+  issueIdSchema,
   missionIdSchema,
   modelIdSchema,
   paginationRequestSchema,
@@ -149,15 +149,32 @@ export const verificationResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.evidenceIds, context, ["evidenceIds"], "Verification evidence IDs");
+    addDuplicateStringIssue(
+      value.evidenceIds,
+      context,
+      ["evidenceIds"],
+      "Verification evidence IDs",
+    );
     if (value.mandatoryChecksPassed > value.mandatoryChecksTotal) {
-      context.addIssue({ code: "custom", message: "Mandatory passed count exceeds total.", path: ["mandatoryChecksPassed"] });
+      context.addIssue({
+        code: "custom",
+        message: "Mandatory passed count exceeds total.",
+        path: ["mandatoryChecksPassed"],
+      });
     }
     if (value.optionalChecksPassed > value.optionalChecksTotal) {
-      context.addIssue({ code: "custom", message: "Optional passed count exceeds total.", path: ["optionalChecksPassed"] });
+      context.addIssue({
+        code: "custom",
+        message: "Optional passed count exceeds total.",
+        path: ["optionalChecksPassed"],
+      });
     }
     if (value.status === "passed" && value.mandatoryChecksPassed !== value.mandatoryChecksTotal) {
-      context.addIssue({ code: "custom", message: "Passed verification requires every mandatory check.", path: ["status"] });
+      context.addIssue({
+        code: "custom",
+        message: "Passed verification requires every mandatory check.",
+        path: ["status"],
+      });
     }
   });
 
@@ -199,11 +216,30 @@ export const repairRecordSchema = z
   .strict()
   .superRefine((value, context) => {
     if (value.sourceCandidateId === value.repairedCandidateId) {
-      context.addIssue({ code: "custom", message: "Repair must create a distinct candidate.", path: ["repairedCandidateId"] });
+      context.addIssue({
+        code: "custom",
+        message: "Repair must create a distinct candidate.",
+        path: ["repairedCandidateId"],
+      });
     }
-    addDuplicateStringIssue(value.changedArtifactIds, context, ["changedArtifactIds"], "Changed artifact IDs");
-    addDuplicateStringIssue(value.focusedEvidenceIds, context, ["focusedEvidenceIds"], "Focused evidence IDs");
-    addDuplicateStringIssue(value.regressionEvidenceIds, context, ["regressionEvidenceIds"], "Regression evidence IDs");
+    addDuplicateStringIssue(
+      value.changedArtifactIds,
+      context,
+      ["changedArtifactIds"],
+      "Changed artifact IDs",
+    );
+    addDuplicateStringIssue(
+      value.focusedEvidenceIds,
+      context,
+      ["focusedEvidenceIds"],
+      "Focused evidence IDs",
+    );
+    addDuplicateStringIssue(
+      value.regressionEvidenceIds,
+      context,
+      ["regressionEvidenceIds"],
+      "Regression evidence IDs",
+    );
   });
 
 export const decisionDimensionSchema = z.enum([
@@ -236,9 +272,18 @@ export const championDecisionSchema = z
   .strict()
   .superRefine((value, context) => {
     if ((value.decision === "champion") !== (value.candidateId !== undefined)) {
-      context.addIssue({ code: "custom", message: "Champion decisions require one candidate; no-solution decisions forbid one.", path: ["candidateId"] });
+      context.addIssue({
+        code: "custom",
+        message: "Champion decisions require one candidate; no-solution decisions forbid one.",
+        path: ["candidateId"],
+      });
     }
-    addDuplicateStringIssue(value.paretoCandidateIds, context, ["paretoCandidateIds"], "Pareto candidate IDs");
+    addDuplicateStringIssue(
+      value.paretoCandidateIds,
+      context,
+      ["paretoCandidateIds"],
+      "Pareto candidate IDs",
+    );
     addDuplicateStringIssue(value.evidenceIds, context, ["evidenceIds"], "Decision evidence IDs");
   });
 
@@ -259,17 +304,36 @@ export const deliveryReceiptSchema = z
   .strict()
   .superRefine((value, context) => {
     if (value.requirementsCovered > value.requirementsTotal) {
-      context.addIssue({ code: "custom", message: "Requirement coverage exceeds total.", path: ["requirementsCovered"] });
+      context.addIssue({
+        code: "custom",
+        message: "Requirement coverage exceeds total.",
+        path: ["requirementsCovered"],
+      });
     }
     if (value.mandatoryChecksPassed > value.mandatoryChecksTotal) {
-      context.addIssue({ code: "custom", message: "Mandatory passed count exceeds total.", path: ["mandatoryChecksPassed"] });
+      context.addIssue({
+        code: "custom",
+        message: "Mandatory passed count exceeds total.",
+        path: ["mandatoryChecksPassed"],
+      });
     }
     if (value.decision === "champion") {
       if (value.deliveredArtifactIds.length === 0) {
-        context.addIssue({ code: "custom", message: "Champion delivery requires artifacts.", path: ["deliveredArtifactIds"] });
+        context.addIssue({
+          code: "custom",
+          message: "Champion delivery requires artifacts.",
+          path: ["deliveredArtifactIds"],
+        });
       }
-      if (value.requirementsCovered !== value.requirementsTotal || value.mandatoryChecksPassed !== value.mandatoryChecksTotal) {
-        context.addIssue({ code: "custom", message: "Champion delivery requires complete mandatory coverage.", path: ["decision"] });
+      if (
+        value.requirementsCovered !== value.requirementsTotal ||
+        value.mandatoryChecksPassed !== value.mandatoryChecksTotal
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Champion delivery requires complete mandatory coverage.",
+          path: ["decision"],
+        });
       }
     }
   });
@@ -283,8 +347,15 @@ export const trainingViewKindSchema = z.enum([
   "verification",
   "planning",
 ]);
-export const trainingViewSchema = z.object({ kind: trainingViewKindSchema, artifactId: artifactIdSchema }).strict();
-export const trainingPacketStatusSchema = z.enum(["quarantined", "verified", "promoted", "rejected"]);
+export const trainingViewSchema = z
+  .object({ kind: trainingViewKindSchema, artifactId: artifactIdSchema })
+  .strict();
+export const trainingPacketStatusSchema = z.enum([
+  "quarantined",
+  "verified",
+  "promoted",
+  "rejected",
+]);
 
 export const trainingPacketSchema = z
   .object({
@@ -307,13 +378,28 @@ export const trainingPacketSchema = z
   .superRefine((value, context) => {
     const originalIds = new Set(value.originalCandidateIds);
     if (!originalIds.has(value.preferredCandidateId)) {
-      context.addIssue({ code: "custom", message: "Preferred candidate must be an original candidate.", path: ["preferredCandidateId"] });
+      context.addIssue({
+        code: "custom",
+        message: "Preferred candidate must be an original candidate.",
+        path: ["preferredCandidateId"],
+      });
     }
     if (value.rejectedCandidateIds.includes(value.preferredCandidateId)) {
-      context.addIssue({ code: "custom", message: "Preferred candidate cannot be rejected.", path: ["rejectedCandidateIds"] });
+      context.addIssue({
+        code: "custom",
+        message: "Preferred candidate cannot be rejected.",
+        path: ["rejectedCandidateIds"],
+      });
     }
-    if ((value.status === "verified" || value.status === "promoted") && !value.evaluationLeakageChecked) {
-      context.addIssue({ code: "custom", message: "Verified or promoted packets require leakage checks.", path: ["evaluationLeakageChecked"] });
+    if (
+      (value.status === "verified" || value.status === "promoted") &&
+      !value.evaluationLeakageChecked
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Verified or promoted packets require leakage checks.",
+        path: ["evaluationLeakageChecked"],
+      });
     }
     for (const [path, ids, label] of [
       ["contextArtifactIds", value.contextArtifactIds, "Context artifact IDs"],
@@ -332,14 +418,21 @@ export const capabilityScoreSchema = z
     capabilityId: capabilityIdSchema,
     score: scoreSchema,
     sampleSize: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    difficultyRange: z.tuple([z.number().finite().nonnegative(), z.number().finite().nonnegative()]),
+    difficultyRange: z.tuple([
+      z.number().finite().nonnegative(),
+      z.number().finite().nonnegative(),
+    ]),
     evidenceIds: z.array(evidenceIdSchema).min(1).max(10_000),
     measuredAt: isoDateTimeSchema,
   })
   .strict()
   .superRefine((value, context) => {
     if (value.difficultyRange[0] > value.difficultyRange[1]) {
-      context.addIssue({ code: "custom", message: "Difficulty range must be ordered.", path: ["difficultyRange"] });
+      context.addIssue({
+        code: "custom",
+        message: "Difficulty range must be ordered.",
+        path: ["difficultyRange"],
+      });
     }
     addDuplicateStringIssue(value.evidenceIds, context, ["evidenceIds"], "Capability evidence IDs");
   });
@@ -354,12 +447,23 @@ export const capabilityProfileSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.current.capabilityId !== value.capabilityId || value.history.some((score) => score.capabilityId !== value.capabilityId)) {
-      context.addIssue({ code: "custom", message: "All capability measurements must match the profile capability.", path: ["current"] });
+    if (
+      value.current.capabilityId !== value.capabilityId ||
+      value.history.some((score) => score.capabilityId !== value.capabilityId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "All capability measurements must match the profile capability.",
+        path: ["current"],
+      });
     }
     const latest = value.history.at(-1);
     if (latest !== undefined && latest.measuredAt !== value.current.measuredAt) {
-      context.addIssue({ code: "custom", message: "Current measurement must equal the latest history entry.", path: ["current"] });
+      context.addIssue({
+        code: "custom",
+        message: "Current measurement must equal the latest history entry.",
+        path: ["current"],
+      });
     }
   });
 
@@ -376,15 +480,46 @@ export const promotionRecordSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.sourcePacketIds, context, ["sourcePacketIds"], "Source packet IDs");
-    addDuplicateStringIssue(value.heldOutEvidenceIds, context, ["heldOutEvidenceIds"], "Held-out evidence IDs");
-    addDuplicateStringIssue(value.regressionEvidenceIds, context, ["regressionEvidenceIds"], "Regression evidence IDs");
+    addDuplicateStringIssue(
+      value.sourcePacketIds,
+      context,
+      ["sourcePacketIds"],
+      "Source packet IDs",
+    );
+    addDuplicateStringIssue(
+      value.heldOutEvidenceIds,
+      context,
+      ["heldOutEvidenceIds"],
+      "Held-out evidence IDs",
+    );
+    addDuplicateStringIssue(
+      value.regressionEvidenceIds,
+      context,
+      ["regressionEvidenceIds"],
+      "Regression evidence IDs",
+    );
   });
 
-export const getCapabilityRequestSchema = z.object({ ...apiRequestMetadataShape, capabilityId: capabilityIdSchema }).strict();
-export const getCapabilityResponseSchema = z.object({ ...apiResponseMetadataShape, capability: capabilityProfileSchema }).strict();
-export const listCapabilitiesRequestSchema = z.object({ ...apiRequestMetadataShape, domain: canonicalIdSchema.optional(), pagination: paginationRequestSchema }).strict();
-export const listCapabilitiesResponseSchema = z.object({ ...apiResponseMetadataShape, capabilities: z.array(capabilityProfileSchema).max(500), pagination: paginationResultSchema }).strict();
+export const getCapabilityRequestSchema = z
+  .object({ ...apiRequestMetadataShape, capabilityId: capabilityIdSchema })
+  .strict();
+export const getCapabilityResponseSchema = z
+  .object({ ...apiResponseMetadataShape, capability: capabilityProfileSchema })
+  .strict();
+export const listCapabilitiesRequestSchema = z
+  .object({
+    ...apiRequestMetadataShape,
+    domain: canonicalIdSchema.optional(),
+    pagination: paginationRequestSchema,
+  })
+  .strict();
+export const listCapabilitiesResponseSchema = z
+  .object({
+    ...apiResponseMetadataShape,
+    capabilities: z.array(capabilityProfileSchema).max(500),
+    pagination: paginationResultSchema,
+  })
+  .strict();
 
 export type SolverConfigurationPayload = z.infer<typeof solverConfigurationSchema>;
 export type SolverCandidatePayload = z.infer<typeof solverCandidateSchema>;

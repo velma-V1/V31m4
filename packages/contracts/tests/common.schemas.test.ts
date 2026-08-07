@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CONTRACT_SCHEMA_VERSION,
   apiRequestMetadataSchema,
+  CONTRACT_SCHEMA_VERSION,
   contentHashSchema,
   contractVersionSchema,
   isoDateTimeSchema,
@@ -21,9 +21,7 @@ describe("common contract schemas", () => {
   });
 
   it("accepts canonical UTC timestamps and rejects normalized lookalikes", () => {
-    expect(isoDateTimeSchema.parse("2026-08-06T21:00:00.000Z")).toBe(
-      "2026-08-06T21:00:00.000Z",
-    );
+    expect(isoDateTimeSchema.parse("2026-08-06T21:00:00.000Z")).toBe("2026-08-06T21:00:00.000Z");
     expect(isoDateTimeSchema.safeParse("2026-08-06T21:00:00Z").success).toBe(false);
     expect(isoDateTimeSchema.safeParse("2026-02-30T21:00:00.000Z").success).toBe(false);
     expect(isoDateTimeSchema.safeParse("2026-08-06T17:00:00.000-04:00").success).toBe(false);
@@ -88,9 +86,9 @@ describe("common contract schemas", () => {
 
     expect(safeJsonValueSchema.safeParse({ value: Number.POSITIVE_INFINITY }).success).toBe(false);
     expect(safeJsonValueSchema.safeParse(new Date()).success).toBe(false);
-    expect(safeJsonValueSchema.safeParse(JSON.parse('{"__proto__":{"polluted":true}}')).success).toBe(
-      false,
-    );
+    expect(
+      safeJsonValueSchema.safeParse(JSON.parse('{"__proto__":{"polluted":true}}')).success,
+    ).toBe(false);
 
     const cyclic: Record<string, unknown> = {};
     cyclic["self"] = cyclic;

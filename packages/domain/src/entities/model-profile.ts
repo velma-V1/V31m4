@@ -1,8 +1,8 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   AdapterId,
-  ModelId,
   type AdapterId as AdapterIdType,
+  ModelId,
   type ModelId as ModelIdType,
 } from "../value-objects/ids.js";
 import { CapabilityProfile, type CapabilityScore } from "./capability-profile.js";

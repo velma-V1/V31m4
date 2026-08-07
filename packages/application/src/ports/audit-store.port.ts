@@ -26,6 +26,10 @@ export interface AuditQuery extends PortPageRequest {
 }
 
 export interface AuditStorePort {
-  append(record: AuditRecord, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<void>;
+  append(
+    record: AuditRecord,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<void>;
   list(query: AuditQuery, context: OperationContext): Promise<PortPage<AuditRecord>>;
 }

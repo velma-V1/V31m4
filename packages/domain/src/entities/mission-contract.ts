@@ -1,6 +1,14 @@
 import { assertDomain } from "../domain-errors.js";
-import { ResourceBudget, type ResourceBudget as ResourceBudgetType } from "../value-objects/resource-budget.js";
-import { MissionId, ProjectId, type MissionId as MissionIdType, type ProjectId as ProjectIdType } from "../value-objects/ids.js";
+import {
+  MissionId,
+  type MissionId as MissionIdType,
+  ProjectId,
+  type ProjectId as ProjectIdType,
+} from "../value-objects/ids.js";
+import {
+  ResourceBudget,
+  type ResourceBudget as ResourceBudgetType,
+} from "../value-objects/resource-budget.js";
 import type { EvidenceKind } from "./evidence-record.js";
 import { Requirement, type Requirement as RequirementType } from "./requirement.js";
 
@@ -166,7 +174,13 @@ export const MissionContract = Object.freeze({
           description: canonicalText(value.description, "requiredOutput.description"),
           ...(value.requiredFormat === undefined
             ? {}
-            : { requiredFormat: canonicalText(value.requiredFormat, "requiredOutput.requiredFormat", 240) }),
+            : {
+                requiredFormat: canonicalText(
+                  value.requiredFormat,
+                  "requiredOutput.requiredFormat",
+                  240,
+                ),
+              }),
         }),
       ),
     );
@@ -224,7 +238,9 @@ export const MissionContract = Object.freeze({
     );
 
     const mandatoryIds = new Set(
-      acceptanceCriteria.filter((criterion) => criterion.mandatory).map((criterion) => criterion.id),
+      acceptanceCriteria
+        .filter((criterion) => criterion.mandatory)
+        .map((criterion) => criterion.id),
     );
     const coveredMandatoryIds = new Set(
       evidenceRequirements

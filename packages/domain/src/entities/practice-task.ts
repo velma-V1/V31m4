@@ -1,15 +1,18 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   ArtifactId,
-  CapabilityId,
-  EvidenceId,
-  PracticeTaskId,
   type ArtifactId as ArtifactIdType,
+  CapabilityId,
   type CapabilityId as CapabilityIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  PracticeTaskId,
   type PracticeTaskId as PracticeTaskIdType,
 } from "../value-objects/ids.js";
-import { ResourceBudget, type ResourceBudget as ResourceBudgetType } from "../value-objects/resource-budget.js";
+import {
+  ResourceBudget,
+  type ResourceBudget as ResourceBudgetType,
+} from "../value-objects/resource-budget.js";
 import { SafePath, type SafePath as SafePathType } from "../value-objects/safe-path.js";
 
 export type PracticeTaskStatus =
@@ -60,7 +63,7 @@ function transition(
     "Practice task trace and evidence IDs must remain unique.",
   );
   assertDomain(
-    target !== "completed" && target !== "quarantined" || evidenceIds.length > 0,
+    (target !== "completed" && target !== "quarantined") || evidenceIds.length > 0,
     "INVALID_PRACTICE_TASK",
     "Completed and quarantined practice tasks require evidence.",
   );

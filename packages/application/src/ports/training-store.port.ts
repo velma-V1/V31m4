@@ -4,7 +4,21 @@ import type { PortPage, PortPageRequest, Versioned, WriteCondition } from "../po
 import type { UnitOfWorkTransaction } from "./unit-of-work.port.js";
 
 export interface TrainingStorePort {
-  get(id: TrainingPacketId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<TrainingPacket> | null>;
-  list(status: TrainingPacketStatus | undefined, request: PortPageRequest, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<TrainingPacket>>>;
-  save(packet: TrainingPacket, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<TrainingPacket>>;
+  get(
+    id: TrainingPacketId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<TrainingPacket> | null>;
+  list(
+    status: TrainingPacketStatus | undefined,
+    request: PortPageRequest,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<TrainingPacket>>>;
+  save(
+    packet: TrainingPacket,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<TrainingPacket>>;
 }

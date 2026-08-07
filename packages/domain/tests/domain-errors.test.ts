@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, assertDomain, isDomainError } from "../src/domain-errors.js";
+import { assertDomain, DomainError, isDomainError } from "../src/domain-errors.js";
 
 describe("DomainError", () => {
   it("preserves a typed code and immutable copied details", () => {

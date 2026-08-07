@@ -22,8 +22,27 @@ export interface ApprovalRequest {
 }
 
 export interface ApprovalStorePort {
-  get(id: string, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<ApprovalRequest> | null>;
-  list(status: ApprovalStatus | undefined, request: PortPageRequest, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<ApprovalRequest>>>;
-  save(request: ApprovalRequest, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<ApprovalRequest>>;
-  consume(id: string, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<ApprovalRequest>>;
+  get(
+    id: string,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<ApprovalRequest> | null>;
+  list(
+    status: ApprovalStatus | undefined,
+    request: PortPageRequest,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<ApprovalRequest>>>;
+  save(
+    request: ApprovalRequest,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<ApprovalRequest>>;
+  consume(
+    id: string,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<ApprovalRequest>>;
 }

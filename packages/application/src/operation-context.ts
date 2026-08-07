@@ -1,9 +1,9 @@
+import { ApplicationError, assertApplication } from "./application-errors.js";
 import {
+  type ApplicationJsonObject,
   cloneAndFreezeApplicationJson,
   isApplicationJsonValue,
-  type ApplicationJsonObject,
 } from "./application-json.js";
-import { ApplicationError, assertApplication } from "./application-errors.js";
 
 export type OperationActorKind = "user" | "system" | "model" | "plugin" | "scheduler";
 
@@ -86,13 +86,29 @@ export function createOperationContext(input: CreateOperationContextInput): Oper
     "INVALID_APPLICATION_INPUT",
     "Operation deadline cannot precede its start time.",
   );
-  assertApplication(ACTOR_KINDS.has(input.actor.kind), "INVALID_APPLICATION_INPUT", "Actor kind is invalid.");
-  assertApplication(input.actor.roles.length <= 128, "INVALID_APPLICATION_INPUT", "Actor roles exceed the limit.");
+  assertApplication(
+    ACTOR_KINDS.has(input.actor.kind),
+    "INVALID_APPLICATION_INPUT",
+    "Actor kind is invalid.",
+  );
+  assertApplication(
+    input.actor.roles.length <= 128,
+    "INVALID_APPLICATION_INPUT",
+    "Actor roles exceed the limit.",
+  );
   const roles = input.actor.roles.map((role) => canonicalId(role, "actor role"));
-  assertApplication(new Set(roles).size === roles.length, "INVALID_APPLICATION_INPUT", "Actor roles must be unique.");
+  assertApplication(
+    new Set(roles).size === roles.length,
+    "INVALID_APPLICATION_INPUT",
+    "Actor roles must be unique.",
+  );
 
   const metadata = input.metadata ?? {};
-  assertApplication(isApplicationJsonValue(metadata), "INVALID_APPLICATION_INPUT", "Operation metadata must be safe JSON.");
+  assertApplication(
+    isApplicationJsonValue(metadata),
+    "INVALID_APPLICATION_INPUT",
+    "Operation metadata must be safe JSON.",
+  );
 
   const base = {
     requestId: canonicalId(input.requestId, "requestId"),

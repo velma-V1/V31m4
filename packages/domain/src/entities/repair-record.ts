@@ -1,14 +1,14 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   ArtifactId,
-  CandidateId,
-  EvidenceId,
-  IssueId,
-  RepairId,
   type ArtifactId as ArtifactIdType,
+  CandidateId,
   type CandidateId as CandidateIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  IssueId,
   type IssueId as IssueIdType,
+  RepairId,
   type RepairId as RepairIdType,
 } from "../value-objects/ids.js";
 

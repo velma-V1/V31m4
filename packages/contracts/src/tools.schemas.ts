@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
-  addDuplicateStringIssue,
   adapterIdSchema,
+  addDuplicateStringIssue,
   apiRequestMetadataShape,
   apiResponseMetadataShape,
   artifactIdSchema,
@@ -54,8 +54,18 @@ export const invokeToolRequestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addDuplicateStringIssue(value.inputArtifactIds, context, ["inputArtifactIds"], "Input artifact IDs");
-    addDuplicateStringIssue(value.expectedOutputs, context, ["expectedOutputs"], "Expected outputs");
+    addDuplicateStringIssue(
+      value.inputArtifactIds,
+      context,
+      ["inputArtifactIds"],
+      "Input artifact IDs",
+    );
+    addDuplicateStringIssue(
+      value.expectedOutputs,
+      context,
+      ["expectedOutputs"],
+      "Expected outputs",
+    );
   });
 
 export const toolInvocationResultSchema = z
@@ -83,15 +93,32 @@ export const toolInvocationResultSchema = z
   .strict()
   .superRefine((value, context) => {
     if (Date.parse(value.completedAt) < Date.parse(value.startedAt)) {
-      context.addIssue({ code: "custom", message: "Tool invocation completion cannot precede start.", path: ["completedAt"] });
+      context.addIssue({
+        code: "custom",
+        message: "Tool invocation completion cannot precede start.",
+        path: ["completedAt"],
+      });
     }
     if ((value.status === "failed") !== (value.error !== undefined)) {
-      context.addIssue({ code: "custom", message: "Only failed tool invocations carry an error.", path: ["error"] });
+      context.addIssue({
+        code: "custom",
+        message: "Only failed tool invocations carry an error.",
+        path: ["error"],
+      });
     }
     if (value.status === "completed" && value.outputArtifactIds.length === 0) {
-      context.addIssue({ code: "custom", message: "Completed tool invocation requires output artifacts.", path: ["outputArtifactIds"] });
+      context.addIssue({
+        code: "custom",
+        message: "Completed tool invocation requires output artifacts.",
+        path: ["outputArtifactIds"],
+      });
     }
-    addDuplicateStringIssue(value.outputArtifactIds, context, ["outputArtifactIds"], "Output artifact IDs");
+    addDuplicateStringIssue(
+      value.outputArtifactIds,
+      context,
+      ["outputArtifactIds"],
+      "Output artifact IDs",
+    );
     addDuplicateStringIssue(value.logArtifactIds, context, ["logArtifactIds"], "Log artifact IDs");
   });
 

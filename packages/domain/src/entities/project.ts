@@ -1,6 +1,6 @@
 import { assertDomain } from "../domain-errors.js";
-import { SafePath, type SafePath as SafePathType } from "../value-objects/safe-path.js";
 import { ProjectId, type ProjectId as ProjectIdType } from "../value-objects/ids.js";
+import { SafePath, type SafePath as SafePathType } from "../value-objects/safe-path.js";
 
 export type ProjectStatus = "active" | "paused" | "archived";
 

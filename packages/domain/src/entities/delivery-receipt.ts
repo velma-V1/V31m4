@@ -1,14 +1,14 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   ArtifactId,
-  DeliveryReceiptId,
-  EvidenceId,
-  IssueId,
-  MissionId,
   type ArtifactId as ArtifactIdType,
+  DeliveryReceiptId,
   type DeliveryReceiptId as DeliveryReceiptIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
+  IssueId,
   type IssueId as IssueIdType,
+  MissionId,
   type MissionId as MissionIdType,
 } from "../value-objects/ids.js";
 import type { ChampionDecision } from "./champion-decision.js";
@@ -101,9 +101,9 @@ export const DeliveryReceipt = Object.freeze({
       requirementsTotal: input.requirementsTotal,
       mandatoryChecksPassed: input.mandatoryChecksPassed,
       mandatoryChecksTotal: input.mandatoryChecksTotal,
-      unresolvedRiskIds: Object.freeze(
-        [...new Set((input.unresolvedRiskIds ?? []).map((id) => IssueId.parse(id)))],
-      ),
+      unresolvedRiskIds: Object.freeze([
+        ...new Set((input.unresolvedRiskIds ?? []).map((id) => IssueId.parse(id))),
+      ]),
       evidenceIds: Object.freeze(evidenceIds),
       createdAt: input.createdAt,
     });

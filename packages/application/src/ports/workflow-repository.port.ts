@@ -22,7 +22,21 @@ export interface WorkflowDefinition {
 }
 
 export interface WorkflowRepositoryPort {
-  get(workflowId: string, version: string | undefined, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<WorkflowDefinition> | null>;
-  list(request: PortPageRequest, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<WorkflowDefinition>>>;
-  save(definition: WorkflowDefinition, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<WorkflowDefinition>>;
+  get(
+    workflowId: string,
+    version: string | undefined,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<WorkflowDefinition> | null>;
+  list(
+    request: PortPageRequest,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<WorkflowDefinition>>>;
+  save(
+    definition: WorkflowDefinition,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<WorkflowDefinition>>;
 }

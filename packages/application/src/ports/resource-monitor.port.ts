@@ -20,5 +20,8 @@ export interface ResourceReading {
 
 export interface ResourceMonitorPort {
   read(context: OperationContext): Promise<ResourceReading>;
-  watch(listener: PortListener<ResourceReading>, context: OperationContext): Promise<PortSubscription>;
+  watch(
+    listener: PortListener<ResourceReading>,
+    context: OperationContext,
+  ): Promise<PortSubscription>;
 }

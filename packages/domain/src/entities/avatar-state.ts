@@ -1,14 +1,14 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   AchievementRuleId,
-  AvatarId,
-  AvatarItemId,
-  CapabilityId,
-  EvidenceId,
   type AchievementRuleId as AchievementRuleIdType,
+  AvatarId,
   type AvatarId as AvatarIdType,
+  AvatarItemId,
   type AvatarItemId as AvatarItemIdType,
+  CapabilityId,
   type CapabilityId as CapabilityIdType,
+  EvidenceId,
   type EvidenceId as EvidenceIdType,
 } from "../value-objects/ids.js";
 import type { EvidenceKind } from "./evidence-record.js";
@@ -101,8 +101,7 @@ export const AvatarState = Object.freeze({
     );
     const forbidden = (input.forbiddenEvidenceSources ?? []).map((value) => value.trim());
     assertDomain(
-      forbidden.every((value) => value.length > 0) &&
-        new Set(forbidden).size === forbidden.length,
+      forbidden.every((value) => value.length > 0) && new Set(forbidden).size === forbidden.length,
       "INVALID_AVATAR_STATE",
       "Forbidden evidence sources must be unique canonical strings.",
     );

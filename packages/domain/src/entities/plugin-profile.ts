@@ -1,10 +1,10 @@
 import { assertDomain } from "../domain-errors.js";
 import {
   CapabilityId,
-  PluginId,
-  ToolId,
   type CapabilityId as CapabilityIdType,
+  PluginId,
   type PluginId as PluginIdType,
+  ToolId,
   type ToolId as ToolIdType,
 } from "../value-objects/ids.js";
 
@@ -46,8 +46,14 @@ export const PluginProfile = Object.freeze({
       "INVALID_PLUGIN_PROFILE",
       "Plugin version must be semantic version format.",
     );
-    const required = unique((input.requiredToolIds ?? []).map((id) => ToolId.parse(id)), "requiredToolIds");
-    const optional = unique((input.optionalToolIds ?? []).map((id) => ToolId.parse(id)), "optionalToolIds");
+    const required = unique(
+      (input.requiredToolIds ?? []).map((id) => ToolId.parse(id)),
+      "requiredToolIds",
+    );
+    const optional = unique(
+      (input.optionalToolIds ?? []).map((id) => ToolId.parse(id)),
+      "optionalToolIds",
+    );
     assertDomain(
       required.every((id) => !optional.includes(id)),
       "INVALID_PLUGIN_PROFILE",

@@ -10,8 +10,14 @@ export interface ApplicationJsonObject {
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
-function isDenseJsonArray(value: readonly unknown[], active: Set<object>): value is ApplicationJsonArray {
-  if (Object.getOwnPropertySymbols(value).length > 0 || Object.keys(value).length !== value.length) {
+function isDenseJsonArray(
+  value: readonly unknown[],
+  active: Set<object>,
+): value is ApplicationJsonArray {
+  if (
+    Object.getOwnPropertySymbols(value).length > 0 ||
+    Object.keys(value).length !== value.length
+  ) {
     return false;
   }
   for (let index = 0; index < value.length; index += 1) {
@@ -33,12 +39,7 @@ function isPlainJsonObject(value: object, active: Set<object>): value is Applica
   }
   const descriptors = Object.getOwnPropertyDescriptors(value);
   for (const key of keys as string[]) {
-    if (
-      key.length === 0 ||
-      key.length > 256 ||
-      key !== key.trim() ||
-      FORBIDDEN_KEYS.has(key)
-    ) {
+    if (key.length === 0 || key.length > 256 || key !== key.trim() || FORBIDDEN_KEYS.has(key)) {
       return false;
     }
     const descriptor = descriptors[key];
@@ -89,9 +90,7 @@ function cloneKnownJson(value: ApplicationJsonValue): ApplicationJsonValue {
     return Object.freeze(value.map((item) => cloneKnownJson(item)));
   }
   return Object.freeze(
-    Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, cloneKnownJson(nested)]),
-    ),
+    Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, cloneKnownJson(nested)])),
   ) as ApplicationJsonObject;
 }
 

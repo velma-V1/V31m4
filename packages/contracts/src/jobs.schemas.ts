@@ -80,7 +80,10 @@ export const checkpointSchema = z
       .string()
       .min(1)
       .max(240)
-      .refine((value) => value === value.trim(), "Checkpoint stage cannot contain outer whitespace."),
+      .refine(
+        (value) => value === value.trim(),
+        "Checkpoint stage cannot contain outer whitespace.",
+      ),
     stateArtifactId: artifactIdSchema,
     evidenceIds: z.array(evidenceIdSchema).max(10_000),
     contentHash: contentHashSchema,

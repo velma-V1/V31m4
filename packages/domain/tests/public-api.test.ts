@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ContentHash,
+  createDomainEvent,
   DomainError,
   EventId,
   ProjectId,
   ResourceBudget,
   SafePath,
   Score,
-  createDomainEvent,
 } from "../src/index.js";
 
 describe("@v31m4/domain public API", () => {

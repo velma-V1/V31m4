@@ -5,9 +5,9 @@ import {
   promotionRecordSchema,
 } from "../src/capabilities.schemas.js";
 import { evidenceRecordSchema } from "../src/evidence.schemas.js";
-import { createProjectRequestSchema, projectSchema } from "../src/projects.schemas.js";
-import { submitMissionRequestSchema } from "../src/missions.schemas.js";
 import { jobSchema, stopJobRequestSchema } from "../src/jobs.schemas.js";
+import { submitMissionRequestSchema } from "../src/missions.schemas.js";
+import { createProjectRequestSchema, projectSchema } from "../src/projects.schemas.js";
 
 const metadata = { schemaVersion: "1.0.0", requestId: "request:1" } as const;
 
@@ -68,9 +68,7 @@ describe("runtime resource contracts", () => {
         },
       ],
       forbiddenChanges: [{ id: "forbidden:1", statement: "Do not add provider SDK types." }],
-      evidenceRequirements: [
-        { criterionId: "criterion:1", requiredEvidenceKinds: ["unit_test"] },
-      ],
+      evidenceRequirements: [{ criterionId: "criterion:1", requiredEvidenceKinds: ["unit_test"] }],
       resourceBudget: {
         maxWallClockMs: 60_000,
         maxModelInvocations: 2,
@@ -145,9 +143,9 @@ describe("runtime resource contracts", () => {
       measuredAt: "2026-08-06T21:03:00.000Z",
     } as const;
     expect(capabilityScoreSchema.parse(score).score).toBe(0.9);
-    expect(
-      capabilityScoreSchema.safeParse({ ...score, difficultyRange: [5, 2] }).success,
-    ).toBe(false);
+    expect(capabilityScoreSchema.safeParse({ ...score, difficultyRange: [5, 2] }).success).toBe(
+      false,
+    );
     expect(capabilityScoreSchema.safeParse({ ...score, evidenceIds: [] }).success).toBe(false);
   });
 
@@ -166,9 +164,9 @@ describe("runtime resource contracts", () => {
       createdAt: "2026-08-06T21:04:00.000Z",
     } as const;
     expect(deliveryReceiptSchema.parse(receipt).requirementsCovered).toBe(2);
-    expect(
-      deliveryReceiptSchema.safeParse({ ...receipt, requirementsCovered: 3 }).success,
-    ).toBe(false);
+    expect(deliveryReceiptSchema.safeParse({ ...receipt, requirementsCovered: 3 }).success).toBe(
+      false,
+    );
 
     const promotion = {
       id: "promotion:1",
@@ -180,8 +178,8 @@ describe("runtime resource contracts", () => {
       createdAt: "2026-08-06T21:05:00.000Z",
     } as const;
     expect(promotionRecordSchema.parse(promotion).decision).toBe("promoted");
-    expect(
-      promotionRecordSchema.safeParse({ ...promotion, heldOutEvidenceIds: [] }).success,
-    ).toBe(false);
+    expect(promotionRecordSchema.safeParse({ ...promotion, heldOutEvidenceIds: [] }).success).toBe(
+      false,
+    );
   });
 });

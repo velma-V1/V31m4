@@ -10,10 +10,35 @@ export interface JobListFilter extends PortPageRequest {
 }
 
 export interface JobRepositoryPort {
-  getById(id: JobId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Job> | null>;
-  list(filter: JobListFilter, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<Job>>>;
-  save(job: Job, condition: WriteCondition, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<Job>>;
-  appendCheckpoint(checkpoint: Checkpoint, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<Checkpoint>>;
-  getCheckpoint(id: CheckpointId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Checkpoint> | null>;
-  getLatestVerifiedCheckpoint(jobId: JobId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<Checkpoint> | null>;
+  getById(
+    id: JobId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Job> | null>;
+  list(
+    filter: JobListFilter,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<Job>>>;
+  save(
+    job: Job,
+    condition: WriteCondition,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<Job>>;
+  appendCheckpoint(
+    checkpoint: Checkpoint,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<Checkpoint>>;
+  getCheckpoint(
+    id: CheckpointId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Checkpoint> | null>;
+  getLatestVerifiedCheckpoint(
+    jobId: JobId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<Checkpoint> | null>;
 }

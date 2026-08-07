@@ -39,7 +39,10 @@ export interface ModelInvocationResult {
 export interface ModelGatewayPort {
   list(request: PortPageRequest, context: OperationContext): Promise<PortPage<ModelProfile>>;
   get(modelId: ModelId, context: OperationContext): Promise<ModelProfile | null>;
-  invoke(request: ModelInvocationRequest, context: OperationContext): Promise<ModelInvocationResult>;
+  invoke(
+    request: ModelInvocationRequest,
+    context: OperationContext,
+  ): Promise<ModelInvocationResult>;
   cancel(invocationId: string, context: OperationContext): Promise<void>;
   health(modelId: ModelId, context: OperationContext): Promise<PortHealth>;
 }

@@ -18,7 +18,9 @@ describe("capability endpoint contracts", () => {
       supportedModalities: ["text"],
     } as const;
     expect(modelProfileSchema.parse(profile).local).toBe(true);
-    expect(modelProfileSchema.safeParse({ ...profile, providerRaw: { id: 1 } }).success).toBe(false);
+    expect(modelProfileSchema.safeParse({ ...profile, providerRaw: { id: 1 } }).success).toBe(
+      false,
+    );
   });
 
   it("requires unique tool operations and prefers declared automation methods", () => {

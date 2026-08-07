@@ -13,7 +13,19 @@ export interface EvidenceQuery extends PortPageRequest {
 }
 
 export interface EvidenceRepositoryPort {
-  getById(id: EvidenceId, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<Versioned<EvidenceRecord> | null>;
-  list(query: EvidenceQuery, context: OperationContext, transaction?: UnitOfWorkTransaction): Promise<PortPage<Versioned<EvidenceRecord>>>;
-  append(record: EvidenceRecord, context: OperationContext, transaction: UnitOfWorkTransaction): Promise<Versioned<EvidenceRecord>>;
+  getById(
+    id: EvidenceId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<Versioned<EvidenceRecord> | null>;
+  list(
+    query: EvidenceQuery,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<Versioned<EvidenceRecord>>>;
+  append(
+    record: EvidenceRecord,
+    context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<EvidenceRecord>>;
 }

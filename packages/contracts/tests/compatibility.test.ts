@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CONTRACT_SCHEMA_VERSION,
   assertContractVersionCompatible,
+  CONTRACT_SCHEMA_VERSION,
   isContractVersionCompatible,
 } from "../src/common.schemas.js";
 import { invokeModelRequestSchema } from "../src/models.schemas.js";

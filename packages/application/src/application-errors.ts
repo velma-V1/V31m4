@@ -1,4 +1,4 @@
-import { cloneAndFreezeApplicationJson, type ApplicationJsonObject } from "./application-json.js";
+import { type ApplicationJsonObject, cloneAndFreezeApplicationJson } from "./application-json.js";
 
 export type ApplicationErrorCode =
   | "INVALID_APPLICATION_INPUT"

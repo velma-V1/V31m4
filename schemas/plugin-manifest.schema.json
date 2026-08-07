@@ -4,7 +4,20 @@
   "title": "V31M4 Plugin Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "pluginId", "displayName", "version", "minimumRuntimeVersion", "entrypoint", "capabilities", "requiredToolIds", "optionalToolIds", "workflowIds", "verifierIds", "permissions"],
+  "required": [
+    "schemaVersion",
+    "pluginId",
+    "displayName",
+    "version",
+    "minimumRuntimeVersion",
+    "entrypoint",
+    "capabilities",
+    "requiredToolIds",
+    "optionalToolIds",
+    "workflowIds",
+    "verifierIds",
+    "permissions"
+  ],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
     "pluginId": { "$ref": "#/$defs/id" },
@@ -21,15 +34,81 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
-    "timestamp": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
     "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$" },
-    "nonEmptyText": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$" },
-    "idArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 10000 },
-    "nonEmptyIdArray": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "minItems": 1, "maxItems": 10000 },
-    "jsonValue": { "oneOf": [{ "type": ["string", "number", "boolean", "null"] }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } }, "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] },
-    "permissions": { "type": "object", "additionalProperties": false, "required": ["filesystem", "network", "process"], "properties": { "filesystem": { "type": "array", "items": { "enum": ["project_read", "working_copy_write", "artifact_read", "artifact_write", "cache_read", "cache_write"] }, "uniqueItems": true, "maxItems": 16 }, "network": { "type": "boolean" }, "process": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 1000 } } }
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[<>:\"|?*\\u0000-\\u001F])[^/]+(?:/[^/]+)*$"
+    },
+    "nonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$|^\\S$"
+    },
+    "idArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "maxItems": 10000
+    },
+    "nonEmptyIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["__proto__", "prototype", "constructor"] } },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "network", "process"],
+      "properties": {
+        "filesystem": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "project_read",
+              "working_copy_write",
+              "artifact_read",
+              "artifact_write",
+              "cache_read",
+              "cache_write"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 16
+        },
+        "network": { "type": "boolean" },
+        "process": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true,
+          "maxItems": 1000
+        }
+      }
+    }
   },
   "$comment": "Required and optional tool sets must also be disjoint; that semantic rule is enforced by @v31m4/contracts."
 }
