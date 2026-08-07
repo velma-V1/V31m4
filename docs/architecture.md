@@ -143,3 +143,18 @@ are dependency-backed and regression tested against the pinned toolchain.
 No process/adapter infrastructure, runtime API server, desktop UI, CLI,
 adapter implementations, plugin SDK, plugins, laboratories, or production workflows are
 implemented.
+
+## Core completion scope
+
+Video Production and 3D/Game Production are intentionally deferred until after the V31M4
+core is release-complete. They remain first-party removable production plugins, but neither
+is part of the core completion path.
+
+The following rules are authoritative for core completion:
+
+- Core startup, tests, packaging, and release acceptance must succeed with both departments absent.
+- The core may implement only generic extension seams required by production plugins: plugin lifecycle and capability registration; governed model/tool/workflow invocation; durable jobs; artifacts; checkpoints; verification/evidence; resources; approvals/policy; isolated workspaces; and runtime events.
+- Video-specific and game-specific business logic, SDKs, executables, provider choices, asset pipelines, and workflow logic may not be added to core packages.
+- Deferred department designs are preserved under `docs/deferred/video-production/` and `docs/deferred/game-production/`.
+- Open Generative AI is not a V31M4 core dependency. It may be evaluated later only as an optional source of reusable parts inside the deferred Video Production department.
+- Core completion does not require empty placeholder plugin packages. Runtime plugin package paths are chosen only when each department enters implementation and must follow the then-current plugin SDK conventions.
