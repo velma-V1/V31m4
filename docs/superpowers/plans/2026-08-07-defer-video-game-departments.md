@@ -55,7 +55,11 @@
 - Consumes: deferred-department scope decision.
 - Produces: discoverable ownership and core release rules for future contributors.
 
-- [ ] **Step 1:** Add a core-completion scope section to `docs/architecture.md`.
-- [ ] **Step 2:** Add ownership entries for `docs/deferred/video-production` and `docs/deferred/game-production` to `docs/repository-map.md`.
-- [ ] **Step 3:** Add the current deferral decision to `repo_map.md` without changing implemented-layer claims.
-- [ ] **Step 4:** Re-fetch all changed files and verify there are no contradictory statements or accidental core dependencies.
+- [x] **Step 1:** Add a core-completion scope section to `docs/architecture.md`.
+- [x] **Step 2:** Add ownership entries for `docs/deferred/video-production` and `docs/deferred/game-production` to `docs/repository-map.md`.
+- [x] **Step 3:** Add the current deferral decision to `repo_map.md` without changing implemented-layer claims.
+- [x] **Step 4:** Re-fetch all changed files and verify there are no contradictory statements or accidental core dependencies.
+
+## Verification result
+
+Documentation-only change verified by re-fetching the deferred department specs, `docs/architecture.md`, `docs/repository-map.md`, and `repo_map.md` from `canonical/layers-6-10`. The existing SRS already classifies Video Production and 3D/Game Production as removable first-party production plugins, so this scope change strengthens the existing boundary rather than changing dependency direction.
