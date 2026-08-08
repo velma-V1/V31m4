@@ -102,11 +102,16 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
 
 ## Current task / next action
 
-1. Continue the approved canonical Layers 6-10 plan from the first verified-incomplete layer:
-   Layer 9 governed production gateways (Task 4 in
-   `docs/superpowers/plans/2026-08-07-layers-6-10-canonical.md`): provider-neutral
-   model/tool/kernel gateways, plugin registry, policy engine, and `PathPolicy` under
-   `packages/infrastructure/src/{gateways,plugins,policy,paths}`.
+1. Layer 9 governed production gateways: DONE and verified green (2026-08-08) — `PathPolicy`
+   real-path containment, fail-closed `RuleBasedPolicyEngine`, `SqlitePluginRegistry`, and
+   supervised `SupervisedModel/Tool/ProductionKernel` gateways under
+   `packages/infrastructure/src/{paths,policy,plugins,gateways}`. Full gate: typecheck 4/4,
+   306 tests / 64 files, build 4/4, lint/check clean.
+2. Next: Layer 10 authoritative runtime (Task 5 in
+   `docs/superpowers/plans/2026-08-07-layers-6-10-canonical.md`) — Fastify runtime,
+   composition root, strict config, authenticated local sessions, typed routes, WebSocket
+   events with the durable event-replay contract, and the external-command idempotency
+   contract, under `apps/runtime/`.
 2. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
 3. Use grouped implementation, focused tests during development, and the native full

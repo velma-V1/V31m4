@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Layer:** Supervised Adapter Infrastructure Layer 8
+**Layer:** Production Gateways Layer 9
 **Branch:** `canonical/layers-6-10`
 **Parent layer:** hardened Layer 5 `5746e5f2571a08dea3cce0493adeac92ae025135`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
@@ -11,9 +11,11 @@ Layer 7 adds real SQLite transactions, revisioned/append-only records, transacti
 outbox and idempotency storage, content-addressed artifacts, and verified backup/restore
 on the canonical Layer 6. Layer 8 adds supervised process management, JSON-RPC
 framing/correlation, adapter registration with restart-budget protection, bounded
-scheduling, resource monitoring, secret leases, and redacted logging. Both live in
-`packages/infrastructure`. The superseded Layer 6 was used only as reference and
-reconciled according to `docs/reviews/layer-6-reconciliation-matrix.md`.
+scheduling, resource monitoring, secret leases, and redacted logging. Layer 9 adds the
+production gateways: real-path containment (`PathPolicy`), a fail-closed rule-based policy
+engine, a durable plugin registry, and supervised provider-neutral model/tool/kernel
+gateways. All live in `packages/infrastructure`. The superseded Layer 6 was used only as
+reference and reconciled according to `docs/reviews/layer-6-reconciliation-matrix.md`.
 
 ### Core completion scope decision
 
@@ -55,7 +57,7 @@ packages/
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
     └── tests/                            # Layer 4–6 verification
-└── infrastructure/                      # Layer 7 persistence (SQLite, artifacts, outbox, backup) + Layer 8 processes/rpc/scheduling/secrets/adapters/logging
+└── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/                                    # Architecture, maps, plans, reviews, and deferred extension designs
@@ -81,15 +83,15 @@ docs/                                    # Architecture, maps, plans, reviews, a
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–8 regression:** **286 passing cases across 60 test files** (re-run and verified 2026-08-08).
-- **Layer 7–8** real-infrastructure regression: **21 passing cases across 9 test files** (SQLite core, outbox/idempotency, content-addressed artifacts, backup/restore, supervised processes, JSON-RPC, adapter isolation/operations, architecture).
+- **Full Layer 1–9 regression:** **306 passing cases across 64 test files** (re-run and verified 2026-08-08).
+- **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Typecheck:** `pnpm typecheck` → **4/4 packages pass**. **Build:** `pnpm build` → **4/4 pass** (each package compiles under `tsc --noEmit`).
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**286 cases across 60 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**306 cases across 64 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
@@ -100,9 +102,13 @@ lines and no file exceeds 500.
 
 ### Not implemented
 
-Layer 8 supervised process/adapter infrastructure (process supervision, JSON-RPC framing,
-adapter registration, scheduling, resource monitoring, secret leases, redacted logging) is
-implemented in `packages/infrastructure`. Not yet implemented: the runtime API server
-(HTTP/WebSocket) and composition root, desktop, CLI, concrete model/tool/kernel adapters,
-plugin SDK, plugins, laboratories, and production workflows. Video Production and 3D/Game
-Production are intentionally deferred and are not counted as missing core implementation.
+Layers 8–9 are implemented in `packages/infrastructure`: supervised process/adapter
+infrastructure (process supervision, JSON-RPC framing, adapter registration, scheduling,
+resource monitoring, secret leases, redacted logging) and production gateways (real-path
+`PathPolicy` containment, fail-closed rule-based policy engine, durable plugin registry,
+and supervised provider-neutral model/tool/kernel gateways with fallback and failure
+classification). Not yet implemented: **Layer 10** — the authoritative runtime API server
+(HTTP/WebSocket), composition root, durable event replay, and external-command idempotency
+— plus desktop, CLI, concrete provider adapter processes, plugin SDK, plugins,
+laboratories, and production workflows. Video Production and 3D/Game Production are
+intentionally deferred and are not counted as missing core implementation.
