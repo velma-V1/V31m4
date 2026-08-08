@@ -24,20 +24,21 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 - `docs/repository-map.md` records ownership for the Layer 6 application-use-case surface and Layer 7 persistence/artifact infrastructure.
 - `docs/reviews/layers-1-8-improvement-ledger.md` records Layer 8 process/adapter infrastructure and its failure-path coverage.
 
-These documents are not perfectly synchronized: `repo_map.md` still labels the current layer as Layer 7 and says process/adapter infrastructure is not implemented, while the Layer 1-8 ledger records Layer 8 implementation. Treat this as documentation lag that must be reconciled before claiming Layer 8 complete.
+Reconciled on 2026-08-08: `repo_map.md` now labels the current layer as Layer 8 and records Layer 7 persistence plus Layer 8 process/adapter infrastructure with the verified regression numbers above.
 
 ## Known verification evidence
 
 Latest repository-map evidence inspected during handoff setup reports:
 
-- Full Layer 1-8 regression: 286 passing cases across 60 test files.
-- Layer 7 real-infrastructure regression: 11 passing cases across 5 test files.
-- `pnpm typecheck`: 3/3 packages pass.
-- `pnpm build`: 3/3 packages pass.
-- Native gates recorded green: typecheck, test, build, lint, check.
-- Largest source file recorded at 468 lines.
+Re-run and verified on 2026-08-08 after restoring the Layer 7 content-addressed artifact store:
 
-Do not treat these historical results as proof for new changes. Re-run the appropriate focused and full gates after modifying code.
+- Full Layer 1-8 regression: 286 passing cases across 60 test files.
+- Layer 7-8 real-infrastructure regression: 21 passing cases across 9 test files.
+- `pnpm typecheck`: 4/4 packages pass (domain, contracts, application, infrastructure).
+- `pnpm build`: 4/4 packages pass (`tsc --noEmit`).
+- `pnpm lint` and `pnpm check`: green (0 errors, 1 info).
+
+Do not treat these results as proof for later changes. Re-run the appropriate focused and full gates after modifying code.
 
 ## Resolved architectural direction
 
@@ -88,17 +89,28 @@ Unless new evidence, compile/test failures, changed interfaces, or contradiction
 
 Use targeted search/read for the exact interface or invariant needed by the current task.
 
-## Known blocker / inconsistency
+## Resolved blocker (2026-08-08)
 
-Documentation lag exists between `repo_map.md`, `docs/repository-map.md`, and the Layer 1-8 improvement ledger regarding Layer 8. Verify the actual tree/tests and reconcile the maps before marking Layer 8 complete.
+At `6c24c9e` the infrastructure package did not build: `packages/infrastructure/src/index.ts`
+exported `./artifacts/content-addressed-artifact-store.js`, but that source file had never
+been committed (only its test and the barrel export existed), so infrastructure typecheck
+failed and 7 of 9 infra test files failed on the broken barrel import. The store was
+implemented from the existing `content-addressed-artifacts` test and the `ArtifactStorePort`
+contract (streamed SHA-256 hashing, atomic hash-addressed blob write, content dedup,
+expected-hash verification before persistence, transactional metadata with rollback blob
+cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers above).
 
 ## Current task / next action
 
-1. Verify the actual latest Layer 8 tree and tests on `canonical/layers-6-10` rather than relying on stale map text.
-2. Reconcile repository maps/ownership documentation with the implemented state.
-3. Continue the approved canonical Layers 6-10 plan from the latest verified incomplete layer.
-4. Keep Video Production and 3D/Game Production deferred while preserving only their required extension points during core work.
-5. Use grouped implementation, focused tests during development, and the native full regression gate at layer checkpoints.
+1. Continue the approved canonical Layers 6-10 plan from the first verified-incomplete layer:
+   Layer 9 governed production gateways (Task 4 in
+   `docs/superpowers/plans/2026-08-07-layers-6-10-canonical.md`): provider-neutral
+   model/tool/kernel gateways, plugin registry, policy engine, and `PathPolicy` under
+   `packages/infrastructure/src/{gateways,plugins,policy,paths}`.
+2. Keep Video Production and 3D/Game Production deferred while preserving only their required
+   extension points during core work.
+3. Use grouped implementation, focused tests during development, and the native full
+   regression gate at layer checkpoints.
 
 ## Session-start rule
 

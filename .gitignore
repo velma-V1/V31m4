@@ -12,6 +12,10 @@ Thumbs.db
 .idea/
 runtime-data/
 artifacts/
+# The runtime artifact output directory is ignored above, but the Layer 7 source
+# package of the same name must remain tracked.
+!packages/infrastructure/src/artifacts/
+!packages/infrastructure/src/artifacts/**
 cache/
 checkpoints/
 .worktrees/
