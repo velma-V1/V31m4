@@ -50,35 +50,51 @@ Do not treat these results as proof for later changes. Re-run the appropriate fo
 - Application use cases orchestrate through existing domain/services/ports and preserve transaction/external-call boundaries.
 - World/runtime/API concerns belong to their owning later layers rather than being forced into earlier core layers.
 
-## Deferred production departments
+## Production departments (current state)
+
+The departments are implemented and verified as removable first-party departments on the generic
+host SDK; they are **not** deferred. What remains is the real production-adapter implementation and
+execution for external tools (see `real_external_adapters` below and
+`docs/reviews/target-host-validation.md`).
 
 ```text
+CORE := {
+  status: FROZEN_L1_L10,
+  baseline: 78dc2b7,
+  dependency_on_video: false,
+  dependency_on_game_3d: false,
+  MUST preserve_extension_points(DEPARTMENT_HOST)
+}
+
+DEPARTMENT_HOST := {
+  status: IMPLEMENTED,           // packages/department-host
+  role: GENERIC_REMOVABLE_DEPARTMENT_PLATFORM
+}
+
 VIDEO := {
-  role: removable_plugin,
-  implementation: DEFER_UNTIL_CORE_COMPLETE,
+  status: IMPLEMENTED,           // plugins/video-production, verified + removable
+  role: REMOVABLE_FIRST_PARTY_DEPARTMENT,
   core_dependency: false,
-  now: RESERVE(extension_slot + required_interfaces),
-  later: DESIGN_AND_BUILD_SEPARATELY,
-  open_gen_ai: MAY_EVALUATE_OR_REUSE_PARTS_LATER
+  host_dependency: true,
+  real_external_adapters: TARGET_HOST_VALIDATION_PENDING,   // ffmpeg/Blender/ComfyUI/gen+vision models
+  open_generative_ai_core_dependency: false
 }
 
 GAME_3D := {
-  role: removable_plugin,
-  implementation: DEFER_UNTIL_CORE_COMPLETE,
+  status: IMPLEMENTED,           // plugins/game-production, verified + removable
+  role: REMOVABLE_FIRST_PARTY_DEPARTMENT,
   core_dependency: false,
-  now: RESERVE(extension_slot + required_interfaces),
-  later: DESIGN_AND_BUILD_SEPARATELY
-}
-
-CORE := {
-  build_now: true,
-  MUST_NOT depend_on(VIDEO | GAME_3D),
-  MUST preserve_extension_points(VIDEO | GAME_3D),
-  MUST_NOT include(Open_Generative_AI)
+  host_dependency: true,
+  real_external_adapters: TARGET_HOST_VALIDATION_PENDING    // Godot/Unreal/Blender
 }
 ```
 
-These deferred departments do not gate completion of the core system. Open Generative AI is not part of core; only its potentially useful components may be evaluated later during Video Production design.
+Distinction: the departments themselves are implemented and verified using deterministic reference
+adapters (orchestration, caching, checkpoint/resume, output verification, and removability all
+pass). Incomplete is the **real production-adapter** implementation/execution for external tools —
+ffmpeg, Blender, ComfyUI, generation/vision models, Godot, Unreal — which is target-host validation,
+not department work. Do not describe the departments as deferred. Open Generative AI is not a core
+dependency; it may be evaluated only for optional reusable parts within the Video department.
 
 ## Areas already mapped
 
