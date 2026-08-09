@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import {
   ApplicationError,
   type ApplicationJsonValue,
@@ -10,6 +12,12 @@ import type { RuntimeComposition } from "../composition-root.js";
 import type { EventStreamFrame } from "../event-stream.js";
 import { mapErrorToHttp } from "./error-mapper.js";
 
+// Loaded once at server creation: the operator interface is a single static file with no build
+// step (plain HTML/CSS/JS, no framework, no external requests), served unauthenticated like
+// /health — it is the smallest maintainable local-first UI compatible with this runtime's
+// existing HTTP+SSE surface, not a parallel dashboard architecture.
+const OPERATOR_UI_HTML = readFileSync(join(import.meta.dirname, "../../public/index.html"), "utf8");
+
 function respondJson(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   response.writeHead(status, {
@@ -17,6 +25,14 @@ function respondJson(response: ServerResponse, status: number, body: unknown): v
     "content-length": Buffer.byteLength(text),
   });
   response.end(text);
+}
+
+function respondHtml(response: ServerResponse, html: string): void {
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(html),
+  });
+  response.end(html);
 }
 
 function readJsonBody(request: IncomingMessage, limitBytes: number): Promise<ApplicationJsonValue> {
@@ -156,6 +172,11 @@ export function createRuntimeServer(composition: RuntimeComposition): Server {
     const url = new URL(request.url ?? "/", "http://localhost");
     const method = request.method ?? "GET";
     const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
+
+    if (method === "GET" && url.pathname === "/") {
+      respondHtml(response, OPERATOR_UI_HTML);
+      return;
+    }
 
     if (method === "GET" && url.pathname === "/health") {
       respondJson(response, 200, {

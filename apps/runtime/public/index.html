@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>V31M4 Operator</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.25rem; }
+  h2 { font-size: 1rem; margin-top: 2rem; border-bottom: 1px solid currentColor; padding-bottom: .25rem; }
+  section { margin-bottom: 1.5rem; }
+  label { display: block; font-size: .85rem; margin-top: .5rem; }
+  input[type="text"], input[type="password"] { width: 100%; box-sizing: border-box; padding: .4rem; font: inherit; }
+  button { margin-top: .6rem; padding: .4rem .8rem; font: inherit; cursor: pointer; }
+  pre { background: rgba(128,128,128,.15); padding: .6rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .status-ok { color: #1a7f37; }
+  .status-bad { color: #cf222e; }
+  .muted { opacity: .7; font-size: .85rem; }
+  ul#events { list-style: none; padding: 0; margin: 0; max-height: 260px; overflow-y: auto; }
+  ul#events li { padding: .3rem 0; border-bottom: 1px solid rgba(128,128,128,.25); font-size: .85rem; }
+  .badge { display: inline-block; padding: 0 .4rem; border-radius: .25rem; background: rgba(128,128,128,.2); font-size: .75rem; }
+</style>
+</head>
+<body>
+<h1>V31M4 Operator</h1>
+<p class="muted">Local-first control surface. This page never fabricates status — every value shown here came from a real response from this runtime.</p>
+
+<section>
+  <h2>Session</h2>
+  <label for="token">Bearer token (from the terminal running <code>pnpm dev</code>)</label>
+  <input id="token" type="password" placeholder="paste the dev token here" />
+  <button id="saveToken" type="button">Save token</button>
+  <span id="tokenStatus" class="muted"></span>
+</section>
+
+<section>
+  <h2>System health</h2>
+  <div id="health" class="muted">loading…</div>
+</section>
+
+<section>
+  <h2>Projects</h2>
+  <label for="projectName">Name</label>
+  <input id="projectName" type="text" placeholder="Demo Project" />
+  <label for="projectRootPath">Root path</label>
+  <input id="projectRootPath" type="text" placeholder="demo-project" />
+  <button id="createProject" type="button">Create project</button>
+  <div id="projectResult" class="muted"></div>
+</section>
+
+<section>
+  <h2>Live events</h2>
+  <div id="eventsStatus" class="muted">not connected — set a token above</div>
+  <ul id="events"></ul>
+</section>
+
+<script>
+"use strict";
+
+const tokenInput = document.getElementById("token");
+const tokenStatus = document.getElementById("tokenStatus");
+const healthEl = document.getElementById("health");
+const projectResultEl = document.getElementById("projectResult");
+const eventsStatusEl = document.getElementById("eventsStatus");
+const eventsListEl = document.getElementById("events");
+
+function loadToken() {
+  return localStorage.getItem("v31m4_token") ?? "";
+}
+function authHeader() {
+  const token = loadToken();
+  return token.length > 0 ? { authorization: "Bearer " + token } : {};
+}
+
+tokenInput.value = loadToken();
+document.getElementById("saveToken").addEventListener("click", () => {
+  localStorage.setItem("v31m4_token", tokenInput.value.trim());
+  tokenStatus.textContent = "saved";
+  connectEvents(0);
+});
+
+async function refreshHealth() {
+  try {
+    const response = await fetch("/health");
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const body = await response.json();
+    healthEl.innerHTML =
+      '<span class="status-ok">status: ' + body.status + "</span> — " +
+      "durable log head: " + body.latestSequence + ", " +
+      "live subscribers: " + body.subscriptions;
+  } catch (error) {
+    healthEl.innerHTML = '<span class="status-bad">unreachable: ' + String(error) + "</span>";
+  }
+}
+refreshHealth();
+setInterval(refreshHealth, 5000);
+
+document.getElementById("createProject").addEventListener("click", async () => {
+  const name = document.getElementById("projectName").value.trim();
+  const rootPath = document.getElementById("projectRootPath").value.trim();
+  if (name.length === 0 || rootPath.length === 0) {
+    projectResultEl.innerHTML = '<span class="status-bad">name and root path are required</span>';
+    return;
+  }
+  projectResultEl.textContent = "submitting…";
+  try {
+    const response = await fetch("/commands/project.create", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+        ...authHeader(),
+      },
+      body: JSON.stringify({
+        schemaVersion: "1.0.0",
+        requestId: crypto.randomUUID(),
+        name,
+        rootPath,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      projectResultEl.innerHTML =
+        '<span class="status-bad">' + (body.error?.code ?? "error") + ": " +
+        (body.error?.message ?? "request failed") + "</span>";
+      return;
+    }
+    projectResultEl.innerHTML =
+      '<span class="status-ok">created</span> <pre>' +
+      JSON.stringify(body.result.project, null, 2) + "</pre>";
+  } catch (error) {
+    projectResultEl.innerHTML = '<span class="status-bad">' + String(error) + "</span>";
+  }
+});
+
+// EventSource cannot set an Authorization header, so the live event stream is read manually over
+// fetch()'s streaming response body instead, parsing the same SSE frame format the server sends.
+// afterSequence tracks the resumable cursor so a dropped connection reconnects without replaying
+// events already shown or losing any that occurred while disconnected.
+let eventsAbort = null;
+
+async function connectEvents(afterSequence) {
+  if (loadToken().length === 0) {
+    eventsStatusEl.textContent = "not connected — set a token above";
+    return;
+  }
+  if (eventsAbort !== null) eventsAbort.abort();
+  const controller = new AbortController();
+  eventsAbort = controller;
+  eventsStatusEl.textContent = "connecting… (after sequence " + afterSequence + ")";
+  let cursor = afterSequence;
+  try {
+    const response = await fetch("/events?afterSequence=" + afterSequence, {
+      headers: authHeader(),
+      signal: controller.signal,
+    });
+    if (!response.ok || response.body === null) {
+      throw new Error("HTTP " + response.status);
+    }
+    eventsStatusEl.textContent = "connected (after sequence " + afterSequence + ")";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      for (let boundary = buffer.indexOf("\n\n"); boundary !== -1; boundary = buffer.indexOf("\n\n")) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (dataLine === undefined) continue;
+        const parsed = JSON.parse(dataLine.slice("data: ".length));
+        if (parsed.kind === "event") {
+          cursor = parsed.sequence;
+          const item = document.createElement("li");
+          item.innerHTML =
+            '<span class="badge">#' + parsed.sequence + "</span> " +
+            (parsed.event?.type ?? "unknown") + " — " + (parsed.event?.aggregateId ?? "");
+          eventsListEl.prepend(item);
+        }
+      }
+    }
+    eventsStatusEl.textContent = "stream ended by server — reconnecting…";
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    eventsStatusEl.textContent = "disconnected (" + String(error) + ") — reconnecting…";
+  }
+  setTimeout(() => connectEvents(cursor), 1500);
+}
+
+connectEvents(0);
+</script>
+</body>
+</html>
