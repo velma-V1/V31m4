@@ -49,6 +49,13 @@ The Video Department must integrate only through generic core extension contract
 
 ## Deferred 3D/Game Production department
 
+**Superseded 2026-08-09** for the real-engine-integration question by
+`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`: the department
+shell itself is no longer deferred (implemented and verified — see
+`docs/reviews/post-core-program-status.md`, Phase C), and its real (non-reference) adapters are to
+be built against Summer as the execution platform rather than a custom Godot/Unreal agent stack.
+The paragraph below is retained as the historical record of the original deferral decision.
+
 The 3D/Game Production department remains a post-core first-party plugin. Game-engine-specific agents, Godot/Unreal integrations, asset-generation pipelines, engine automation, simulation, testing, preview, build, and export workflows are deferred.
 
 The Game department must integrate only through generic core extension contracts and may not require core redesign.

@@ -1,6 +1,13 @@
-# Deferred 3D and Game Production Department
+# Deferred 3D and Game Production Department (historical)
 
-**Status:** Deferred until after V31M4 core completion
+**Superseded 2026-08-09:** the department shell described as deferred below is implemented and
+verified — see `docs/reviews/post-core-program-status.md` (Phase C) and
+`plugins/game-production/`. Its real (non-reference) adapters are to be built against Summer as
+the execution platform, per `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`,
+not the generic Godot/Unreal agent approach implied below. This file is retained as the historical
+record of the original preserved design.
+
+**Status (historical, at time of writing):** Deferred until after V31M4 core completion
 **Type:** First-party removable production plugin
 **Core dependency:** None
 

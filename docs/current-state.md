@@ -91,16 +91,23 @@ GAME_3D := {
   role: REMOVABLE_FIRST_PARTY_DEPARTMENT,
   core_dependency: false,
   host_dependency: true,
-  real_external_adapters: TARGET_HOST_VALIDATION_PENDING    // Godot/Unreal/Blender
+  execution_platform_decision: SUMMER,   // 2026-08-09, architecture only, no code changed —
+                                          // see docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md
+  real_external_adapters: TARGET_HOST_VALIDATION_PENDING    // SummerAdapter (Godot via Summer's MCP/CLI);
+                                                              // direct Blender/Unreal adapters out of scope for now
 }
 ```
 
 Distinction: the departments themselves are implemented and verified using deterministic reference
 adapters (orchestration, caching, checkpoint/resume, output verification, and removability all
-pass). Incomplete is the **real production-adapter** implementation/execution for external tools —
-ffmpeg, Blender, ComfyUI, generation/vision models, Godot, Unreal — which is target-host validation,
-not department work. Do not describe the departments as deferred. Open Generative AI is not a core
-dependency; it may be evaluated only for optional reusable parts within the Video department.
+pass). Two of Video's real production adapters are now implemented and target-host-validated
+(ffmpeg `AssemblyAdapter`, ffmpeg+Ollama `VisionQcAdapter`). Still incomplete: Video's
+`ShotGenerationAdapter` (ComfyUI/generation model) and all of Game/3D's real adapters (Summer,
+reaching Godot via its own MCP/CLI, per
+`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) — none of these
+tools are installed here. This remains target-host validation, not department work. Do not
+describe the departments as deferred. Open Generative AI is not a core dependency; it may be
+evaluated only for optional reusable parts within the Video department.
 
 ## Areas already mapped
 
@@ -221,11 +228,20 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        Video package gate: typecheck clean, lint clean (0 errors), 17/17 tests pass with
        `V31M4_TARGET_HOST=1`; without the flag, the 10 real-tool tests (across both real adapters)
        skip cleanly and 7 reference-adapter tests still pass.
-     - **PENDING:** Blender, Godot, Unreal, ComfyUI are not installed on this machine (checked
-       Program Files, Start Menu, winget, registry App Paths — none found); installing them is a
-       material user choice (large downloads/licensing) and was not done automatically. No real
-       `ShotGenerationAdapter` exists yet — no installed Ollama model does video/image generation
-       (they are text/vision LLMs), and ComfyUI/a generation model would need to be installed.
+     - **PENDING:** Blender, Godot, Unreal, Summer, ComfyUI are not installed on this machine
+       (checked Program Files, Start Menu, winget, registry App Paths — none found); installing
+       them is a material user choice (large downloads/licensing) and was not done automatically.
+       No real `ShotGenerationAdapter` exists yet — no installed Ollama model does video/image
+       generation (they are text/vision LLMs), and ComfyUI/a generation model would need to be
+       installed.
+     - **Game department execution-platform decision (2026-08-09):** Summer is the primary
+       execution platform for the Game department's real adapters, reaching Godot through Summer's
+       own MCP/CLI, behind the *existing* `AssetAdapter`/`SceneBuildAdapter`/
+       `SceneValidationAdapter`/`PackageAdapter` ports — no new port surface, no code changed. A
+       direct Blender/Unreal adapter and any custom Godot agent bridge are explicitly out of scope
+       until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
+       implemented. See
+       `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
 
 ## Session-start rule
 

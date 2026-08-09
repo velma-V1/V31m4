@@ -16,9 +16,10 @@ Local-first target machine: WSL2 (Linux) on Windows 11 Home, RTX 4070 SUPER 12GB
 | pnpm | yes | 11.17.0 | WSL-native (corepack) | native | n/a | n/a | yes | none |
 | ffmpeg | yes | 8.1.2-full_build (gyan.dev) | `C:\Users\Matt\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe` | invokable as `ffmpeg.exe` via PATH interop | native Windows binary | not exercised (no GPU encode used) | **yes — implemented** | none |
 | Ollama | yes | 0.32.6 | `C:\Users\Matt\AppData\Local\Programs\Ollama\ollama.exe`, service on `localhost:11434` | invokable as `ollama.exe` via PATH interop; HTTP API reachable from WSL | native Windows service | models report `vision` capability where applicable | **yes — implemented** (`VisionQcAdapter`, model `qwen3.5:9b`) | none |
-| Blender | no | — | not found (Program Files, Start Menu, winget, registry App Paths all checked) | — | — | — | no | not installed; large/material install |
-| Godot | no | — | not found (same checks) | — | — | — | no | not installed; large/material install |
-| Unreal | no | — | not found | — | — | — | no | not installed; very large/material install |
+| Blender | no | — | not found (Program Files, Start Menu, winget, registry App Paths all checked) | — | — | — | no | not installed; deprioritized — Game department's real adapters target Summer first (see below), not Blender directly |
+| Godot | no | — | not found (same checks) | — | — | — | no | not installed; primary Game-department engine, reached via Summer (not a direct V31M4 adapter) once Summer is installed and validated |
+| Unreal | no | — | not found | — | — | — | no | not installed; explicitly out of scope for now, per `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md` |
+| Summer | no | — | not found (no prior reference to it anywhere in this repository or on this machine) | — | — | — | no | not installed; primary execution platform for Game department real adapters (`GameDept_Port -> SummerAdapter -> Summer MCP/CLI -> SummerEngine/Godot`) — see `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`. No adapter is implemented yet. |
 | ComfyUI | no | — | not found | — | — | — | no | not installed; requires model download(s) |
 | Python (Windows) | yes | 3.14 / 3.13 present | `C:\Python314`, `C:\Users\Matt\AppData\Local\Programs\Python\Python313` | via `.exe` interop | native | n/a | n/a | not currently required by any adapter |
 
@@ -50,14 +51,18 @@ required in this WSL2 configuration.
     Ollama model `qwen3.5:9b`, GPU-loaded on the RTX 4070 SUPER 12GB.
 
   See "Real adapter evidence" below for both.
-- **NOT executed here, and deferred:** Blender, Godot, Unreal, ComfyUI, and any real image/video
-  *generation* model. These are not installed on this machine, and installing them is a material
-  user choice (large downloads / licensing), so they were not installed automatically per the
-  operating contract. The adapters that would drive them remain defined as replaceable interfaces
-  with only their deterministic reference implementation: Video's `ShotGenerationAdapter` (needs
-  ComfyUI or a local generation model — no installed Ollama model does video/image generation, only
-  text/vision) and all of 3D/Game's `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/
-  `PackageAdapter` (need Blender/Godot/Unreal).
+- **NOT executed here, and deferred:** Blender, Godot, Unreal, Summer, ComfyUI, and any real
+  image/video *generation* model. None of these are installed on this machine, and installing them
+  is a material user choice (large downloads / licensing), so they were not installed automatically
+  per the operating contract. The adapters that would drive them remain defined as replaceable
+  interfaces with only their deterministic reference implementation: Video's
+  `ShotGenerationAdapter` (needs ComfyUI or a local generation model — no installed Ollama model
+  does video/image generation, only text/vision) and all of 3D/Game's
+  `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/`PackageAdapter`. Per
+  `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`, the Game
+  department's real adapters now target Summer (reaching Godot through Summer's MCP/CLI) as the
+  primary execution platform — direct Blender/Unreal adapters and any custom Godot agent bridge are
+  explicitly out of scope until that path is real and validated.
 
 ## Real adapter evidence — Video `AssemblyAdapter` (ffmpeg)
 
@@ -127,8 +132,11 @@ orchestrator depends on:
 
 Prerequisites on the target machine (record exact versions actually used):
 - Node 22.x, pnpm 11.x (match this repo's toolchain).
-- The external tools under test, on `PATH`: ffmpeg; Blender; Godot (and/or Unreal); ComfyUI or the
-  chosen generation backend; the chosen vision-QC model endpoint. GPU as required.
+- The external tools under test, on `PATH`: ffmpeg; Summer (Game department's primary execution
+  platform, reaching Godot through Summer's own MCP/CLI — see
+  `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`); ComfyUI or the
+  chosen generation backend; the chosen vision-QC model endpoint. GPU as required. Direct
+  Blender/Unreal adapters are out of scope for now.
 
 Process boundary (verified approach, as implemented by both real adapters): a **department
 plugin's runtime code must not gain `@v31m4/infrastructure` as a runtime dependency** — that
@@ -236,6 +244,7 @@ Current, accurate status of this repository (2026-08-09):
 - **Actually executed and evidenced:** ffmpeg (via `FfmpegAssemblyAdapter` and, for frame
   extraction, `OllamaVisionQcAdapter`) and Ollama's `qwen3.5:9b` vision model (via
   `OllamaVisionQcAdapter`) — see "Real adapter evidence" above for both.
-- **NOT executed here, and not to be claimed as executed:** Blender, Godot, Unreal, ComfyUI, any
-  real image/video generation model, and any Ollama vision model other than `qwen3.5:9b`
-  (`gemma3:12b` and `devstral-small-2:24b` are installed and vision-capable but unexercised).
+- **NOT executed here, and not to be claimed as executed:** Blender, Godot, Unreal, Summer,
+  ComfyUI, any real image/video generation model, and any Ollama vision model other than
+  `qwen3.5:9b` (`gemma3:12b` and `devstral-small-2:24b` are installed and vision-capable but
+  unexercised).

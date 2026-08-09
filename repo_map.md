@@ -88,7 +88,9 @@ as their reference adapter: Video's `AssemblyAdapter` (real ffmpeg) and `VisionQ
 ffmpeg + a real installed Ollama vision model) — see `docs/reviews/target-host-validation.md`. The
 remaining boundaries (Video `ShotGenerationAdapter`; Game/3D's `AssetAdapter`/`SceneBuildAdapter`/
 `SceneValidationAdapter`/`PackageAdapter`) still have only their reference adapter: their real tools
-(ComfyUI/a generation model; Blender/Godot/Unreal) are not installed on the current target machine.
+(ComfyUI/a generation model; Summer, the Game department's primary execution platform — see
+`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) are not installed
+on the current target machine.
 
 ### Verified application-service behavior
 
@@ -160,5 +162,6 @@ laboratories, additional production workflows, outbox retention/pruning (an addi
 feature — see `docs/reviews/production-readiness-audit.md`), Video's `ShotGenerationAdapter`, and
 any of 3D/Game's real `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/`PackageAdapter`
 implementations — these remain on their deterministic reference adapter because their real tools
-(ComfyUI/a generation model; Blender/Godot/Unreal) are not installed on the current target
-machine.
+(ComfyUI/a generation model; Summer, the Game department's primary execution platform per
+`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) are not installed on
+the current target machine.
