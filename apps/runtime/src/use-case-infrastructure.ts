@@ -6,6 +6,7 @@ import type {
   AuditRecord,
   AuditStorePort,
   ClockPort,
+  MissionRepositoryPort,
   OperationContext,
   PortPage,
   PortPageRequest,
@@ -16,11 +17,12 @@ import type {
   WriteCondition,
 } from "@v31m4/application";
 import { ApplicationError } from "@v31m4/application";
-import type { Project, ProjectId } from "@v31m4/domain";
+import type { MissionContract, Project, ProjectId } from "@v31m4/domain";
 import { SqliteRecordStore, type SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 import type { ZodType } from "zod";
 
 const PROJECT_TYPE = "project";
+const MISSION_TYPE = "mission";
 const APPROVAL_TYPE = "approval";
 const AUDIT_TYPE = "audit";
 
@@ -122,6 +124,32 @@ export class SqliteProjectRepository implements ProjectRepositoryPort {
     transaction: UnitOfWorkTransaction,
   ): Promise<Versioned<Project>> {
     return this.#records.save(PROJECT_TYPE, project.id, project, condition, transaction);
+  }
+}
+
+/** `MissionRepositoryPort` backed by the generic record store. */
+export class SqliteMissionRepository implements MissionRepositoryPort {
+  readonly #records: SqliteRecordStore;
+  constructor(private readonly database: SqliteRuntimeDatabase) {
+    this.#records = new SqliteRecordStore(database);
+  }
+  async getById(id: string): Promise<Versioned<MissionContract> | null> {
+    return this.#records.get<MissionContract>(MISSION_TYPE, id);
+  }
+  async listByProject(
+    projectId: string,
+    request: PortPageRequest,
+  ): Promise<PortPage<Versioned<MissionContract>>> {
+    const page = listByType<MissionContract>(this.database, MISSION_TYPE, request);
+    const items = page.items.filter((entry) => entry.value.projectId === projectId);
+    return Object.freeze({ ...page, items: Object.freeze(items) });
+  }
+  async append(
+    mission: MissionContract,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<MissionContract>> {
+    return this.#records.append(MISSION_TYPE, mission.id, mission, transaction);
   }
 }
 

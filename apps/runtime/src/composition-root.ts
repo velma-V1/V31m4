@@ -6,11 +6,17 @@ import {
   createProject,
   isApplicationJsonValue,
   type OperationContext,
+  submitMission,
   type UnitOfWorkTransaction,
   type WriteCondition,
   WriteConditions,
 } from "@v31m4/application";
-import { createProjectRequestSchema, createProjectResponseSchema } from "@v31m4/contracts";
+import {
+  createProjectRequestSchema,
+  createProjectResponseSchema,
+  submitMissionRequestSchema,
+  submitMissionResponseSchema,
+} from "@v31m4/contracts";
 import { createDomainEvent } from "@v31m4/domain";
 import {
   EventReplayStore,
@@ -29,6 +35,7 @@ import {
   passthroughUnitOfWork,
   SqliteApprovalStore,
   SqliteAuditStore,
+  SqliteMissionRepository,
   SqliteProjectRepository,
   SystemClock,
 } from "./use-case-infrastructure.js";
@@ -191,6 +198,7 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
   // projects; every other actor/action is fail-closed denied by RuleBasedPolicyEngine's default.
   const clock = new SystemClock();
   const projects = new SqliteProjectRepository(database);
+  const missions = new SqliteMissionRepository(database);
   const approvals = new SqliteApprovalStore(database);
   const audit = new SqliteAuditStore(database);
   const policyRules: readonly PolicyRule[] = Object.freeze([
@@ -237,6 +245,50 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
       requestId: request.requestId,
       project: saved.value,
     });
+  });
+
+  // submitMission does not call authorizeAction itself (unlike createProject) - that is the
+  // use case's own design, preserved as-is rather than adding a parallel policy check here.
+  service.register("mission.submit", async (payload, context, transaction) => {
+    const request = parseCommandPayload(submitMissionRequestSchema, payload);
+    const missionId = `mission-${randomUUID()}`;
+    const auditId = `audit-${randomUUID()}`;
+    const { schemaVersion: _schemaVersion, requestId, ...missionContent } = request;
+    // Zod's inferred type for an omitted-but-optional field is `T | undefined` (present under
+    // exactOptionalPropertyTypes), stricter in shape than but behaviorally identical to the
+    // domain type's plain optional key: a parsed, omitted field is simply absent at runtime,
+    // never present with value `undefined`. This cast bridges that structural-typing friction at
+    // the one boundary where a validated contract payload becomes a use-case command.
+    const saved = await submitMission(
+      { unitOfWork: passthroughUnitOfWork(transaction), projects, missions, audit, clock },
+      { id: missionId, auditId, ...missionContent } as unknown as Parameters<
+        typeof submitMission
+      >[1],
+      context,
+    );
+    const event = createDomainEvent({
+      id: `event-${randomUUID()}`,
+      type: "mission.submitted",
+      aggregateType: "mission",
+      aggregateId: saved.value.id,
+      occurredAt: context.startedAt,
+      payload: {
+        missionId: saved.value.id,
+        projectId: saved.value.projectId,
+        title: saved.value.title,
+      },
+      metadata: {},
+    });
+    const sequence = await outbox.append(event, transaction);
+    transaction.afterCommit(() => coordinator.publish({ sequence, event }));
+    // Same structural-typing friction as above, at the response boundary: the parsed value is
+    // genuinely safe JSON at runtime (Zod guarantees it), just not structurally identical to
+    // ApplicationJsonValue's exact-optional-property shape.
+    return submitMissionResponseSchema.parse({
+      schemaVersion: request.schemaVersion,
+      requestId,
+      mission: saved.value,
+    }) as unknown as ApplicationJsonValue;
   });
 
   return Object.freeze({
