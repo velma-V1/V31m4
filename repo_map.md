@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Layer:** Production Gateways Layer 9
+**Layer:** Authoritative Runtime Layer 10
 **Branch:** `canonical/layers-6-10`
 **Parent layer:** hardened Layer 5 `5746e5f2571a08dea3cce0493adeac92ae025135`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
@@ -14,8 +14,14 @@ framing/correlation, adapter registration with restart-budget protection, bounde
 scheduling, resource monitoring, secret leases, and redacted logging. Layer 9 adds the
 production gateways: real-path containment (`PathPolicy`), a fail-closed rule-based policy
 engine, a durable plugin registry, and supervised provider-neutral model/tool/kernel
-gateways. All live in `packages/infrastructure`. The superseded Layer 6 was used only as
-reference and reconciled according to `docs/reviews/layer-6-reconciliation-matrix.md`.
+gateways. Layers 7–9 live in `packages/infrastructure`. Layer 10 adds the authoritative
+runtime under `apps/runtime`: a `node:http` HTTP surface with local session authentication,
+typed command/query/event routes, an idempotent external-command executor, the durable
+committed-event replay store, a resumable event-stream coordinator (replay-before-live,
+internal-gap and retention `refresh_required` refusal, bounded slow-consumer disconnect),
+startup recovery over the durable log, and checkpoint-safe shutdown. The superseded Layer 6
+was used only as reference and reconciled according to
+`docs/reviews/layer-6-reconciliation-matrix.md`.
 
 ### Core completion scope decision
 
@@ -57,7 +63,10 @@ packages/
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
     └── tests/                            # Layer 4–6 verification
-└── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins
+└── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store
+
+apps/
+└── runtime/                             # Layer 10: node:http runtime, auth, typed routes, external-command executor, event-stream coordinator, recovery, shutdown
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/                                    # Architecture, maps, plans, reviews, and deferred extension designs
@@ -83,15 +92,16 @@ docs/                                    # Architecture, maps, plans, reviews, a
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–9 regression:** **306 passing cases across 64 test files** (re-run and verified 2026-08-08).
+- **Full Layer 1–10 regression:** **329 passing cases across 69 test files** (re-run and verified 2026-08-09).
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
-- **Typecheck:** `pnpm typecheck` → **4/4 packages pass**. **Build:** `pnpm build` → **4/4 pass** (each package compiles under `tsc --noEmit`).
+- **Layer 10** authoritative runtime regression: **23 passing cases across 4 test files** — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, and the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health).
+- **Typecheck:** `pnpm typecheck` → **5/5 packages pass**. **Build:** `pnpm build` → **5/5 pass** (each package compiles under `tsc --noEmit`).
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**306 cases across 64 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**329 cases across 69 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved

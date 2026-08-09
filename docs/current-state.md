@@ -17,6 +17,8 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 - Layer 6: 21 application use-case orchestration entrypoints are present under `packages/application/src/use-cases`.
 - Layer 7: SQLite persistence, transactional outbox/idempotency, content-addressed artifacts, and verified backup/restore are present under `packages/infrastructure`.
 - Layer 8: repository evidence records process supervision, JSON-RPC framing/correlation, adapter registration, restart-budget protection, bounded scheduling, resource monitoring, secret leases, and redacted logging.
+- Layer 9: governed production gateways — real-path containment (`PathPolicy`), a fail-closed rule-based policy engine, a durable plugin registry, and supervised provider-neutral model/tool/kernel gateways under `packages/infrastructure/src/{paths,policy,plugins,gateways}`.
+- Layer 10: authoritative runtime under `apps/runtime` — a `node:http` surface with local session authentication, typed command/query/event routes, an idempotent external-command executor, the durable committed-event replay store (`packages/infrastructure/src/events/event-replay-store.ts`), a resumable event-stream coordinator (replay-before-live boundary, internal-gap and retention `refresh_required` refusal, bounded slow-consumer disconnect with a resumable cursor), startup recovery over the durable log, and checkpoint-safe shutdown.
 
 ## Important repository evidence already inspected
 
@@ -30,12 +32,12 @@ Reconciled on 2026-08-08: `repo_map.md` now labels the current layer as Layer 8 
 
 Latest repository-map evidence inspected during handoff setup reports:
 
-Re-run and verified on 2026-08-08 after restoring the Layer 7 content-addressed artifact store:
+Re-run and verified on 2026-08-09 after completing the Layer 10 authoritative runtime:
 
-- Full Layer 1-8 regression: 286 passing cases across 60 test files.
-- Layer 7-8 real-infrastructure regression: 21 passing cases across 9 test files.
-- `pnpm typecheck`: 4/4 packages pass (domain, contracts, application, infrastructure).
-- `pnpm build`: 4/4 packages pass (`tsc --noEmit`).
+- Full Layer 1-10 regression: 329 passing cases across 69 test files.
+- Layer 10 authoritative-runtime regression: 23 passing cases across 4 test files (external-command idempotency, durable event replay, event-stream coordinator, config validation, live HTTP surface incl. SSE replay and cross-restart recovery).
+- `pnpm typecheck`: 5/5 packages pass (domain, contracts, application, infrastructure, runtime).
+- `pnpm build`: 5/5 packages pass (`tsc --noEmit`).
 - `pnpm lint` and `pnpm check`: green (0 errors, 1 info).
 
 Do not treat these results as proof for later changes. Re-run the appropriate focused and full gates after modifying code.
@@ -102,19 +104,27 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
 
 ## Current task / next action
 
-1. Layer 9 governed production gateways: DONE and verified green (2026-08-08) — `PathPolicy`
-   real-path containment, fail-closed `RuleBasedPolicyEngine`, `SqlitePluginRegistry`, and
-   supervised `SupervisedModel/Tool/ProductionKernel` gateways under
-   `packages/infrastructure/src/{paths,policy,plugins,gateways}`. Full gate: typecheck 4/4,
-   306 tests / 64 files, build 4/4, lint/check clean.
-2. Next: Layer 10 authoritative runtime (Task 5 in
-   `docs/superpowers/plans/2026-08-07-layers-6-10-canonical.md`) — Fastify runtime,
-   composition root, strict config, authenticated local sessions, typed routes, WebSocket
-   events with the durable event-replay contract, and the external-command idempotency
-   contract, under `apps/runtime/`.
-2. Keep Video Production and 3D/Game Production deferred while preserving only their required
+1. Layer 9 governed production gateways: DONE and verified green — `PathPolicy` real-path
+   containment, fail-closed `RuleBasedPolicyEngine`, `SqlitePluginRegistry`, and supervised
+   `SupervisedModel/Tool/ProductionKernel` gateways under
+   `packages/infrastructure/src/{paths,policy,plugins,gateways}`.
+2. Layer 10 authoritative runtime (Task 5 in
+   `docs/superpowers/plans/2026-08-07-layers-6-10-canonical.md`): DONE and verified green
+   (2026-08-09) under `apps/runtime`. Composition root, strict validated config,
+   authenticated local sessions, typed command/query/event routes, error mapping,
+   idempotent external-command executor, durable committed-event replay store + resumable
+   event-stream coordinator, startup recovery, and checkpoint-safe shutdown. Full gate:
+   typecheck 5/5, 329 tests / 69 files, build 5/5, lint/check clean. Transport decision: the
+   event stream is served over SSE (Last-Event-ID ↔ `afterSequence`) on `node:http` rather
+   than a hand-rolled WebSocket framing layer — the zero-runtime-dependency, correctness-
+   maximizing binding for a loopback local-first runtime; the coordinator is transport-
+   agnostic so a WebSocket binding can be added later without touching replay semantics.
+3. Next: Task 6 integrated Layers 1–10 hardening (four passes — invariant/state-machine,
+   hostile-input/security, crash/concurrency/recovery, clean-room architecture) then Task 7
+   clean-checkout verification.
+4. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
-3. Use grouped implementation, focused tests during development, and the native full
+5. Use grouped implementation, focused tests during development, and the native full
    regression gate at layer checkpoints.
 
 ## Session-start rule

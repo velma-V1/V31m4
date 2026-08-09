@@ -1,0 +1,135 @@
+import { ApplicationError } from "@v31m4/application";
+
+/** A single authenticated local principal and its bearer token. */
+export interface RuntimeSession {
+  readonly token: string;
+  readonly actorId: string;
+  readonly roles: readonly string[];
+}
+
+/** Fully validated runtime configuration. Construct only through {@link createRuntimeConfig}. */
+export interface RuntimeConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly databasePath: string;
+  readonly sessions: readonly RuntimeSession[];
+  readonly eventQueueLimit: number;
+  readonly replayBatchSize: number;
+  readonly maxRequestBytes: number;
+  readonly shutdownTimeoutMs: number;
+}
+
+export interface RuntimeConfigInput {
+  readonly host?: string;
+  readonly port: number;
+  readonly databasePath: string;
+  readonly sessions: readonly RuntimeSession[];
+  readonly eventQueueLimit?: number;
+  readonly replayBatchSize?: number;
+  readonly maxRequestBytes?: number;
+  readonly shutdownTimeoutMs?: number;
+}
+
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+function invalid(message: string, details: Record<string, string | number>): never {
+  throw new ApplicationError("INVALID_APPLICATION_INPUT", message, { details });
+}
+
+function requireInt(value: number, label: string, min: number, max: number): number {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    invalid(`${label} must be an integer in [${min}, ${max}].`, { label, value });
+  }
+  return value;
+}
+
+/**
+ * Validates and freezes runtime configuration. The runtime is local-first: it binds a loopback
+ * host, requires at least one session whose bearer token has real entropy, and rejects out-of-range
+ * bounds rather than silently clamping them, so misconfiguration fails closed at startup.
+ */
+export function createRuntimeConfig(input: RuntimeConfigInput): RuntimeConfig {
+  const host = input.host ?? "127.0.0.1";
+  if (!LOOPBACK_HOSTS.has(host)) {
+    invalid("Runtime host must be loopback for local-first operation.", { host });
+  }
+  const port = requireInt(input.port, "port", 0, 65535);
+  if (input.databasePath.trim().length === 0) {
+    invalid("Runtime database path is required.", { databasePath: input.databasePath });
+  }
+  if (input.sessions.length === 0) {
+    invalid("At least one authenticated session is required.", { sessions: input.sessions.length });
+  }
+  const seenTokens = new Set<string>();
+  const sessions = input.sessions.map((session) => {
+    if (session.token.length < 16) {
+      invalid("Session token must be at least 16 characters.", { actorId: session.actorId });
+    }
+    if (seenTokens.has(session.token)) {
+      invalid("Session tokens must be unique.", { actorId: session.actorId });
+    }
+    seenTokens.add(session.token);
+    if (!ID_PATTERN.test(session.actorId)) {
+      invalid("Session actor id must use canonical durable-ID syntax.", {
+        actorId: session.actorId,
+      });
+    }
+    for (const role of session.roles) {
+      if (!ID_PATTERN.test(role)) {
+        invalid("Session role must use canonical durable-ID syntax.", { role });
+      }
+    }
+    return Object.freeze({
+      token: session.token,
+      actorId: session.actorId,
+      roles: Object.freeze([...session.roles]),
+    });
+  });
+  return Object.freeze({
+    host,
+    port,
+    databasePath: input.databasePath,
+    sessions: Object.freeze(sessions),
+    eventQueueLimit: requireInt(input.eventQueueLimit ?? 1024, "eventQueueLimit", 1, 1_000_000),
+    replayBatchSize: requireInt(input.replayBatchSize ?? 512, "replayBatchSize", 1, 100_000),
+    maxRequestBytes: requireInt(
+      input.maxRequestBytes ?? 1_048_576,
+      "maxRequestBytes",
+      1,
+      67_108_864,
+    ),
+    shutdownTimeoutMs: requireInt(
+      input.shutdownTimeoutMs ?? 10_000,
+      "shutdownTimeoutMs",
+      0,
+      600_000,
+    ),
+  });
+}
+
+/** Loads and validates configuration from a process environment. */
+export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
+  const token = env["V31M4_AUTH_TOKEN"];
+  const databasePath = env["V31M4_DATABASE"];
+  if (token === undefined || databasePath === undefined) {
+    invalid("V31M4_AUTH_TOKEN and V31M4_DATABASE are required.", {
+      hasToken: token === undefined ? "no" : "yes",
+      hasDatabase: databasePath === undefined ? "no" : "yes",
+    });
+  }
+  const roles = (env["V31M4_ACTOR_ROLES"] ?? "operator")
+    .split(",")
+    .map((role) => role.trim())
+    .filter((role) => role.length > 0);
+  const queueLimit = env["V31M4_EVENT_QUEUE_LIMIT"];
+  const batchSize = env["V31M4_REPLAY_BATCH_SIZE"];
+  return createRuntimeConfig({
+    host: env["V31M4_HOST"] ?? "127.0.0.1",
+    port: Number.parseInt(env["V31M4_PORT"] ?? "8787", 10),
+    databasePath,
+    sessions: [{ token, actorId: env["V31M4_ACTOR_ID"] ?? "operator", roles }],
+    ...(queueLimit === undefined ? {} : { eventQueueLimit: Number.parseInt(queueLimit, 10) }),
+    ...(batchSize === undefined ? {} : { replayBatchSize: Number.parseInt(batchSize, 10) }),
+  });
+}

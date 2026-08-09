@@ -108,14 +108,14 @@
 - Consumes: contracts, Layer 6 use cases, Layers 7–9 implementations.
 - Produces: authenticated local HTTP runtime, typed commands/queries, and resumable WebSocket subscriptions.
 
-- [ ] Write failing contract tests for `idempotencyKey`, `expectedRevision`, replay cursor, replay batches, `refresh_required`, and slow-client disconnect metadata.
-- [ ] Implement strict versioned schemas without a second idempotency mechanism.
-- [ ] Write failing real-runtime tests proving same-key/same-payload replay, payload conflict, stale revision, concurrent-writer determinism, and timeout/retry deduplication.
-- [ ] Implement durable command records and transactional external-command dispatch.
-- [ ] Write failing event tests for ordered replay after N, replay/live race, internal gap detection, expired retention cursor, authoritative-refresh fallback, bounded slow-client queues, and committed-events-only delivery.
-- [ ] Implement durable replay queries, subscription handoff, retention semantics, and explicit refresh/disconnect frames.
-- [ ] Implement composition, configuration, local authentication, typed routes, error mapping, startup recovery, and checkpoint-safe shutdown.
-- [ ] Run focused runtime and complete native gates; update documentation/ADRs/evidence and commit `feat: add authoritative runtime layer`.
+- [x] Write failing contract tests for `idempotencyKey`, `expectedRevision`, replay cursor, replay batches, `refresh_required`, and slow-client disconnect metadata.
+- [x] Implement strict versioned schemas without a second idempotency mechanism. (The runtime reuses the single SQLite idempotency authority; no second mechanism was introduced.)
+- [x] Write failing real-runtime tests proving same-key/same-payload replay, payload conflict, stale revision, concurrent-writer determinism, and timeout/retry deduplication.
+- [x] Implement durable command records and transactional external-command dispatch.
+- [x] Write failing event tests for ordered replay after N, replay/live race, internal gap detection, expired retention cursor, authoritative-refresh fallback, bounded slow-client queues, and committed-events-only delivery.
+- [x] Implement durable replay queries, subscription handoff, retention semantics, and explicit refresh/disconnect frames.
+- [x] Implement composition, configuration, local authentication, typed routes, error mapping, startup recovery, and checkpoint-safe shutdown.
+- [x] Run focused runtime and complete native gates; update documentation/ADRs/evidence and commit `feat: add authoritative runtime layer`.
 
 ### Task 6: Integrated Layers 1–10 hardening
 
