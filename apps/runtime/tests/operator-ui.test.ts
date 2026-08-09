@@ -28,7 +28,11 @@ describe("operator UI static route", () => {
       // Assert on real, load-bearing content rather than just "non-empty", so a broken build
       // (e.g. the file failing to read and falling back to something empty) would fail this test.
       expect(html).toContain("<title>V31M4 Operator</title>");
-      expect(html).toContain("/commands/project.create");
+      expect(html).toContain("/commands/${type}");
+      expect(html).toContain('"project.create"');
+      expect(html).toContain('"mission.submit"');
+      expect(html).toContain('"job.start"');
+      expect(html).toContain("/commands/job.execute");
       expect(html).toContain("/events");
     } finally {
       await runtime.shutdown();

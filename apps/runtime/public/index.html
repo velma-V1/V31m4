@@ -50,6 +50,28 @@
 </section>
 
 <section>
+  <h2>Missions</h2>
+  <p class="muted">Project ID: <code id="missionProjectId">(create a project first)</code></p>
+  <label for="missionPayload">Mission content (JSON — a mission has many required fields; this is
+    the smallest maintainable real form for a rich structure, not a placeholder)</label>
+  <textarea id="missionPayload" rows="10"></textarea>
+  <button id="submitMission" type="button">Submit mission</button>
+  <div id="missionResult" class="muted"></div>
+</section>
+
+<section>
+  <h2>Jobs</h2>
+  <p class="muted">Mission ID: <code id="jobMissionId">(submit a mission first)</code></p>
+  <label for="workflowId">Workflow ID</label>
+  <input id="workflowId" type="text" value="default-workflow" />
+  <button id="startJob" type="button">Start job</button>
+  <div id="startJobResult" class="muted"></div>
+  <p class="muted">Job ID: <code id="executeJobId">(start a job first)</code></p>
+  <button id="executeJob" type="button">Execute job (solve → verify → select → deliver)</button>
+  <div id="executeJobResult" class="muted"></div>
+</section>
+
+<section>
   <h2>Live events</h2>
   <div id="eventsStatus" class="muted">not connected — set a token above</div>
   <ul id="events"></ul>
@@ -96,6 +118,76 @@ async function refreshHealth() {
 refreshHealth();
 setInterval(refreshHealth, 5000);
 
+// Shared by every command panel below: POST to /commands/<type>, return the parsed body and
+// whether the request succeeded, so each panel only handles its own fields and display.
+async function postCommand(type, fields) {
+  const response = await fetch(`/commands/${type}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": crypto.randomUUID(),
+      ...authHeader(),
+    },
+    body: JSON.stringify({
+      schemaVersion: "1.0.0",
+      requestId: crypto.randomUUID(),
+      ...fields,
+    }),
+  });
+  const body = await response.json();
+  return { ok: response.ok, body };
+}
+
+function renderResult(el, ok, body, resultKey) {
+  if (!ok) {
+    el.innerHTML =
+      `<span class="status-bad">${body.error?.code ?? "error"}: ` +
+      `${body.error?.message ?? "request failed"}</span>`;
+    return;
+  }
+  const value = resultKey ? body.result[resultKey] : body.result;
+  el.innerHTML =
+    `<span class="status-ok">ok</span> <pre>${JSON.stringify(value, null, 2)}</pre>`;
+}
+
+let currentProjectId = null;
+let currentMissionId = null;
+let currentJobId = null;
+
+function missionTemplate(projectId) {
+  return JSON.stringify(
+    {
+      projectId,
+      title: "Demo Mission",
+      objective: "Describe what this mission must accomplish.",
+      requiredOutputs: [{ id: "output-1", kind: "code", description: "A working feature." }],
+      requirements: [
+        { id: "requirement-1", statement: "Must compile.", priority: "required", source: "user" },
+      ],
+      constraints: [],
+      acceptanceCriteria: [
+        {
+          id: "criterion-1",
+          statement: "Output artifact exists.",
+          verificationMethod: "Reference verifier checks artifact presence.",
+          mandatory: true,
+        },
+      ],
+      forbiddenChanges: [],
+      evidenceRequirements: [{ criterionId: "criterion-1", requiredEvidenceKinds: ["unit_test"] }],
+      resourceBudget: {
+        maxWallClockMs: 60000,
+        maxModelInvocations: 10,
+        maxToolInvocations: 10,
+        maxRepairRounds: 1,
+        maxConcurrentWorkers: 1,
+      },
+    },
+    null,
+    2,
+  );
+}
+
 document.getElementById("createProject").addEventListener("click", async () => {
   const name = document.getElementById("projectName").value.trim();
   const rootPath = document.getElementById("projectRootPath").value.trim();
@@ -105,32 +197,86 @@ document.getElementById("createProject").addEventListener("click", async () => {
   }
   projectResultEl.textContent = "submitting…";
   try {
-    const response = await fetch("/commands/project.create", {
+    const { ok, body } = await postCommand("project.create", { name, rootPath });
+    renderResult(projectResultEl, ok, body, "project");
+    if (ok) {
+      currentProjectId = body.result.project.id;
+      document.getElementById("missionProjectId").textContent = currentProjectId;
+      document.getElementById("missionPayload").value = missionTemplate(currentProjectId);
+    }
+  } catch (error) {
+    projectResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
+  }
+});
+
+const missionResultEl = document.getElementById("missionResult");
+document.getElementById("submitMission").addEventListener("click", async () => {
+  let fields;
+  try {
+    fields = JSON.parse(document.getElementById("missionPayload").value);
+  } catch (error) {
+    missionResultEl.innerHTML = `<span class="status-bad">invalid JSON: ${String(error)}</span>`;
+    return;
+  }
+  missionResultEl.textContent = "submitting…";
+  try {
+    const { ok, body } = await postCommand("mission.submit", fields);
+    renderResult(missionResultEl, ok, body, "mission");
+    if (ok) {
+      currentMissionId = body.result.mission.id;
+      document.getElementById("jobMissionId").textContent = currentMissionId;
+    }
+  } catch (error) {
+    missionResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
+  }
+});
+
+const startJobResultEl = document.getElementById("startJobResult");
+document.getElementById("startJob").addEventListener("click", async () => {
+  if (currentMissionId === null) {
+    startJobResultEl.innerHTML = '<span class="status-bad">submit a mission first</span>';
+    return;
+  }
+  const workflowId = document.getElementById("workflowId").value.trim();
+  startJobResultEl.textContent = "starting…";
+  try {
+    const { ok, body } = await postCommand("job.start", {
+      missionId: currentMissionId,
+      workflowId,
+    });
+    renderResult(startJobResultEl, ok, body, "job");
+    if (ok) {
+      currentJobId = body.result.job.id;
+      document.getElementById("executeJobId").textContent = currentJobId;
+    }
+  } catch (error) {
+    startJobResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
+  }
+});
+
+const executeJobResultEl = document.getElementById("executeJobResult");
+document.getElementById("executeJob").addEventListener("click", async () => {
+  if (currentJobId === null) {
+    executeJobResultEl.innerHTML = '<span class="status-bad">start a job first</span>';
+    return;
+  }
+  executeJobResultEl.textContent = "executing… (real reference solver + verifier, not instant)";
+  try {
+    // job.execute is runtime-internal composition glue, not a versioned external contract, so it
+    // does not take schemaVersion/requestId like the other commands.
+    const response = await fetch("/commands/job.execute", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "idempotency-key": crypto.randomUUID(),
         ...authHeader(),
       },
-      body: JSON.stringify({
-        schemaVersion: "1.0.0",
-        requestId: crypto.randomUUID(),
-        name,
-        rootPath,
-      }),
+      body: JSON.stringify({ jobId: currentJobId }),
     });
     const body = await response.json();
-    if (!response.ok) {
-      projectResultEl.innerHTML =
-        '<span class="status-bad">' + (body.error?.code ?? "error") + ": " +
-        (body.error?.message ?? "request failed") + "</span>";
-      return;
-    }
-    projectResultEl.innerHTML =
-      '<span class="status-ok">created</span> <pre>' +
-      JSON.stringify(body.result.project, null, 2) + "</pre>";
+    renderResult(executeJobResultEl, response.ok, body, null);
   } catch (error) {
-    projectResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
+    executeJobResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
   }
 });
 
