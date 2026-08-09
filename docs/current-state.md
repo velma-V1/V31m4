@@ -119,13 +119,18 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    than a hand-rolled WebSocket framing layer — the zero-runtime-dependency, correctness-
    maximizing binding for a loopback local-first runtime; the coordinator is transport-
    agnostic so a WebSocket binding can be added later without touching replay semantics.
-3. Next: Task 6 integrated Layers 1–10 hardening (four passes — invariant/state-machine,
-   hostile-input/security, crash/concurrency/recovery, clean-room architecture) then Task 7
-   clean-checkout verification.
-4. Keep Video Production and 3D/Game Production deferred while preserving only their required
+3. Task 6 integrated Layers 1–10 hardening: DONE (2026-08-09). Adversarial regressions on the
+   new L10 surface (hostile input, concurrent idempotent/conflicting writers, transactional
+   rollback) plus a clean-room dependency/architecture review; no defects confirmed. Ledger:
+   `docs/reviews/integrated-hardening-ledger.md`.
+4. Task 7 clean-checkout verification: DONE (2026-08-09). Detached worktree at the final SHA,
+   `pnpm install --frozen-lockfile`, full gate reproduced green (typecheck 5/5, 335 tests /
+   70 files, build 5/5, lint/check clean, largest source 468 lines, 0 explicit `any`).
+   Evidence: `docs/reviews/clean-checkout-verification.md`.
+5. The canonical Layers 6–10 plan is complete on this feature branch. Promotion to
+   `canonical/layers-6-10` or `main` is a human decision and is not performed automatically.
+6. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
-5. Use grouped implementation, focused tests during development, and the native full
-   regression gate at layer checkpoints.
 
 ## Session-start rule
 

@@ -143,7 +143,7 @@
 - Consumes: final canonical commit.
 - Produces: reproducible readiness evidence.
 
-- [ ] Create a clean detached verification worktree at the final SHA and install with `pnpm install --frozen-lockfile`.
-- [ ] Run typecheck, focused tests, full tests, build, lint, check, dependency checks, source-size scan, explicit-any scan, and documentation consistency checks.
-- [ ] Record exact branch, SHA, test files, test count, failures, skips, largest source, and unresolved risks.
-- [ ] Use only the readiness verdict allowed by current evidence; do not push, merge, or mark ready automatically.
+- [x] Create a clean detached verification worktree at the final SHA and install with `pnpm install --frozen-lockfile`. (Detached worktree at `d6fd0ab`; frozen install succeeded.)
+- [x] Run typecheck, focused tests, full tests, build, lint, check, dependency checks, source-size scan, explicit-any scan, and documentation consistency checks.
+- [x] Record exact branch, SHA, test files, test count, failures, skips, largest source, and unresolved risks. (See `docs/reviews/clean-checkout-verification.md`.)
+- [x] Use only the readiness verdict allowed by current evidence; do not push, merge, or mark ready automatically. (Feature branch only; no merge to canonical/main and no production-ready claim.)
