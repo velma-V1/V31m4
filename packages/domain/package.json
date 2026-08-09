@@ -11,5 +11,8 @@
     "lint": "biome ci src tests",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1"
   }
 }

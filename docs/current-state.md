@@ -195,8 +195,16 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    - **Independence matrix: VERIFIED.** `apps/departments-integration` — core-only, both departments
      together, cross-removal independence, and host operable after both removed. Dependency direction
      verified (no core→department imports; no video↔game import; departments' src import only
-     application + department-host). Full gate: typecheck 9/9, 369 tests / 75 files, build 9/9,
-     lint/check clean.
+     application + department-host). Full gate (re-run 2026-08-09): typecheck 9/9, 375 tests / 10
+     skipped across 83 test files, build 9/9, lint/check clean.
+   - **Dependency-boundary tests added (2026-08-09).** `domain`, `contracts`, `department-host`,
+     `plugins/video-production`, `plugins/game-production`, and `apps/runtime` each gained a static
+     import-boundary test (matching the pre-existing pattern in `application`/`infrastructure`),
+     machine-verifying the allowed-import sets in `docs/dependency-rules.md` instead of relying on
+     documentation/code-review alone. `packages/domain` gained `@types/node` as a **test-only**
+     devDependency (matching `packages/contracts`' existing precedent) purely so its test file can
+     use `node:fs`/`node:path`; domain's own new test asserts its `src` still imports nothing
+     non-relative, so this does not weaken domain's runtime isolation.
    - **Outbox retention: intentionally deferred** pending workload evidence.
    - **Target-host validation: IN PROGRESS** on the actual local target machine (WSL2 on Windows 11,
      RTX 4070 SUPER 12GB). Capability matrix, honesty rule, and per-adapter evidence:
