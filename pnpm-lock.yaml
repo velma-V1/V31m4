@@ -21,6 +21,22 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@22.20.1)(vite@8.2.0(@types/node@22.20.1))
 
+  apps/runtime:
+    dependencies:
+      '@v31m4/application':
+        specifier: workspace:*
+        version: link:../../packages/application
+      '@v31m4/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@v31m4/infrastructure':
+        specifier: workspace:*
+        version: link:../../packages/infrastructure
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+
   packages/application:
     dependencies:
       '@v31m4/domain':
