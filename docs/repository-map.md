@@ -6,7 +6,7 @@
 |---|---|---|
 | `/AGENTS.md` | Repository governance | Mandatory human and AI contribution rules |
 | `/repo_map.md` | Repository governance | Exact current implementation state |
-| `/docs` | Architecture governance | Source-of-truth architecture, versioning, and implementation planning |
+| `/docs` | Architecture governance | Source-of-truth architecture, versioning, planning, reviews, and implementation evidence |
 | `/schemas` | Contract governance | Portable draft 2020-12 schemas for manifests, workflows, evidence, learning, capabilities, and achievements |
 | `/packages/domain/src/value-objects` | Domain core | Canonical validated primitive values |
 | `/packages/domain/src/entities` | Domain core | Immutable entities, invariants, decisions, and lifecycle transitions |
@@ -22,51 +22,69 @@
 | `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
 | `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
 | `/packages/application/src/services` | Application services | Nine deterministic, infrastructure-free decision and planning services (Layer 5) |
-| `/packages/application/src/services/internal` | Application services | Private deterministic helpers (fingerprint, canonical stringify, seeded RNG); never exported |
+| `/packages/application/src/services/internal` | Application services | Private deterministic helpers; never exported |
 | `/packages/application/src/use-cases` | Application use cases | Twenty-one transactional orchestration entrypoints and private pagination/authorization helpers |
-| `/packages/application/src/index.ts` | Application core | Public application package API only (ports and services) |
-| `/packages/application/tests/use-cases` | Application verification | Layer 6 correctness, failure, pagination, approval, workspace, and orchestration tests |
-| `/packages/application/tests` | Application verification | Runtime primitives, public API, transaction requirements, dependency boundaries, file-size checks, services, and use cases |
-| `/packages/contracts/src/forbidden-key-guard.ts` | Contract core | Prototype-pollution property-name guard for external message boundaries |
-| Root configuration | Build governance | Workspace, compiler, lint, test, and build orchestration |
-| `/packages/infrastructure/src/database` | Persistence infrastructure | SQLite authority, migrations, revisions, records, and durable idempotency |
-| `/packages/infrastructure/src/events` | Event infrastructure | Ordered transactional outbox and publication state |
+| `/packages/application/src/index.ts` | Application core | Public application package API only (ports, services, use cases) |
+| `/packages/application/tests` | Application verification | Ports, services, use cases, dependency boundaries, failure paths, and source-size checks |
+| `/packages/infrastructure/src/database` | Persistence infrastructure | Layer 7 SQLite authority, migrations, revisions, records, durable idempotency, and unit-of-work implementation |
+| `/packages/infrastructure/src/events` | Event infrastructure | Transactional outbox plus durable committed-event replay used by Layer 10 |
 | `/packages/infrastructure/src/artifacts` | Artifact infrastructure | Atomic SHA-256 content-addressed artifact storage |
 | `/packages/infrastructure/src/backup` | Recovery infrastructure | Verified SQLite backup manifests and staged restore |
-| `/packages/infrastructure/tests` | Infrastructure verification | Real SQLite, concurrency, rollback, outbox, artifact, backup, and architecture tests |
+| `/packages/infrastructure/src/processes` | Process infrastructure | Layer 8 supervised child-process lifecycle, cancellation, timeout, and bounded output handling |
+| `/packages/infrastructure/src/rpc` | Adapter RPC infrastructure | Layer 8 bounded JSON-RPC framing/correlation and protocol handling |
+| `/packages/infrastructure/src/adapters` | Adapter infrastructure | Layer 8 adapter registration and restart-budget protection |
+| `/packages/infrastructure/src/scheduling` | Scheduling infrastructure | Layer 8 bounded scheduling implementation |
+| `/packages/infrastructure/src/resources` | Resource infrastructure | Layer 8 resource monitoring implementation |
+| `/packages/infrastructure/src/secrets` | Secret infrastructure | Layer 8 bounded secret-lease implementation |
+| `/packages/infrastructure/src/logging` | Logging infrastructure | Layer 8 structured/redacted logging support |
+| `/packages/infrastructure/src/paths` | Path governance | Layer 9 real-path containment policy |
+| `/packages/infrastructure/src/policy` | Policy infrastructure | Layer 9 fail-closed rule-based policy engine |
+| `/packages/infrastructure/src/plugins` | Plugin infrastructure | Layer 9 durable plugin registry implementation |
+| `/packages/infrastructure/src/gateways` | Governed execution infrastructure | Layer 9 provider-neutral supervised model/tool/production-kernel gateways |
+| `/packages/infrastructure/tests` | Infrastructure verification | Layers 7–10 persistence/process/gateway/replay integration and failure-path tests |
+| `/apps/runtime` | Authoritative runtime | Layer 10 composition, local auth, typed command/query/event HTTP routes, idempotent external commands, durable replay, resumable SSE, recovery, and shutdown |
+| `/packages/department-host` | Department host | Post-core generic removable-department lifecycle, isolation connector, rollback, manifest/version/permission/dependency checks |
+| `/plugins/video-production` | Video Production | Post-core removable video workflow; reference adapters plus target-host-validated ffmpeg Assembly and ffmpeg+Ollama Vision-QC adapters |
+| `/plugins/game-production` | 3D/Game Production | Post-core removable game workflow; existing Asset/SceneBuild/SceneValidation/Package ports with deterministic reference adapters; real adapters target Summer |
+| `/apps/departments-integration` | Department integration verification | Post-core independence matrix: zero departments, both together, cross-removal independence, host remains operable |
+| `/docs/reviews/target-host-validation.md` | Target-host evidence | Real external-tool capability matrix, honesty rule, and per-adapter validation evidence |
+| `/docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md` | Game architecture governance | Approved Summer execution-platform decision behind existing Game adapter ports |
 
-## Deferred extension design ownership
+## Historical/deferred design ownership
 
 | Path | Owner | Responsibility |
 |---|---|---|
-| `/docs/deferred/video-production` | Deferred Video Production | Preserved post-core Video Production design, long-form autonomy direction, small-model orchestration requirements, vision-QC direction, generation-quality upgrades, and optional later evaluation of reusable Open Generative AI parts |
-| `/docs/deferred/game-production` | Deferred 3D/Game Production | Preserved post-core Game Production scope and future generic plugin integration boundary |
-| `/docs/superpowers/specs/2026-08-07-defer-video-game-departments-design.md` | Architecture governance | Approved decision separating both departments from core completion |
-| `/docs/superpowers/plans/2026-08-07-defer-video-game-departments.md` | Architecture governance | Documentation-only implementation plan for the separation |
+| `/docs/deferred/video-production` | Video Production historical design | Preserved pre-implementation Video design and still-relevant future production direction |
+| `/docs/deferred/game-production` | 3D/Game Production historical design | Preserved pre-implementation Game design; real-engine integration section superseded by the Summer boundary decision |
+| `/docs/superpowers/specs/2026-08-07-defer-video-game-departments-design.md` | Architecture governance | Historical sequencing decision that separated both departments from core completion; department-shell deferral is resolved |
+| `/docs/superpowers/plans/2026-08-07-defer-video-game-departments.md` | Architecture governance | Historical documentation-only plan for that separation |
 
-These deferred paths contain design documentation only. They are not runtime packages, core dependencies, startup dependencies, release gates, or packaging prerequisites. Core must remain fully functional with both departments absent.
+These paths are historical/preserved design records, not evidence that the department shells remain deferred. Both departments are implemented post-core and remain removable. The still-pending work is adapter-specific real external-tool integration: Video `ShotGenerationAdapter` and Game's Summer-backed real adapters.
 
 ## Current dependency graph
 
 ```text
-Root tooling
+apps/runtime
     ↓
-packages/application tests
+packages/infrastructure
     ↓
-packages/application public API ─────→ packages/domain public API
+packages/application
+    ↓
+packages/domain
 
-packages/contracts tests ─────→ root schemas
+packages/contracts ─────→ packages/domain
+
+packages/department-host ─────→ packages/application + packages/domain
+
+apps/departments-integration
     ↓
-packages/contracts public API
-    ↓
-packages/domain public API
-    ↓
-domain entities
-    ↓
-domain value objects, errors, and events
+packages/department-host + plugins/video-production + plugins/game-production
+
+plugins/video-production ─────→ packages/department-host + packages/application
+plugins/game-production  ─────→ packages/department-host + packages/application
 ```
 
-`packages/domain` imports no other workspace package. `packages/contracts` imports only the domain public API and Zod. `packages/application` imports only the domain public API.
+`packages/department-host` declares `@v31m4/infrastructure` only as a dev dependency for tests/support, not as a runtime dependency. Authoritative dependency rules are in `docs/dependency-rules.md`. The frozen core imports no department package. Video and Game do not import each other. Department runtime code must not gain a runtime dependency on `@v31m4/infrastructure`; real external tools remain behind department-local typed adapters.
 
 ## Contract ownership
 
@@ -109,6 +127,13 @@ solver/verification/repair, champion/delivery/training/promotion, practice/avata
 registration, and governed model/tool invocation. Exact reconciliation decisions are in
 `docs/reviews/layer-6-reconciliation-matrix.md`.
 
+## Post-core department ownership
+
+- `packages/department-host` owns only generic department lifecycle/installation/removal/isolation semantics. Its runtime dependencies are the public `@v31m4/application` and `@v31m4/domain` packages; it does not contain Video or Game business logic.
+- `plugins/video-production` owns Video-specific orchestration and its adapter implementations. Real external process invocation remains inside the plugin boundary and does not create a core runtime dependency.
+- `plugins/game-production` owns Game-specific orchestration and its existing neutral adapter ports. Summer is the approved primary real execution platform behind those ports; no Summer-specific type belongs in core packages.
+- `apps/departments-integration` owns cross-department independence verification only; it is not a production orchestration owner.
+
 ## Update rule
 
-Every layer must update this ownership map and the root `repo_map.md` in the same commit. A path may not be added without an owner and one strict responsibility.
+Every implementation or architectural change must update this ownership map and the root `repo_map.md` in the same change when ownership/current-state meaning changes. A path may not be added without an owner and one strict responsibility.

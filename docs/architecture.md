@@ -18,7 +18,7 @@ Domain entities and value objects
 
 Infrastructure implements application ports.
 Adapters implement the versioned adapter protocol.
-Plugins register bounded capabilities through the plugin SDK and contracts.
+Plugins register bounded capabilities through the generic department/plugin host and existing application contracts.
 Laboratories remain isolated from production state.
 ```
 
@@ -26,7 +26,7 @@ Dependencies always point toward the domain. The domain package has no runtime, 
 
 ## State authority
 
-The future runtime process will own authoritative project, mission, job, evidence, checkpoint, artifact, capability, promotion, and avatar state. Interfaces may cache and display that state but never own it.
+The authoritative runtime process owns project, mission, job, evidence, checkpoint, artifact, capability, promotion, and avatar state. Interfaces may cache and display that state but never own it.
 
 ## Domain authority
 
@@ -114,11 +114,25 @@ Timeouts, cancellation, framing/output limits, restart budgets, process cleanup,
 and structured-log redaction are host-enforced. Adapter-facing code cannot own SQLite state or
 retain secret-store implementation access.
 
+## Governed production-gateway authority
+
+Layer 9 implements real-path containment, fail-closed policy evaluation, durable plugin
+registration, and supervised provider-neutral model/tool/production-kernel gateways. Provider and
+tool specifics remain behind gateway boundaries; application and domain types stay vendor-neutral.
+
+## Authoritative runtime authority
+
+Layer 10 is the authoritative local runtime under `apps/runtime`. It owns validated composition,
+local session authentication, typed command/query/event routes, idempotent external-command
+execution, durable committed-event replay, resumable event streaming, startup recovery, and
+checkpoint-safe shutdown. The implemented event transport is SSE over `node:http`; replay and
+resume semantics remain transport-agnostic.
+
 ## Verification authority
 
 Models may propose solutions, critiques, claims, and repairs. Models may not certify their own work. Acceptance requires independent deterministic evidence whenever deterministic verification is available.
 
-The implemented domain and contract layers enforce:
+The implemented system enforces:
 
 - Evidence records are immutable and artifact-backed.
 - Verified checkpoints require evidence.
@@ -134,27 +148,52 @@ The implemented domain and contract layers enforce:
 
 ## Current implemented boundary
 
-Persistence and Artifacts Layer 7 contains repository governance, the complete domain and
-contract layers, seven root JSON Schemas, the complete `@v31m4/application` port boundary,
-the nine deterministic services, 21 transactional application use cases, and the SQLite
-persistence/artifact package. Layers 1–7
-are dependency-backed and regression tested against the pinned toolchain.
+The frozen V31M4 core implements Layers 1–10:
 
-No process/adapter infrastructure, runtime API server, desktop UI, CLI,
-adapter implementations, plugin SDK, plugins, laboratories, or production workflows are
-implemented.
+- Layers 1–2: immutable domain primitives/entities and invariants.
+- Layer 3: strict versioned runtime/contracts and portable JSON Schemas.
+- Layers 4–6: application ports, deterministic services, and 21 transactional use cases.
+- Layer 7: SQLite persistence, transactional outbox/idempotency, content-addressed artifacts, and backup/restore.
+- Layer 8: supervised process/RPC/adapter/scheduling/resource/secret/logging infrastructure.
+- Layer 9: governed path/policy/plugin/model/tool/kernel gateways.
+- Layer 10: authoritative local runtime with durable replay/recovery and resumable event streaming.
 
-## Core completion scope
+The audited L1–10 product-code baseline is frozen at `78dc2b7`; later work is additive post-core
+unless an explicitly approved core correction is required.
 
-Video Production and 3D/Game Production are intentionally deferred until after the V31M4
-core is release-complete. They remain first-party removable production plugins, but neither
-is part of the core completion path.
+Post-core, V31M4 also implements:
 
-The following rules are authoritative for core completion:
+- `packages/department-host`: generic removable department lifecycle/isolation/rollback host.
+- `plugins/video-production`: removable Video Production department. Its real ffmpeg
+  `AssemblyAdapter` and ffmpeg+Ollama `VisionQcAdapter` are target-host validated; its real
+  `ShotGenerationAdapter` remains pending.
+- `plugins/game-production`: removable 3D/Game Production department with deterministic reference
+  adapters and existing `AssetAdapter` / `SceneBuildAdapter` / `SceneValidationAdapter` /
+  `PackageAdapter` boundaries.
+- `apps/departments-integration`: department-independence integration verification.
+
+The Game department's approved real execution-platform direction is Summer behind the existing
+Game adapter boundaries (`Game ports -> Summer adapter -> Summer MCP/CLI -> Summer Engine/Godot`).
+No Summer adapter is implemented yet, Summer-hosted services are optional, and direct
+Blender/Unreal/custom-Godot agent stacks are out of scope until Summer is installed and validated.
+See `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
+
+Desktop, CLI, laboratories, additional first-party production plugins/workflows, outbox
+retention/pruning, Video's real generation adapter, and Game's real Summer-backed adapters remain
+outside the implemented boundary unless separately recorded as complete in current-state evidence.
+
+## Core completion scope — historical decision and preserved invariant
+
+Video Production and 3D/Game Production were intentionally deferred until after L1–10 core
+completion. That sequencing decision is **resolved**: both department shells are now implemented as
+post-core removable first-party plugins. The historical designs remain under
+`docs/deferred/video-production/` and `docs/deferred/game-production/`.
+
+The permanent architectural invariant is unchanged:
 
 - Core startup, tests, packaging, and release acceptance must succeed with both departments absent.
-- The core may implement only generic extension seams required by production plugins: plugin lifecycle and capability registration; governed model/tool/workflow invocation; durable jobs; artifacts; checkpoints; verification/evidence; resources; approvals/policy; isolated workspaces; and runtime events.
-- Video-specific and game-specific business logic, SDKs, executables, provider choices, asset pipelines, and workflow logic may not be added to core packages.
-- Deferred department designs are preserved under `docs/deferred/video-production/` and `docs/deferred/game-production/`.
-- Open Generative AI is not a V31M4 core dependency. It may be evaluated later only as an optional source of reusable parts inside the deferred Video Production department.
-- Core completion does not require empty placeholder plugin packages. Runtime plugin package paths are chosen only when each department enters implementation and must follow the then-current plugin SDK conventions.
+- The core exposes only generic extension seams required by removable departments.
+- Video-specific and game-specific business logic, SDKs, executables, provider choices, asset pipelines, and workflow logic stay outside core packages.
+- Optional production tools and hosted services are never core startup dependencies.
+- Open Generative AI is not a V31M4 core dependency; it may be evaluated only for optional reuse inside Video Production.
+- Summer is not a core dependency; Game consumes it only through the Game department's replaceable adapter boundary once validated.

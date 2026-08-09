@@ -54,10 +54,12 @@ export interface PackageOutput {
 }
 
 /**
- * Replaceable engine/tool boundaries. Production wiring backs these with real asset pipelines
- * (Blender/procedural), engine builds (Godot/Unreal), automated validation (playtests/lint), and
- * packaging; this package ships deterministic reference adapters so the orchestration is verifiable
- * without those engines present.
+ * Replaceable game execution/tool boundaries. Production wiring keeps V31M4 orchestration,
+ * verification, evidence, policy, and acceptance on this side of the boundary while real engine
+ * work is delegated through replaceable adapters. The approved primary real path is Summer behind
+ * these existing interfaces (Summer MCP/CLI -> Summer Engine/Godot); deterministic reference
+ * adapters remain the CI/unit default. Direct Blender/Unreal/custom-Godot agent stacks are not the
+ * current primary integration path.
  */
 export interface AssetAdapter {
   acquire(spec: AssetSpec, context: OperationContext): Promise<AcquiredAsset>;
