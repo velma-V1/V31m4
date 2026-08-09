@@ -34,7 +34,7 @@ Latest repository-map evidence inspected during handoff setup reports:
 
 Re-run and verified on 2026-08-09 after completing the Layer 10 authoritative runtime:
 
-- Full Layer 1-10 regression: 329 passing cases across 69 test files.
+- Full Layer 1-10 regression: 335 passing cases across 70 test files.
 - Layer 10 authoritative-runtime regression: 23 passing cases across 4 test files (external-command idempotency, durable event replay, event-stream coordinator, config validation, live HTTP surface incl. SSE replay and cross-restart recovery).
 - `pnpm typecheck`: 5/5 packages pass (domain, contracts, application, infrastructure, runtime).
 - `pnpm build`: 5/5 packages pass (`tsc --noEmit`).
@@ -114,7 +114,7 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    authenticated local sessions, typed command/query/event routes, error mapping,
    idempotent external-command executor, durable committed-event replay store + resumable
    event-stream coordinator, startup recovery, and checkpoint-safe shutdown. Full gate:
-   typecheck 5/5, 329 tests / 69 files, build 5/5, lint/check clean. Transport decision: the
+   typecheck 5/5, 335 tests / 70 files, build 5/5, lint/check clean. Transport decision: the
    event stream is served over SSE (Last-Event-ID ↔ `afterSequence`) on `node:http` rather
    than a hand-rolled WebSocket framing layer — the zero-runtime-dependency, correctness-
    maximizing binding for a loopback local-first runtime; the coordinator is transport-

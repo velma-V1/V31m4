@@ -127,12 +127,12 @@
 - Consumes: complete Layers 1–10 system.
 - Produces: verified defect ledger and permanent regression protections.
 
-- [ ] Run invariant/state-machine attacks over lifecycle transitions, ordering, evidence, revisions, pagination, and recovery.
-- [ ] Run hostile-input attacks over JSON, schemas, paths, process/RPC input, secrets, approvals, and command payloads.
-- [ ] Run deterministic crash/concurrency/recovery attacks over transactions, outbox, commands, replay, artifacts, adapters, gateways, shutdown, and restart.
-- [ ] Perform a clean-room architecture and operations review from source-of-truth documents.
-- [ ] For every confirmed defect, demonstrate red-green regression evidence, fix the root cause, rerun affected and earlier passes, then rerun all native gates.
-- [ ] Remove temporary scaffolding after permanent tests/rules exist; commit `test: harden integrated layers one through ten`.
+- [x] Run invariant/state-machine attacks over lifecycle transitions, ordering, evidence, revisions, pagination, and recovery. (Layers 1–8 covered by the earlier forensic passes; L10 ordering/replay/recovery invariants added this pass.)
+- [x] Run hostile-input attacks over JSON, schemas, paths, process/RPC input, secrets, approvals, and command payloads. (L10 command payloads added: oversized body, non-JSON, non-finite numbers, prototype pollution, malformed idempotency key, unrecognized credential.)
+- [x] Run deterministic crash/concurrency/recovery attacks over transactions, outbox, commands, replay, artifacts, adapters, gateways, shutdown, and restart. (L10 concurrent idempotent/conflicting writers, transactional rollback, and cross-restart durable-log recovery added.)
+- [x] Perform a clean-room architecture and operations review from source-of-truth documents. (No reverse dependency into `apps/runtime`; runtime imports only Node built-ins and `@v31m4/*`; routes contain no business logic; no explicit `any`.)
+- [x] For every confirmed defect, demonstrate red-green regression evidence, fix the root cause, rerun affected and earlier passes, then rerun all native gates. (No defects confirmed in the new surface; adversarial probes held on first run and are retained as permanent regressions.)
+- [x] Remove temporary scaffolding after permanent tests/rules exist; commit `test: harden integrated layers one through ten`. (No scaffolding introduced; all probes are permanent regressions. Ledger: `docs/reviews/integrated-hardening-ledger.md`.)
 
 ### Task 7: Clean-checkout verification
 

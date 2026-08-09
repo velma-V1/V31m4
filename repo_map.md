@@ -92,16 +92,16 @@ docs/                                    # Architecture, maps, plans, reviews, a
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–10 regression:** **329 passing cases across 69 test files** (re-run and verified 2026-08-09).
+- **Full Layer 1–10 regression:** **335 passing cases across 70 test files** (re-run and verified 2026-08-09).
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
-- **Layer 10** authoritative runtime regression: **23 passing cases across 4 test files** — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, and the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health).
+- **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
 - **Typecheck:** `pnpm typecheck` → **5/5 packages pass**. **Build:** `pnpm build` → **5/5 pass** (each package compiles under `tsc --noEmit`).
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**329 cases across 69 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**335 cases across 70 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved

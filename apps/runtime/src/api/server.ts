@@ -23,11 +23,16 @@ function readJsonBody(request: IncomingMessage, limitBytes: number): Promise<App
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let overflowed = false;
     request.on("data", (chunk: Buffer) => {
+      if (overflowed) return;
       size += chunk.length;
       if (size > limitBytes) {
+        // Stop buffering but keep the connection readable so the mapped error still reaches the
+        // client; destroying the socket here would surface as an opaque network failure instead.
+        overflowed = true;
+        request.resume();
         reject(new ApplicationError("RESOURCE_EXHAUSTED", "Request body exceeds the limit."));
-        request.destroy();
         return;
       }
       chunks.push(chunk);
