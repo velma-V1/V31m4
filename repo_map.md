@@ -104,17 +104,19 @@ boundaries, with deterministic reference adapters for verification in this envir
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–10 regression:** **369 passing cases across 75 test files** (re-run and verified 2026-08-09).
+- **Frozen L1–10 core regression (audited baseline `78dc2b7`):** **340 passing cases across 71 test files**.
+- **Current full post-core workspace regression:** **369 passing cases across 75 test files** (re-run and verified 2026-08-09) — the frozen core tests plus the additive post-core packages: department host (12), Video Production (7), 3D/Game Production (8), and department independence/integration (2).
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
-- **Typecheck:** `pnpm typecheck` → **5/5 packages pass**. **Build:** `pnpm build` → **5/5 pass** (each package compiles under `tsc --noEmit`).
+- **Typecheck / Build:** the frozen audited L1–10 core (5 packages: domain, contracts, application, infrastructure, runtime) is **5/5** typecheck and **5/5** build; the current full post-core workspace (9 packages, adding department-host and the three department/integration packages) is **9/9** typecheck and **9/9** build (each package compiles under `tsc --noEmit`).
 - **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**369 cases across 75 files**),
-`pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
+All native gates are green across the full post-core workspace: `pnpm typecheck` (9/9),
+`pnpm test` (**369 cases across 75 files**), `pnpm build` (9/9), `pnpm lint`, and `pnpm check`
+(the frozen L1–10 core subset is 340 cases / 71 files at 5/5). The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
 (`useLiteralKeys` off — conflicts with `noPropertyAccessFromIndexSignature`; a justified

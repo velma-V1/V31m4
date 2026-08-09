@@ -133,15 +133,19 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    remaining surfaces audited sound. Report: `docs/reviews/production-readiness-audit.md`.
 6. Canonical promotion: COMPLETE (2026-08-09). `canonical/layers-6-10` was fast-forwarded from
    `6c24c9e` to the frozen audited **code** baseline `78dc2b7` (clean fast-forward, 0 divergent
-   commits, no force). `78dc2b7` is immutable: it pins the audited product-code tree. Since then,
-   `canonical/layers-6-10` and the source branch `claude/v31m4-layers-validation-impl-dmlccn` must
-   remain aligned, and subsequent commits may advance their HEAD for documentation/control-state
-   maintenance **without changing the frozen product-code baseline**. Do not copy a live HEAD SHA
-   from this document — always verify the current HEAD from git at session start.
+   commits, no force). `78dc2b7` is immutable: it pins the audited L1–10 product-code tree. Since
+   then, `canonical/layers-6-10` and the source branch `claude/v31m4-layers-validation-impl-dmlccn`
+   must remain aligned, and later commits have added documentation/control-state and **additive
+   post-core packages**; the **frozen L1–10 core source tree is unchanged** — no commit modifies the
+   audited product-code baseline. Do not copy a live HEAD SHA from this document — always verify the
+   current HEAD from git at session start.
 7. Post-core program (2026-08-09) — see `docs/reviews/post-core-program-status.md`:
    - **Main promotion: COMPLETE.** `main` fast-forwarded `fbbebdd → 9801338` (clean FF, 38 commits,
-     no force); `main` == `canonical/layers-6-10` == source branch. Delta from `78dc2b7` is
-     documentation/control-state only.
+     no force); `main` == `canonical/layers-6-10` == source branch. Since `78dc2b7` the frozen L1–10
+     core source is unchanged; later commits added documentation/control-state plus the additive
+     post-core packages (`packages/department-host`, `plugins/video-production`,
+     `plugins/game-production`, `apps/departments-integration`) and the corresponding
+     `pnpm-lock.yaml` update. Invariant: FROZEN_CORE_TREE = unchanged; POST_CORE_CODE = additive.
    - **Stable core tag: local only, remote push BLOCKED.** Annotated `v31m4-core-l1-10-stable` created
      locally at `9801338`; `git push` of the tag ref returns HTTP 403 (egress/org policy allows
      branch pushes, denies tag-ref pushes), and no GitHub MCP tag/release/ref tool exists. Needs an
