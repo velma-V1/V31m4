@@ -66,6 +66,22 @@ importers:
         specifier: 3.0.1
         version: 3.0.1(ajv@8.20.0)
 
+  packages/department-host:
+    dependencies:
+      '@v31m4/application':
+        specifier: workspace:*
+        version: link:../application
+      '@v31m4/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+      '@v31m4/infrastructure':
+        specifier: workspace:*
+        version: link:../infrastructure
+
   packages/domain: {}
 
   packages/infrastructure:
