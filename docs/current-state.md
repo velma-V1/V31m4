@@ -76,7 +76,13 @@ VIDEO := {
   role: REMOVABLE_FIRST_PARTY_DEPARTMENT,
   core_dependency: false,
   host_dependency: true,
-  real_external_adapters: TARGET_HOST_VALIDATION_PENDING,   // ffmpeg/Blender/ComfyUI/gen+vision models
+  real_external_adapters: {
+    AssemblyAdapter: REAL_FFMPEG_VALIDATED,   // FfmpegAssemblyAdapter, see target-host-validation.md
+    ShotGenerationAdapter: TARGET_HOST_VALIDATION_PENDING,   // ComfyUI/gen model — not installed here
+    VisionQcAdapter: TARGET_HOST_VALIDATION_PENDING          // vision-capable Ollama models installed
+                                                              // (gemma3:12b, devstral-small-2:24b,
+                                                              // qwen3.5:9b) but not yet wired
+  },
   open_generative_ai_core_dependency: false
 }
 
@@ -185,10 +191,26 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
      application + department-host). Full gate: typecheck 9/9, 369 tests / 75 files, build 9/9,
      lint/check clean.
    - **Outbox retention: intentionally deferred** pending workload evidence.
-   - **Next engineering phase: target-host validation** of the real production adapters (ffmpeg,
-     Blender, Godot, Unreal, ComfyUI, generation/vision models). These were **not** executed in this
-     sandbox — only the deterministic reference adapters ran. Procedure and honesty rule:
+   - **Target-host validation: IN PROGRESS** on the actual local target machine (WSL2 on Windows 11,
+     RTX 4070 SUPER 12GB). Capability matrix, honesty rule, and per-adapter evidence:
      `docs/reviews/target-host-validation.md`.
+     - **DONE (2026-08-09):** Video `AssemblyAdapter` real implementation —
+       `FfmpegAssemblyAdapter` (`plugins/video-production/src/ffmpeg-assembly-adapter.ts`), backed by
+       the real Windows `ffmpeg.exe` invoked from WSL (no shell string construction, argument-array
+       spawn, no `@v31m4/infrastructure` runtime dependency added — department dependency direction
+       preserved). Real-tool tests gated behind `V31M4_TARGET_HOST=1`
+       (`plugins/video-production/tests/ffmpeg-assembly-adapter.target-host.test.ts`, 5 tests: real
+       concat + checksum/hash verification, missing-file/corrupt-file/bad-executable failure paths,
+       pre-aborted cancellation), skip cleanly without the flag. `ReferenceAssemblyAdapter` unchanged.
+       Video package gate: typecheck clean, lint clean (0 errors), 12/12 tests pass with
+       `V31M4_TARGET_HOST=1`, 7/12 (5 skipped) without it.
+     - **PENDING:** Blender, Godot, Unreal, ComfyUI are not installed on this machine (checked
+       Program Files, Start Menu, winget, registry App Paths — none found); installing them is a
+       material user choice (large downloads/licensing) and was not done automatically. Three
+       installed Ollama models report real `vision` capability (`gemma3:12b`,
+       `devstral-small-2:24b`, `qwen3.5:9b`) but are not yet wired to a `VisionQcAdapter`. No
+       real `ShotGenerationAdapter` exists yet (needs ComfyUI or a local generation model, neither
+       installed).
 
 ## Session-start rule
 
