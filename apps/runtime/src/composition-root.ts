@@ -112,7 +112,7 @@ export interface RuntimeComposition {
   readonly executor: ExternalCommandExecutor;
   readonly authenticator: LocalSessionAuthenticator;
   readonly service: RuntimeService;
-  recoverOnStartup(): { readonly pendingEvents: number };
+  recoverOnStartup(): { readonly latestSequence: number };
   close(): void;
 }
 
@@ -185,13 +185,15 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
     executor,
     authenticator,
     service,
-    recoverOnStartup(): { readonly pendingEvents: number } {
+    recoverOnStartup(): { readonly latestSequence: number } {
       // The database reopens with its WAL applied, so committed events survive a crash and the
-      // durable log is immediately replay-ready. Report how many committed events await publication.
+      // durable log is immediately replay-ready. MAX(sequence) is the O(1) head of that log — the
+      // cursor a client resumes toward — and is a truthful liveness signal, unlike a never-draining
+      // "pending" count over an outbox that is retained for replay rather than consumed.
       const row = database.connection
-        .prepare("SELECT COUNT(*) AS pending FROM outbox_events WHERE published_at IS NULL")
-        .get() as { pending: number } | undefined;
-      return { pendingEvents: row?.pending ?? 0 };
+        .prepare("SELECT MAX(sequence) AS latest FROM outbox_events")
+        .get() as { latest: number | null } | undefined;
+      return { latestSequence: row?.latest ?? 0 };
     },
     close(): void {
       coordinator.closeAll();

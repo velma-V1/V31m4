@@ -35,9 +35,9 @@ function command(base: string, extra: Record<string, string>, body: string): Pro
   });
 }
 
-async function pendingEvents(base: string): Promise<number> {
+async function latestSequence(base: string): Promise<number> {
   const health = await fetch(`${base}/health`);
-  return ((await health.json()) as { pendingEvents: number }).pendingEvents;
+  return ((await health.json()) as { latestSequence: number }).latestSequence;
 }
 
 describe("runtime hostile input", () => {
@@ -127,7 +127,7 @@ describe("runtime concurrency and recovery invariants", () => {
       const [first] = results;
       for (const result of results) expect(result).toEqual(first);
       // Exactly one event was committed despite six concurrent submissions.
-      expect(await pendingEvents(base)).toBe(1);
+      expect(await latestSequence(base)).toBe(1);
     } finally {
       await runtime.shutdown();
     }
@@ -159,7 +159,7 @@ describe("runtime concurrency and recovery invariants", () => {
       expect(statuses.filter((status) => status === 200)).toHaveLength(1);
       expect(statuses.filter((status) => status === 409)).toHaveLength(2);
       // create (seq 1) + exactly one successful update (seq 2).
-      expect(await pendingEvents(base)).toBe(2);
+      expect(await latestSequence(base)).toBe(2);
     } finally {
       await runtime.shutdown();
     }
@@ -180,7 +180,7 @@ describe("runtime concurrency and recovery invariants", () => {
       );
       expect(conflicting.status).toBe(409);
       // The failed create appended no event and left the record at its original revision.
-      expect(await pendingEvents(base)).toBe(1);
+      expect(await latestSequence(base)).toBe(1);
       const read = await fetch(`${base}/records/project/p1`, { headers: headers() });
       expect(((await read.json()) as { record: { revision: string } }).record.revision).toBe("1");
     } finally {

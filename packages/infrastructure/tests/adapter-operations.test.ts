@@ -40,6 +40,16 @@ describe("adapter operations", () => {
     expect(lines[0]).not.toContain("top-secret");
   });
 
+  it("ignores an empty secret instead of corrupting the log line", () => {
+    const lines: string[] = [];
+    new RedactedLogger(
+      (line) => lines.push(line),
+      () => ["", "real-secret"],
+    ).write({ level: "info", message: "value=real-secret" });
+    // The empty secret must not splice the marker between characters; the real secret is redacted.
+    expect(lines[0]).toBe('{"level":"info","message":"value=[REDACTED]"}');
+  });
+
   it("bounds scheduling and validates resource readings", async () => {
     const scheduler = new BoundedScheduler(1);
     const order: number[] = [];

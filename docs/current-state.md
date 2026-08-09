@@ -34,8 +34,8 @@ Latest repository-map evidence inspected during handoff setup reports:
 
 Re-run and verified on 2026-08-09 after completing the Layer 10 authoritative runtime:
 
-- Full Layer 1-10 regression: 335 passing cases across 70 test files.
-- Layer 10 authoritative-runtime regression: 23 passing cases across 4 test files (external-command idempotency, durable event replay, event-stream coordinator, config validation, live HTTP surface incl. SSE replay and cross-restart recovery).
+- Full Layer 1-10 regression: 340 passing cases across 71 test files.
+- Layer 10 authoritative-runtime + audit regression: external-command idempotency, durable event replay, event-stream coordinator, config validation, live HTTP surface (SSE replay, cross-restart recovery, SSE-disconnect cleanup), integrated hardening, plus the production-readiness audit fixes (idempotency-store write-failure propagation, empty-secret redaction).
 - `pnpm typecheck`: 5/5 packages pass (domain, contracts, application, infrastructure, runtime).
 - `pnpm build`: 5/5 packages pass (`tsc --noEmit`).
 - `pnpm lint` and `pnpm check`: green (0 errors, 1 info).
@@ -114,7 +114,7 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    authenticated local sessions, typed command/query/event routes, error mapping,
    idempotent external-command executor, durable committed-event replay store + resumable
    event-stream coordinator, startup recovery, and checkpoint-safe shutdown. Full gate:
-   typecheck 5/5, 335 tests / 70 files, build 5/5, lint/check clean. Transport decision: the
+   typecheck 5/5, 340 tests / 71 files, build 5/5, lint/check clean. Transport decision: the
    event stream is served over SSE (Last-Event-ID ↔ `afterSequence`) on `node:http` rather
    than a hand-rolled WebSocket framing layer — the zero-runtime-dependency, correctness-
    maximizing binding for a loopback local-first runtime; the coordinator is transport-
@@ -124,12 +124,16 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    rollback) plus a clean-room dependency/architecture review; no defects confirmed. Ledger:
    `docs/reviews/integrated-hardening-ledger.md`.
 4. Task 7 clean-checkout verification: DONE (2026-08-09). Detached worktree at the final SHA,
-   `pnpm install --frozen-lockfile`, full gate reproduced green (typecheck 5/5, 335 tests /
-   70 files, build 5/5, lint/check clean, largest source 468 lines, 0 explicit `any`).
+   `pnpm install --frozen-lockfile`, full gate reproduced green (typecheck 5/5, build 5/5,
+   lint/check clean, largest source 468 lines, 0 explicit `any`).
    Evidence: `docs/reviews/clean-checkout-verification.md`.
-5. The canonical Layers 6–10 plan is complete on this feature branch. Promotion to
+5. Production-readiness audit: DONE (2026-08-09). One HIGH (idempotency-store swallowed
+   non-duplicate write failures) and three MEDIUM/LOW fixes (health metric truthfulness/perf,
+   SSE mid-backpressure disconnect leak, empty-secret log redaction), each with a regression;
+   remaining surfaces audited sound. Report: `docs/reviews/production-readiness-audit.md`.
+6. The canonical Layers 6–10 plan is complete on this feature branch. Promotion to
    `canonical/layers-6-10` or `main` is a human decision and is not performed automatically.
-6. Keep Video Production and 3D/Game Production deferred while preserving only their required
+7. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
 
 ## Session-start rule

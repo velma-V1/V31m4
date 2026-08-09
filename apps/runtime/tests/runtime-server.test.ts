@@ -163,6 +163,39 @@ describe("runtime HTTP surface", () => {
     }
   });
 
+  it("releases the subscription when an SSE client disconnects", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      await put(
+        base,
+        { "idempotency-key": "c1" },
+        { recordType: "project", recordId: "project-a", body: {} },
+      );
+      const controller = new AbortController();
+      const response = await fetch(`${base}/events?afterSequence=0`, {
+        headers: auth(),
+        signal: controller.signal,
+      });
+      const stream = response.body;
+      if (stream === null) throw new Error("event stream had no body");
+      const reader = stream.getReader();
+      await reader.read(); // ensure the subscription is active
+      const active = await readJson<{ subscriptions: number }>(await fetch(`${base}/health`));
+      expect(active.subscriptions).toBe(1);
+      controller.abort();
+      // The disconnect must drive the coordinator's active subscription count back to zero.
+      let subscriptions = 1;
+      for (let attempt = 0; attempt < 50 && subscriptions !== 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        subscriptions = (await readJson<{ subscriptions: number }>(await fetch(`${base}/health`)))
+          .subscriptions;
+      }
+      expect(subscriptions).toBe(0);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("recovers the durable log across a restart and reports health", async () => {
     const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-recover-")), "state.db");
     const config = createRuntimeConfig({
@@ -184,10 +217,10 @@ describe("runtime HTTP surface", () => {
 
     const second = await startRuntime(config);
     try {
-      expect(second.startup.pendingEvents).toBe(1);
+      expect(second.startup.latestSequence).toBe(1);
       const health = await fetch(`http://127.0.0.1:${second.address.port}/health`);
       expect(health.status).toBe(200);
-      expect((await readJson<{ pendingEvents: number }>(health)).pendingEvents).toBe(1);
+      expect((await readJson<{ latestSequence: number }>(health)).latestSequence).toBe(1);
     } finally {
       await second.shutdown();
     }

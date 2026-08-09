@@ -88,17 +88,49 @@ function streamEvents(
       const idLine = frame.kind === "event" ? `id: ${frame.sequence}\n` : "";
       const chunk = `${idLine}event: ${frame.kind}\ndata: ${JSON.stringify(frame)}\n\n`;
       return new Promise<void>((resolve, reject) => {
-        const flushed = response.write(chunk, (error) => {
-          if (error) reject(error);
-        });
         if (frame.kind !== "event") {
           // A terminal frame ends the stream; the client reconnects with the resumable cursor.
-          response.end();
+          response.write(chunk, () => response.end());
           resolve();
           return;
         }
-        if (flushed) resolve();
-        else response.once("drain", resolve);
+        let settled = false;
+        const cleanup = (): void => {
+          response.removeListener("drain", onDrain);
+          response.removeListener("close", onClose);
+        };
+        const onDrain = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve();
+        };
+        const onClose = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          // A disconnect while awaiting backpressure must settle this promise so the coordinator
+          // releases the subscription instead of parking forever on a "drain" that never fires.
+          reject(
+            new ApplicationError("DEPENDENCY_UNAVAILABLE", "Event stream client disconnected."),
+          );
+        };
+        const flushed = response.write(chunk, (error) => {
+          if (error && !settled) {
+            settled = true;
+            cleanup();
+            reject(error);
+          }
+        });
+        if (flushed) {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+          return;
+        }
+        response.once("drain", onDrain);
+        response.once("close", onClose);
       });
     },
   });
@@ -128,7 +160,7 @@ export function createRuntimeServer(composition: RuntimeComposition): Server {
     if (method === "GET" && url.pathname === "/health") {
       respondJson(response, 200, {
         status: "ok",
-        pendingEvents: composition.recoverOnStartup().pendingEvents,
+        latestSequence: composition.recoverOnStartup().latestSequence,
         subscriptions: composition.coordinator.activeCount(),
       });
       return;

@@ -12,7 +12,12 @@ export class RedactedLogger {
 
   write(entry: StructuredLog): void {
     let line = JSON.stringify(entry);
-    for (const secret of this.secrets()) line = line.replaceAll(secret, "[REDACTED]");
+    for (const secret of this.secrets()) {
+      // Skip empty secrets: replaceAll("", ...) would splice the marker between every character
+      // and destroy the log line without redacting anything.
+      if (secret.length === 0) continue;
+      line = line.replaceAll(secret, "[REDACTED]");
+    }
     this.sink(line);
   }
 }

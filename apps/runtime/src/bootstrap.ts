@@ -8,7 +8,7 @@ export interface RunningRuntime {
   readonly server: Server;
   readonly composition: RuntimeComposition;
   readonly address: { readonly host: string; readonly port: number };
-  readonly startup: { readonly pendingEvents: number };
+  readonly startup: { readonly latestSequence: number };
   shutdown(): Promise<void>;
 }
 

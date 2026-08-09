@@ -8,7 +8,7 @@ export async function main(): Promise<void> {
   const runtime = await startRuntime(config);
   process.stderr.write(
     `v31m4 runtime listening on http://${runtime.address.host}:${runtime.address.port} ` +
-      `(pending events: ${runtime.startup.pendingEvents})\n`,
+      `(durable log head: ${runtime.startup.latestSequence})\n`,
   );
   let stopping = false;
   const stop = (): void => {
