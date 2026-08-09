@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
@@ -10,6 +9,7 @@ import {
   type GeneratedShot,
   type RenderOutput,
 } from "./contracts.js";
+import { runExternalProcess } from "./internal/run-external-process.js";
 
 export interface FfmpegAssemblyAdapterOptions {
   /** Directory containing real per-shot media files, named `<outputRef>.mp4`. */
@@ -21,7 +21,6 @@ export interface FfmpegAssemblyAdapterOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const STDERR_TAIL_BYTES = 4096;
 
 /**
  * Production `AssemblyAdapter` backed by the real `ffmpeg` executable: concatenates the accepted
@@ -92,7 +91,13 @@ export class FfmpegAssemblyAdapter implements AssemblyAdapter {
     ];
 
     try {
-      await this.#run(args, context);
+      await runExternalProcess({
+        command: this.#ffmpegPath,
+        args,
+        timeoutMs: this.#timeoutMs,
+        context,
+        toolLabel: "ffmpeg",
+      });
     } catch (error) {
       await rm(temporaryPath, { force: true });
       throw error;
@@ -116,70 +121,6 @@ export class FfmpegAssemblyAdapter implements AssemblyAdapter {
       outputRef,
       checksum: contentHash({ shotRefs, kind: "checksum" }),
       shotRefs: Object.freeze(shotRefs),
-    });
-  }
-
-  #run(args: readonly string[], context: OperationContext): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.#ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-      let stderrTail = "";
-      let settled = false;
-
-      const timeout = setTimeout(() => {
-        settle(() => {
-          child.kill("SIGKILL");
-          reject(
-            new ApplicationError("DEPENDENCY_FAILURE", "ffmpeg timed out.", {
-              details: { timeoutMs: this.#timeoutMs },
-            }),
-          );
-        });
-      }, this.#timeoutMs);
-
-      const onAbort = (): void => {
-        settle(() => {
-          child.kill("SIGKILL");
-          reject(new ApplicationError("CANCELLED", "Assembly was cancelled."));
-        });
-      };
-
-      function settle(action: () => void): void {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        context.signal.removeEventListener("abort", onAbort);
-        action();
-      }
-
-      context.signal.addEventListener("abort", onAbort, { once: true });
-
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderrTail = (stderrTail + chunk.toString("utf8")).slice(-STDERR_TAIL_BYTES);
-      });
-
-      child.on("error", (error) => {
-        settle(() => {
-          reject(
-            new ApplicationError("DEPENDENCY_FAILURE", "ffmpeg failed to start.", {
-              details: { message: error.message },
-            }),
-          );
-        });
-      });
-
-      child.on("close", (code) => {
-        settle(() => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(
-              new ApplicationError("DEPENDENCY_FAILURE", "ffmpeg exited with a non-zero status.", {
-                details: { exitCode: code ?? -1, stderrTail },
-              }),
-            );
-          }
-        });
-      });
     });
   }
 

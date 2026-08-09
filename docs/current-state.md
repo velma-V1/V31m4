@@ -77,11 +77,11 @@ VIDEO := {
   core_dependency: false,
   host_dependency: true,
   real_external_adapters: {
-    AssemblyAdapter: REAL_FFMPEG_VALIDATED,   // FfmpegAssemblyAdapter, see target-host-validation.md
-    ShotGenerationAdapter: TARGET_HOST_VALIDATION_PENDING,   // ComfyUI/gen model — not installed here
-    VisionQcAdapter: TARGET_HOST_VALIDATION_PENDING          // vision-capable Ollama models installed
-                                                              // (gemma3:12b, devstral-small-2:24b,
-                                                              // qwen3.5:9b) but not yet wired
+    AssemblyAdapter: REAL_FFMPEG_VALIDATED,        // FfmpegAssemblyAdapter, see target-host-validation.md
+    VisionQcAdapter: REAL_FFMPEG_OLLAMA_VALIDATED, // OllamaVisionQcAdapter (qwen3.5:9b), see target-host-validation.md
+    ShotGenerationAdapter: TARGET_HOST_VALIDATION_PENDING   // ComfyUI/gen model — not installed here;
+                                                             // no installed Ollama model does video/image
+                                                             // generation
   },
   open_generative_ai_core_dependency: false
 }
@@ -204,13 +204,28 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        pre-aborted cancellation), skip cleanly without the flag. `ReferenceAssemblyAdapter` unchanged.
        Video package gate: typecheck clean, lint clean (0 errors), 12/12 tests pass with
        `V31M4_TARGET_HOST=1`, 7/12 (5 skipped) without it.
+     - **DONE (2026-08-09):** Video `VisionQcAdapter` real implementation —
+       `OllamaVisionQcAdapter` (`plugins/video-production/src/ollama-vision-qc-adapter.ts`), backed
+       by real ffmpeg frame extraction plus a real inference call to the installed vision-capable
+       Ollama model `qwen3.5:9b` (GPU-loaded, RTX 4070 SUPER 12GB; no download performed — model was
+       already installed). Fails closed on missing/undecodable shot media, unreachable Ollama
+       server, and malformed/unparseable model response (never a silent pass). Root-cause fix
+       applied and evidenced: `qwen3.5:9b` is a reasoning model, and Ollama's `format:"json"`
+       constrains its hidden reasoning tokens too, so it returned an empty response until `think:
+       false` was added. Real-tool tests gated behind `V31M4_TARGET_HOST=1`
+       (`plugins/video-production/tests/ollama-vision-qc-adapter.target-host.test.ts`, 5 tests:
+       exactly one real model-inference call plus 4 fast failure/cancellation paths), skip cleanly
+       without the flag or when the model/server aren't available. Shared process-supervision logic
+       extracted to `plugins/video-production/src/internal/run-external-process.ts` and reused by
+       both real adapters (no duplicate cancellation/timeout/stderr-capture logic).
+       Video package gate: typecheck clean, lint clean (0 errors), 17/17 tests pass with
+       `V31M4_TARGET_HOST=1`; without the flag, the 10 real-tool tests (across both real adapters)
+       skip cleanly and 7 reference-adapter tests still pass.
      - **PENDING:** Blender, Godot, Unreal, ComfyUI are not installed on this machine (checked
        Program Files, Start Menu, winget, registry App Paths — none found); installing them is a
-       material user choice (large downloads/licensing) and was not done automatically. Three
-       installed Ollama models report real `vision` capability (`gemma3:12b`,
-       `devstral-small-2:24b`, `qwen3.5:9b`) but are not yet wired to a `VisionQcAdapter`. No
-       real `ShotGenerationAdapter` exists yet (needs ComfyUI or a local generation model, neither
-       installed).
+       material user choice (large downloads/licensing) and was not done automatically. No real
+       `ShotGenerationAdapter` exists yet — no installed Ollama model does video/image generation
+       (they are text/vision LLMs), and ComfyUI/a generation model would need to be installed.
 
 ## Session-start rule
 

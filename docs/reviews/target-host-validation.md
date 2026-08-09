@@ -142,6 +142,68 @@ Steps:
    produced artifact paths + hashes, pass/fail per assertion, and timings. Only then may execution
    of a specific tool be claimed — and only for the versions actually run.
 
+## Real adapter evidence — Video `VisionQcAdapter` (ffmpeg frame extraction + Ollama vision model)
+
+- **Tools:** ffmpeg (frame extraction, same binary/version as above) and Ollama
+- **Exact Ollama version:** `0.32.6`
+- **Model:** `qwen3.5:9b` (already installed; reports `vision` capability via `/api/show`; no
+  download performed)
+- **Executable/service location:** `C:\Users\Matt\AppData\Local\Programs\Ollama\ollama.exe`,
+  server reachable from WSL at `http://localhost:11434`
+- **OS/environment:** WSL2 (Linux) on Windows 11 Home; Ollama runs as a native Windows service
+- **GPU used:** yes — RTX 4070 SUPER 12GB (model loaded into VRAM for inference)
+- **Adapter exercised:** `OllamaVisionQcAdapter` implementing `VisionQcAdapter`
+  (`plugins/video-production/src/ollama-vision-qc-adapter.ts`)
+- **Command/API invoked:** `ffmpeg.exe -y -i <shot>.mp4 -frames:v 1 -f image2 <frame>.png` (real
+  argument-array spawn) followed by `POST http://localhost:11434/api/generate` with the extracted
+  frame base64-encoded in `images`, `format: "json"`, `think: false`
+- **Test/workload:** one 64x64, 1-second `color=red` lavfi fixture; one real frame extraction; one
+  real model inference call
+- **Produced artifact:** the extracted PNG frame (temporary, deleted after inspection per the
+  adapter's isolation contract — QC output is a verdict, not a persisted artifact)
+- **Result:** pass — real ffmpeg frame extraction executed, real HTTP call to the real Ollama
+  server executed, real model inference executed on GPU, response parsed into a well-shaped
+  `QcReport` (`passed: boolean`, `findings: {kind, detail}[]`), validated by the automated test
+  before being trusted.
+- **Real judgment observed (evidence, not a correctness claim about the model):** for the solid-red
+  fixture with prompt `"a plain solid red square"`, the model returned
+  `{"passed": false, "findings": [{"kind": "blank_or_solid_noise_frame", "detail": "The image shows
+  a plain red square without any variation in color or noise."}]}` — a real, structurally valid
+  verdict; the QC prompt explicitly lists "blank/solid-noise frame" as a defect category, so a flat
+  solid-color test fixture triggering that finding is expected model behavior, not an adapter bug.
+- **Failure-path result:** pass — four real-failure scenarios verified: (1) a missing shot media
+  file is rejected with `DEPENDENCY_FAILURE` before ffmpeg or Ollama is invoked; (2) a shot file
+  that exists but is not decodable media causes a real ffmpeg failure, surfaced as
+  `DEPENDENCY_FAILURE`; (3) an unreachable Ollama endpoint (`http://127.0.0.1:1`) causes a real
+  connection failure, surfaced as `DEPENDENCY_FAILURE`; (4) a pre-aborted `CancellationSignal` is
+  honored (`CANCELLED`, neither ffmpeg nor Ollama invoked).
+- **Timing:** first real inference (model cold, before this session had run it) took ~18s
+  end-to-end including model load into VRAM; a subsequent real inference against the same loaded
+  model completed in ~0.9s (`total_duration` ≈ 868ms per Ollama's own reporting, `eval_count`: 42
+  tokens). The full automated real-adapter test file (5 tests, exactly one real model inference
+  call) completes in ~2-3s once the model is already loaded, ~18-20s on a cold model.
+- **Root-cause fix applied:** the initial implementation used `format: "json"` without `think:
+  false`. `qwen3.5:9b` is a reasoning ("thinking") model; Ollama's `format: "json"` grammar
+  constraint applies to the hidden reasoning tokens too, so the model consumed its entire output
+  budget "thinking" and returned an empty `response` field, which the adapter correctly rejected as
+  `DEPENDENCY_FAILURE` (fail-closed — no silent false pass). Root cause was confirmed by direct
+  `curl`/`urllib`-equivalent reproduction against the real Ollama API outside the adapter before the
+  fix was applied. Adding `"think": false` to the request body resolves it; the adapter now sets
+  this by default.
+- **Limitations:** only `qwen3.5:9b` was exercised end-to-end; `gemma3:12b` and
+  `devstral-small-2:24b` also report vision capability and are configurable via the adapter's
+  `model` option but were not run here (avoiding multiple large-model GPU loads in one validation
+  pass, per the resource-aware constraint). The model's QC judgment is inherently non-deterministic
+  across runs/models — the adapter does not assert a specific verdict, only that the verdict is
+  well-shaped and fails closed on any malformed/unreachable/undecodable input. No real
+  `ShotGenerationAdapter` exists yet, so this was validated against synthetic ffmpeg-generated
+  fixtures, not real generated shots.
+- **How to reproduce:** `V31M4_TARGET_HOST=1 pnpm --filter @v31m4/video-production test` (optionally
+  `V31M4_OLLAMA_VISION_MODEL=<model>` and `V31M4_OLLAMA_BASE_URL=<url>` to target a different
+  installed vision model or a different Ollama host). Skips cleanly if `V31M4_TARGET_HOST=1` is
+  unset, ffmpeg is unresolvable, the Ollama server is unreachable, or the target model is not
+  installed.
+
 ## Honesty rule
 
 Never state that Blender, Godot, Unreal, ffmpeg, ComfyUI, or any real generation/vision model was
