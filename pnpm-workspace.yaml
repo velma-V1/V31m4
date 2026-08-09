@@ -4,3 +4,7 @@ packages:
   - "plugins/*"
   - "adapters/*"
   - "adapters/*/*"
+allowBuilds:
+  # esbuild is tsx's (dev-only) native binary dependency, used solely to run apps/runtime's
+  # TypeScript entrypoint in `pnpm dev` without a build step. It never ships to production code.
+  esbuild: true

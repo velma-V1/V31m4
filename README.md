@@ -4,14 +4,20 @@ V31M4 is a local-first modular production operating system that coordinates repl
 
 ## Repository status
 
-The repository is in **Persistence and Artifacts Layer 7**. The implemented code contains
-repository governance, the immutable domain model, strict external contracts, seven
-portable JSON Schemas, the complete infrastructure-free application port boundary, and the
-nine deterministic services and 21 transactional use cases built on those ports. Layers
-1–7 are dependency-backed and regression tested against the pinned toolchain. SQLite
-units of work, revisions, durable idempotency/outbox records, content-addressed artifacts,
-and verified backup/restore are implemented. Runtime interfaces, adapters, plugins,
-laboratories, and production workflows remain intentionally absent.
+The frozen core (Layers 1–10) is complete and audited: the immutable domain model, strict
+external contracts, seven portable JSON Schemas, the infrastructure-free application port
+boundary, nine deterministic services, 21 transactional use cases, SQLite persistence with
+durable idempotency/outbox and content-addressed artifacts, supervised process/adapter
+infrastructure, governed model/tool/kernel gateways, and the authoritative local runtime
+(`apps/runtime`: HTTP command/query routes, resumable SSE event streaming, startup recovery,
+checkpoint-safe shutdown).
+
+Post-core, additive work implements a generic removable-department host
+(`packages/department-host`) and two removable first-party departments,
+`plugins/video-production` and `plugins/game-production`, plus their independence
+verification (`apps/departments-integration`). See `docs/current-state.md` and `repo_map.md`
+for exact current implementation and verification evidence — this file is a general overview,
+not the authoritative state record.
 
 ## Prerequisites
 
@@ -29,17 +35,36 @@ pnpm test
 pnpm check
 ```
 
+## Running the runtime
+
+```bash
+pnpm dev
+```
+
+Boots the authoritative runtime (`apps/runtime`) directly from TypeScript source via `tsx`,
+no build step required. On first run this creates `runtime-data/` (gitignored) containing the
+SQLite database and a generated local dev session token, printed to the terminal along with
+the operator URL and example `curl` commands. Reruns reuse the same token and database, so
+state (and the session) survives a restart. Stop with `Ctrl-C` for a graceful, checkpoint-safe
+shutdown.
+
+`runtime-data/` is local-only; it is never committed. To point at a different location or
+port, set `V31M4_DATABASE`, `V31M4_HOST`, `V31M4_PORT`, or `V31M4_ACTOR_ID` before running.
+
 ## Source of truth
 
 Read these files in order before making changes:
 
-1. `docs/repository-specification.md`
-2. `docs/architecture.md`
-3. `docs/dependency-rules.md`
-4. `docs/contract-versioning.md`
-5. `docs/repository-map.md`
-6. `repo_map.md`
+1. `docs/current-state.md`
+2. `repo_map.md`
+3. `docs/architecture.md`
+4. `docs/repository-map.md`
+5. `docs/dependency-rules.md`
+6. `docs/contract-versioning.md`
 7. `AGENTS.md`
+
+`docs/repository-specification.md` is a frozen baseline design reference, not a current
+implementation map — see `docs/current-state.md` for what is actually implemented today.
 
 ## Implemented packages
 
