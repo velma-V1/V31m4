@@ -6,7 +6,13 @@ const packageRoot = join(import.meta.dirname, "..");
 const sourceRoot = join(packageRoot, "src");
 const IMPORT_RE =
   /^\s*(?:import|export)\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\}|\w+)\s+from\s+["']([^"']+)["']/gmu;
-const ALLOWED_PACKAGES = new Set(["@v31m4/application", "@v31m4/domain", "@v31m4/infrastructure"]);
+const ALLOWED_PACKAGES = new Set([
+  "@v31m4/application",
+  "@v31m4/contracts",
+  "@v31m4/domain",
+  "@v31m4/infrastructure",
+  "zod",
+]);
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {

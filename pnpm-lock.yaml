@@ -50,12 +50,18 @@ importers:
       '@v31m4/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@v31m4/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@v31m4/domain':
         specifier: workspace:*
         version: link:../../packages/domain
       '@v31m4/infrastructure':
         specifier: workspace:*
         version: link:../../packages/infrastructure
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 22.20.1

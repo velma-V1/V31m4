@@ -122,7 +122,12 @@ Forbidden:
 
 Allowed:
 
-- Public APIs of frozen-core packages required to compose the authoritative runtime.
+- `@v31m4/application`, `@v31m4/domain`, `@v31m4/infrastructure` — the frozen-core packages
+  required to compose the authoritative runtime.
+- `@v31m4/contracts` and `zod` — to validate/translate external command payloads at the runtime
+  boundary into Layer 6 use-case commands and shape their responses, per the Application boundary
+  authority rule that contract schemas are "translated at runtime boundaries rather than imported
+  into the application core."
 - Node runtime APIs needed for the local HTTP surface and lifecycle coordination.
 
 Forbidden:
@@ -135,6 +140,12 @@ Rules:
 
 - Runtime is the authoritative local process and owns composition, session auth, typed command/query/event routes, recovery, replay coordination, and shutdown.
 - Optional departments/tools must never be required for runtime startup, core tests, packaging, or release acceptance.
+- A Layer 6 use case wired as a command handler must not receive a second, nested
+  `UnitOfWorkPort.execute` call: the `ExternalCommandExecutor` already opens the transaction the
+  idempotency record commits in, so the composition root injects a passthrough `UnitOfWorkPort`
+  that runs the use case against that same transaction (see
+  `apps/runtime/src/use-case-infrastructure.ts`), preserving one-transaction idempotency atomicity
+  instead of weakening it.
 
 ## Post-core department rules
 

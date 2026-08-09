@@ -14,8 +14,10 @@
   },
   "dependencies": {
     "@v31m4/application": "workspace:*",
+    "@v31m4/contracts": "workspace:*",
     "@v31m4/domain": "workspace:*",
-    "@v31m4/infrastructure": "workspace:*"
+    "@v31m4/infrastructure": "workspace:*",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "22.20.1"

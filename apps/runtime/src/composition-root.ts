@@ -3,15 +3,19 @@ import {
   ApplicationError,
   type ApplicationJsonObject,
   type ApplicationJsonValue,
+  createProject,
   isApplicationJsonValue,
   type OperationContext,
   type UnitOfWorkTransaction,
   type WriteCondition,
   WriteConditions,
 } from "@v31m4/application";
+import { createProjectRequestSchema, createProjectResponseSchema } from "@v31m4/contracts";
 import { createDomainEvent } from "@v31m4/domain";
 import {
   EventReplayStore,
+  type PolicyRule,
+  RuleBasedPolicyEngine,
   SqliteOutbox,
   SqliteRecordStore,
   SqliteRuntimeDatabase,
@@ -20,6 +24,14 @@ import { LocalSessionAuthenticator } from "./api/auth.js";
 import { EventStreamCoordinator } from "./event-stream.js";
 import { ExternalCommandExecutor } from "./external-command-executor.js";
 import type { RuntimeConfig } from "./runtime-config.js";
+import {
+  parseCommandPayload,
+  passthroughUnitOfWork,
+  SqliteApprovalStore,
+  SqliteAuditStore,
+  SqliteProjectRepository,
+  SystemClock,
+} from "./use-case-infrastructure.js";
 
 const NAME_TOKEN_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
@@ -173,6 +185,58 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
     const sequence = await outbox.append(event, transaction);
     transaction.afterCommit(() => coordinator.publish({ sequence, event }));
     return { recordType, recordId, revision: saved.revision, sequence };
+  });
+
+  // Real Layer 6 use-case wiring: the operator's local session (role "operator") may create
+  // projects; every other actor/action is fail-closed denied by RuleBasedPolicyEngine's default.
+  const clock = new SystemClock();
+  const projects = new SqliteProjectRepository(database);
+  const approvals = new SqliteApprovalStore(database);
+  const audit = new SqliteAuditStore(database);
+  const policyRules: readonly PolicyRule[] = Object.freeze([
+    {
+      id: "operator-project-actions",
+      effect: "allow",
+      actions: ["project.*"],
+      actorKinds: ["user"],
+      requiredRoles: ["operator"],
+      reason: "The local operator session may manage projects.",
+    },
+  ]);
+  const policy = new RuleBasedPolicyEngine(policyRules);
+
+  service.register("project.create", async (payload, context, transaction) => {
+    const request = parseCommandPayload(createProjectRequestSchema, payload);
+    const projectId = `project-${randomUUID()}`;
+    const auditId = `audit-${randomUUID()}`;
+    const saved = await createProject(
+      {
+        unitOfWork: passthroughUnitOfWork(transaction),
+        projects,
+        policy,
+        approvals,
+        audit,
+        clock,
+      },
+      { projectId, name: request.name, rootPath: request.rootPath, auditId },
+      context,
+    );
+    const event = createDomainEvent({
+      id: `event-${randomUUID()}`,
+      type: "project.updated",
+      aggregateType: "project",
+      aggregateId: saved.value.id,
+      occurredAt: context.startedAt,
+      payload: { projectId: saved.value.id, status: saved.value.status, name: saved.value.name },
+      metadata: {},
+    });
+    const sequence = await outbox.append(event, transaction);
+    transaction.afterCommit(() => coordinator.publish({ sequence, event }));
+    return createProjectResponseSchema.parse({
+      schemaVersion: request.schemaVersion,
+      requestId: request.requestId,
+      project: saved.value,
+    });
   });
 
   return Object.freeze({

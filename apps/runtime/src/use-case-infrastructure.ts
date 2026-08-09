@@ -1,0 +1,196 @@
+import type {
+  ApprovalRequest,
+  ApprovalStatus,
+  ApprovalStorePort,
+  AuditQuery,
+  AuditRecord,
+  AuditStorePort,
+  ClockPort,
+  OperationContext,
+  PortPage,
+  PortPageRequest,
+  ProjectRepositoryPort,
+  UnitOfWorkPort,
+  UnitOfWorkTransaction,
+  Versioned,
+  WriteCondition,
+} from "@v31m4/application";
+import { ApplicationError } from "@v31m4/application";
+import type { Project, ProjectId } from "@v31m4/domain";
+import { SqliteRecordStore, type SqliteRuntimeDatabase } from "@v31m4/infrastructure";
+import type { ZodType } from "zod";
+
+const PROJECT_TYPE = "project";
+const APPROVAL_TYPE = "approval";
+const AUDIT_TYPE = "audit";
+
+/**
+ * Validates a command's JSON payload against its `@v31m4/contracts` request schema, translating a
+ * Zod failure into the same `INVALID_APPLICATION_INPUT` `ApplicationError` shape every other
+ * validation failure in this runtime uses, instead of letting a raw `ZodError` collapse to an
+ * opaque 500 in {@link import("./api/error-mapper.js").mapErrorToHttp}.
+ */
+export function parseCommandPayload<Value>(schema: ZodType<Value>, payload: unknown): Value {
+  const result = schema.safeParse(payload);
+  if (!result.success) {
+    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Command payload failed validation.", {
+      details: { issues: result.error.issues.map((issue) => issue.message) },
+    });
+  }
+  return result.data;
+}
+
+/**
+ * Adapts an already-open `UnitOfWorkTransaction` (opened by the runtime's
+ * `ExternalCommandExecutor`, see external-command-executor.ts) into a `UnitOfWorkPort` a Layer 6
+ * use case can call. Layer 6 use cases own their transaction boundary (`unitOfWork.execute(...)`)
+ * because they are also used outside the runtime; `SqliteRuntimeDatabase` forbids nested
+ * transactions, so the runtime cannot simply call `database.unitOfWork.execute` again inside the
+ * executor's own transaction. Because this passthrough runs `work` against the *same* transaction
+ * instead of opening a new one, the use case's writes, its audit append, and the executor's
+ * idempotency record all commit atomically in one SQLite transaction — the idempotency contract is
+ * preserved exactly, not weakened.
+ */
+export function passthroughUnitOfWork(transaction: UnitOfWorkTransaction): UnitOfWorkPort {
+  return {
+    async execute<Result>(
+      _context: OperationContext,
+      work: (transaction: UnitOfWorkTransaction) => Promise<Result>,
+    ): Promise<Result> {
+      return work(transaction);
+    },
+  };
+}
+
+/** Real wall-clock `ClockPort`. */
+export class SystemClock implements ClockPort {
+  now(): string {
+    return new Date().toISOString();
+  }
+  monotonicMilliseconds(): number {
+    return performance.now();
+  }
+  async sleep(milliseconds: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  }
+}
+
+function listByType<Value>(
+  database: SqliteRuntimeDatabase,
+  recordType: string,
+  request: PortPageRequest,
+): PortPage<Versioned<Value>> {
+  const offset = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is malformed.");
+  }
+  const rows = database.connection
+    .prepare(
+      "SELECT revision, body FROM records WHERE record_type = ? ORDER BY rowid ASC LIMIT ? OFFSET ?",
+    )
+    .all(recordType, request.limit + 1, offset) as { revision: number; body: string }[];
+  const page = rows.slice(0, request.limit);
+  const items = page.map((row) =>
+    Object.freeze({ value: JSON.parse(row.body) as Value, revision: String(row.revision) }),
+  );
+  const total = database.connection
+    .prepare("SELECT COUNT(*) AS count FROM records WHERE record_type = ?")
+    .get(recordType) as { count: number };
+  return Object.freeze({
+    items: Object.freeze(items),
+    total: total.count,
+    ...(rows.length > request.limit ? { nextCursor: String(offset + request.limit) } : {}),
+  });
+}
+
+/** `ProjectRepositoryPort` backed by the runtime's generic content-addressed-by-id record store. */
+export class SqliteProjectRepository implements ProjectRepositoryPort {
+  readonly #records: SqliteRecordStore;
+  constructor(private readonly database: SqliteRuntimeDatabase) {
+    this.#records = new SqliteRecordStore(database);
+  }
+  async getById(id: ProjectId): Promise<Versioned<Project> | null> {
+    return this.#records.get<Project>(PROJECT_TYPE, id);
+  }
+  async list(request: PortPageRequest): Promise<PortPage<Versioned<Project>>> {
+    return listByType<Project>(this.database, PROJECT_TYPE, request);
+  }
+  async save(
+    project: Project,
+    condition: WriteCondition,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<Project>> {
+    return this.#records.save(PROJECT_TYPE, project.id, project, condition, transaction);
+  }
+}
+
+/** `ApprovalStorePort` backed by the generic record store. Exercised only when a policy rule
+ * returns `require_approval`; the default operator policy allows known actions outright. */
+export class SqliteApprovalStore implements ApprovalStorePort {
+  readonly #records: SqliteRecordStore;
+  constructor(private readonly database: SqliteRuntimeDatabase) {
+    this.#records = new SqliteRecordStore(database);
+  }
+  async get(id: string): Promise<Versioned<ApprovalRequest> | null> {
+    return this.#records.get<ApprovalRequest>(APPROVAL_TYPE, id);
+  }
+  async list(
+    status: ApprovalStatus | undefined,
+    request: PortPageRequest,
+  ): Promise<PortPage<Versioned<ApprovalRequest>>> {
+    const page = listByType<ApprovalRequest>(this.database, APPROVAL_TYPE, request);
+    if (status === undefined) return page;
+    const items = page.items.filter((entry) => entry.value.status === status);
+    return Object.freeze({ ...page, items: Object.freeze(items) });
+  }
+  async save(
+    request: ApprovalRequest,
+    condition: WriteCondition,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<ApprovalRequest>> {
+    return this.#records.save(APPROVAL_TYPE, request.id, request, condition, transaction);
+  }
+  async consume(
+    id: string,
+    condition: WriteCondition,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<ApprovalRequest>> {
+    const current = await this.get(id);
+    if (current === null) {
+      throw new ApplicationError("NOT_FOUND", "Approval does not exist.", { details: { id } });
+    }
+    const consumed: ApprovalRequest = { ...current.value, status: "consumed" };
+    return this.#records.save(APPROVAL_TYPE, id, consumed, condition, transaction);
+  }
+}
+
+/** `AuditStorePort` backed by the generic record store, one row per audit record id. */
+export class SqliteAuditStore implements AuditStorePort {
+  readonly #records: SqliteRecordStore;
+  constructor(private readonly database: SqliteRuntimeDatabase) {
+    this.#records = new SqliteRecordStore(database);
+  }
+  async append(
+    record: AuditRecord,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<void> {
+    await this.#records.append(AUDIT_TYPE, record.id, record, transaction);
+  }
+  async list(query: AuditQuery): Promise<PortPage<AuditRecord>> {
+    const page = listByType<AuditRecord>(this.database, AUDIT_TYPE, query);
+    const items = page.items
+      .map((entry) => entry.value)
+      .filter((record) => query.action === undefined || record.action === query.action)
+      .filter(
+        (record) => query.resourceType === undefined || record.resourceType === query.resourceType,
+      )
+      .filter((record) => query.resourceId === undefined || record.resourceId === query.resourceId)
+      .filter((record) => query.actorId === undefined || record.actor.id === query.actorId)
+      .filter((record) => query.outcomes === undefined || query.outcomes.includes(record.outcome));
+    return Object.freeze({ ...page, items: Object.freeze(items) });
+  }
+}
