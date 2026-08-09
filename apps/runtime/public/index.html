@@ -70,7 +70,7 @@ function loadToken() {
 }
 function authHeader() {
   const token = loadToken();
-  return token.length > 0 ? { authorization: "Bearer " + token } : {};
+  return token.length > 0 ? { authorization: `Bearer ${token}` } : {};
 }
 
 tokenInput.value = loadToken();
@@ -83,14 +83,14 @@ document.getElementById("saveToken").addEventListener("click", () => {
 async function refreshHealth() {
   try {
     const response = await fetch("/health");
-    if (!response.ok) throw new Error("HTTP " + response.status);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     healthEl.innerHTML =
       '<span class="status-ok">status: ' + body.status + "</span> — " +
       "durable log head: " + body.latestSequence + ", " +
       "live subscribers: " + body.subscriptions;
   } catch (error) {
-    healthEl.innerHTML = '<span class="status-bad">unreachable: ' + String(error) + "</span>";
+    healthEl.innerHTML = `<span class="status-bad">unreachable: ${String(error)}</span>`;
   }
 }
 refreshHealth();
@@ -130,7 +130,7 @@ document.getElementById("createProject").addEventListener("click", async () => {
       '<span class="status-ok">created</span> <pre>' +
       JSON.stringify(body.result.project, null, 2) + "</pre>";
   } catch (error) {
-    projectResultEl.innerHTML = '<span class="status-bad">' + String(error) + "</span>";
+    projectResultEl.innerHTML = `<span class="status-bad">${String(error)}</span>`;
   }
 });
 
@@ -148,17 +148,17 @@ async function connectEvents(afterSequence) {
   if (eventsAbort !== null) eventsAbort.abort();
   const controller = new AbortController();
   eventsAbort = controller;
-  eventsStatusEl.textContent = "connecting… (after sequence " + afterSequence + ")";
+  eventsStatusEl.textContent = `connecting… (after sequence ${afterSequence})`;
   let cursor = afterSequence;
   try {
-    const response = await fetch("/events?afterSequence=" + afterSequence, {
+    const response = await fetch(`/events?afterSequence=${afterSequence}`, {
       headers: authHeader(),
       signal: controller.signal,
     });
     if (!response.ok || response.body === null) {
-      throw new Error("HTTP " + response.status);
+      throw new Error(`HTTP ${response.status}`);
     }
-    eventsStatusEl.textContent = "connected (after sequence " + afterSequence + ")";
+    eventsStatusEl.textContent = `connected (after sequence ${afterSequence})`;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -185,7 +185,7 @@ async function connectEvents(afterSequence) {
     eventsStatusEl.textContent = "stream ended by server — reconnecting…";
   } catch (error) {
     if (controller.signal.aborted) return;
-    eventsStatusEl.textContent = "disconnected (" + String(error) + ") — reconnecting…";
+    eventsStatusEl.textContent = `disconnected (${String(error)}) — reconnecting…`;
   }
   setTimeout(() => connectEvents(cursor), 1500);
 }

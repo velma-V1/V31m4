@@ -1,11 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   ApplicationError,
   type ApplicationJsonObject,
   type ApplicationJsonValue,
+  type ApprovalStorePort,
+  type AuditStorePort,
+  type ClockPort,
   createProject,
+  type EventBusPort,
+  isApplicationError,
   isApplicationJsonValue,
+  type JobRepositoryPort,
+  type MissionRepositoryPort,
   type OperationContext,
+  type ProductionKernelPort,
+  type ProjectRepositoryPort,
+  startJob,
   submitMission,
   type UnitOfWorkTransaction,
   type WriteCondition,
@@ -14,10 +24,12 @@ import {
 import {
   createProjectRequestSchema,
   createProjectResponseSchema,
+  startJobRequestSchema,
+  startJobResponseSchema,
   submitMissionRequestSchema,
   submitMissionResponseSchema,
 } from "@v31m4/contracts";
-import { createDomainEvent } from "@v31m4/domain";
+import { createDomainEvent, type Job, JobId } from "@v31m4/domain";
 import {
   EventReplayStore,
   type PolicyRule,
@@ -33,8 +45,11 @@ import type { RuntimeConfig } from "./runtime-config.js";
 import {
   parseCommandPayload,
   passthroughUnitOfWork,
+  ReferenceProductionKernel,
   SqliteApprovalStore,
   SqliteAuditStore,
+  SqliteEventBus,
+  SqliteJobRepository,
   SqliteMissionRepository,
   SqliteProjectRepository,
   SystemClock,
@@ -68,12 +83,27 @@ function requireString(object: ApplicationJsonObject, key: string, pattern: RegE
 }
 
 /**
- * Command and query surface for the runtime. Commands run through the {@link ExternalCommandExecutor}
- * so the external-command idempotency contract holds for every route; handlers contain the
- * authoritative effect while HTTP routes only translate transport to these calls.
+ * A command handler that manages its own transaction boundaries and may perform external effects
+ * between them (e.g. `startJob`'s create+queue transaction, then a non-transactional production-
+ * kernel call, then a running-or-failed transaction) — structurally incompatible with
+ * {@link ExternalCommandExecutor}'s single enclosing transaction, which cannot have external
+ * execution run while it is still open. Registered via {@link RuntimeService.registerDirect}.
+ */
+export type DirectCommandHandler = (
+  payload: ApplicationJsonValue,
+  context: OperationContext,
+) => Promise<ApplicationJsonValue>;
+
+/**
+ * Command and query surface for the runtime. Most commands run through the
+ * {@link ExternalCommandExecutor} so the external-command idempotency contract holds for the whole
+ * operation; handlers contain the authoritative effect while HTTP routes only translate transport
+ * to these calls. A `DirectCommandHandler` is the one exception, for commands whose external effect
+ * cannot live inside a single transaction — it is responsible for its own idempotency handling.
  */
 export class RuntimeService {
   readonly #handlers = new Map<string, CommandHandler>();
+  readonly #directHandlers = new Map<string, DirectCommandHandler>();
 
   constructor(
     private readonly executor: ExternalCommandExecutor,
@@ -84,11 +114,17 @@ export class RuntimeService {
     this.#handlers.set(commandType, handler);
   }
 
+  registerDirect(commandType: string, handler: DirectCommandHandler): void {
+    this.#directHandlers.set(commandType, handler);
+  }
+
   async dispatch(
     commandType: string,
     payload: ApplicationJsonValue,
     context: OperationContext,
   ): Promise<ApplicationJsonValue> {
+    const direct = this.#directHandlers.get(commandType);
+    if (direct !== undefined) return direct(payload, context);
     const handler = this.#handlers.get(commandType);
     if (handler === undefined) {
       throw new ApplicationError("UNSUPPORTED_OPERATION", "Unknown command type.", {
@@ -196,11 +232,11 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
 
   // Real Layer 6 use-case wiring: the operator's local session (role "operator") may create
   // projects; every other actor/action is fail-closed denied by RuleBasedPolicyEngine's default.
-  const clock = new SystemClock();
-  const projects = new SqliteProjectRepository(database);
-  const missions = new SqliteMissionRepository(database);
-  const approvals = new SqliteApprovalStore(database);
-  const audit = new SqliteAuditStore(database);
+  const clock: ClockPort = new SystemClock();
+  const projects: ProjectRepositoryPort = new SqliteProjectRepository(database);
+  const missions: MissionRepositoryPort = new SqliteMissionRepository(database);
+  const approvals: ApprovalStorePort = new SqliteApprovalStore(database);
+  const audit: AuditStorePort = new SqliteAuditStore(database);
   const policyRules: readonly PolicyRule[] = Object.freeze([
     {
       id: "operator-project-actions",
@@ -289,6 +325,77 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
       requestId,
       mission: saved.value,
     }) as unknown as ApplicationJsonValue;
+  });
+
+  const jobs: JobRepositoryPort = new SqliteJobRepository(database);
+  const eventBus: EventBusPort = new SqliteEventBus(outbox, coordinator);
+  // No real production-kernel adapter process is installed on this machine; ReferenceProductionKernel
+  // proves job orchestration deterministically, exactly like the Video/Game departments' reference
+  // adapters, and must never be represented as real production-kernel execution.
+  const kernel: ProductionKernelPort = new ReferenceProductionKernel();
+
+  // job.start is a DirectCommandHandler, not a CommandHandler: startJob opens its own create+queue
+  // transaction, then calls the (here, reference) production kernel outside any transaction - Layer
+  // 7 forbids external execution while a SQLite transaction is active, so it cannot run inside
+  // ExternalCommandExecutor's single enclosing transaction. Idempotency instead comes from a
+  // deterministic jobId derived from (actorId, idempotencyKey): a retry computes the same jobId,
+  // Job.create's own mustNotExist() write condition rejects the duplicate create with CONFLICT
+  // before the kernel is ever called again, and that CONFLICT is caught here and turned into the
+  // existing job's current state - the same idempotent-success contract as every other command,
+  // reached by construction rather than by wrapping everything in one transaction.
+  service.registerDirect("job.start", async (payload, context) => {
+    const request = parseCommandPayload(startJobRequestSchema, payload);
+    const jobId = `job-${createHash("sha256")
+      .update(`${context.actor.id}:${context.idempotencyKey}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    const mission = await missions.getById(request.missionId, context);
+    if (mission === null) {
+      throw new ApplicationError("NOT_FOUND", "Mission does not exist.", {
+        details: { missionId: request.missionId },
+      });
+    }
+
+    const toResponse = (job: Job): ApplicationJsonValue =>
+      startJobResponseSchema.parse({
+        schemaVersion: request.schemaVersion,
+        requestId: request.requestId,
+        job,
+      }) as unknown as ApplicationJsonValue;
+
+    try {
+      const saved = await startJob(
+        {
+          unitOfWork: database.unitOfWork,
+          jobs,
+          events: eventBus,
+          kernel,
+          audit,
+          clock,
+        },
+        {
+          jobId,
+          projectId: mission.value.projectId,
+          missionId: request.missionId,
+          workflowId: request.workflowId,
+          input: {},
+          resourceBudget: mission.value.resourceBudget,
+          createdEventId: `event-${randomUUID()}`,
+          queuedEventId: `event-${randomUUID()}`,
+          startedEventId: `event-${randomUUID()}`,
+          failureEventId: `event-${randomUUID()}`,
+          auditId: `audit-${randomUUID()}`,
+        },
+        context,
+      );
+      return toResponse(saved.value);
+    } catch (error) {
+      if (isApplicationError(error) && error.code === "CONFLICT") {
+        const current = await jobs.getById(JobId.parse(jobId), context);
+        if (current !== null) return toResponse(current.value);
+      }
+      throw error;
+    }
   });
 
   return Object.freeze({
