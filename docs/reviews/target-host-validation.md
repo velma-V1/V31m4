@@ -20,7 +20,7 @@ Local-first target machine: WSL2 (Linux) on Windows 11 Home, RTX 4070 SUPER 12GB
 | Godot | no | — | not found (same checks) | — | — | — | no | not installed; primary Game-department engine, reached via Summer (not a direct V31M4 adapter) once Summer is installed and validated |
 | Unreal | no | — | not found | — | — | — | no | not installed; explicitly out of scope for now, per `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md` |
 | Summer | no | — | not found (no prior reference to it anywhere in this repository or on this machine) | — | — | — | no | not installed; primary execution platform for Game department real adapters (`GameDept_Port -> SummerAdapter -> Summer MCP/CLI -> SummerEngine/Godot`) — see `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`. No adapter is implemented yet. |
-| ComfyUI | no | — | not found | — | — | — | no | not installed; requires model download(s) |
+| ComfyUI | yes (2026-08-09) | not yet checked | `/home/xxthatguyxx/ComfyUI` (WSL-native filesystem; the earlier scan of this row only checked the Windows side) | present on WSL filesystem | not checked | not exercised | not yet — not run in this session | installed but not yet executed/validated; no real adapter built against it yet |
 | Python (Windows) | yes | 3.14 / 3.13 present | `C:\Python314`, `C:\Users\Matt\AppData\Local\Programs\Python\Python313` | via `.exe` interop | native | n/a | n/a | not currently required by any adapter |
 
 Ollama models installed at discovery time (`ollama list` / `/api/show` capabilities):
@@ -52,12 +52,15 @@ required in this WSL2 configuration.
 
   See "Real adapter evidence" below for both.
 - **NOT executed here, and deferred:** Blender, Godot, Unreal, Summer, ComfyUI, and any real
-  image/video *generation* model. None of these are installed on this machine, and installing them
-  is a material user choice (large downloads / licensing), so they were not installed automatically
-  per the operating contract. The adapters that would drive them remain defined as replaceable
-  interfaces with only their deterministic reference implementation: Video's
-  `ShotGenerationAdapter` (needs ComfyUI or a local generation model — no installed Ollama model
-  does video/image generation, only text/vision) and all of 3D/Game's
+  image/video *generation* model. Blender/Godot/Unreal/Summer are not installed on this machine,
+  and installing them is a material user choice (large downloads / licensing), so they were not
+  installed automatically per the operating contract. ComfyUI **is** now installed (found
+  2026-08-09 at `/home/xxthatguyxx/ComfyUI`, WSL-native — see the capability matrix above) but has
+  not been run or validated from this environment; no real adapter has been built against it. The
+  adapters that would drive these tools remain defined as replaceable interfaces with only their
+  deterministic reference implementation: Video's `ShotGenerationAdapter` (needs ComfyUI, now
+  installed but unexercised, or a local generation model — no installed Ollama model does
+  video/image generation, only text/vision) and all of 3D/Game's
   `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/`PackageAdapter`. Per
   `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`, the Game
   department's real adapters now target Summer (reaching Godot through Summer's MCP/CLI) as the

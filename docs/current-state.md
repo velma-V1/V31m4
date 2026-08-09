@@ -250,6 +250,74 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
+   - **System-assembly program started (2026-08-09):** turning the verified backend into a
+     runnable, operable system, not just a passing test suite. Status: `pnpm dev` boots the
+     runtime for real (`scripts/dev.mjs`); one real business command (`project.create`) is wired
+     end-to-end through the runtime's command dispatcher; a minimal real operator UI exists. See
+     "System build (2026-08-09 onward)" below for exactly what's done and what remains — do not
+     re-derive this from the git log; the section below is the authoritative summary.
+
+## System build (2026-08-09 onward)
+
+Turning the verified L1–10 core + post-core departments into a runnable, operable system. Three
+commits so far, each independently verified (full gate green) and pushed:
+
+1. **`pnpm dev` is a real, verified boot path.** `scripts/dev.mjs` creates `runtime-data/`
+   (already gitignored — anticipated), generates/persists a local dev session token there, and
+   runs `apps/runtime/src/main.ts` via `tsx` (no build step). Verified with real process
+   execution: fresh boot, `GET /health`, authenticated command dispatch, clean SIGINT shutdown,
+   and restart recovery (same token/database reused; durable log head and a pre-restart record
+   both survived). `tsx` needed esbuild's native postinstall, allowlisted in
+   `pnpm-workspace.yaml` (`allowBuilds.esbuild: true`, dev-only).
+2. **`project.create` is the runtime's first real Layer 6 use-case command** — see
+   `apps/runtime/src/use-case-infrastructure.ts` and `composition-root.ts`. Until this, the
+   command dispatcher (`RuntimeService`) had exactly one handler, `record.put` (a generic KV
+   write proving the mechanism only) — none of the 21 use cases were reachable over HTTP. Closing
+   this gap required realizing `packages/infrastructure` implements only generic Layer 7
+   primitives (`SqliteRecordStore`, `SqliteOutbox`, ...), not concrete adapters for the
+   domain-specific Layer 4 ports (`ProjectRepositoryPort`, `ApprovalStorePort`, `AuditStorePort`,
+   `ClockPort`) — composing those was left to whichever composition root wires a real use case,
+   exactly `apps/runtime`'s job. Also required a `passthroughUnitOfWork` adapter: Layer 6 use
+   cases open their own transaction, but `ExternalCommandExecutor` already opens one per command
+   (so the idempotency record commits atomically with the effect) and `SqliteRuntimeDatabase`
+   forbids nested transactions — the passthrough runs the use case against the *same* transaction
+   instead of opening a new one, so nothing about the idempotency guarantee was weakened. No
+   frozen-core file changed. `apps/runtime` gained `@v31m4/contracts` and `zod` as real
+   (previously transitive-only) dependencies, used to validate/translate the external payload at
+   the runtime boundary, matching the already-documented intent for where that translation
+   belongs. Verified with real HTTP requests against a real server + real SQLite: happy path,
+   fail-closed policy denial (wrong role), malformed-payload 400 (not an opaque 500), idempotent
+   retry (no duplicate write), and a live SSE sequence bump.
+3. **A minimal real operator UI** — `apps/runtime/public/index.html`, served at `GET /`
+   (unauthenticated, like `/health`) by the existing runtime HTTP server; no framework, no build
+   step, no second process/port. Covers session token entry, system health, and project creation
+   (the only two real commands/queries that exist), plus a live event log using a hand-rolled
+   SSE-over-fetch reader (`EventSource` cannot set the `Authorization` header this runtime's
+   `/events` route requires, and weakening that requirement to suit the browser API was rejected).
+   Verified against the real wire format: captured actual SSE bytes from a real `project.create`
+   call and confirmed they match exactly what the client-side parser reads.
+
+**Not yet done** (in priority order for continuing this program):
+
+- **`mission.submit` and `job.start`/status commands** — same pattern as `project.create`
+  (contract validation → real use case → real port adapters → passthrough transaction → policy
+  rule → event), but each needs its own Layer 4 port adapters (`MissionRepositoryPort`,
+  `JobRepositoryPort`, workflow/evidence ports as needed). This is the next concrete step toward
+  a full vertical slice (create project → submit mission → start job → observe progress →
+  verify → evidence → result); nothing about the pattern is unknown, it is more of the same kind
+  of wiring `project.create` just proved out.
+- **Job execution itself** (`run-solver-forge`, `verify-candidates`, `select-champion`,
+  `deliver-result`) is unwired — no model/tool gateway wiring exists yet in the composition root
+  for these use cases to call through.
+- **Operator UI surfaces** for missions/jobs/approvals/evidence/results do not exist — deferred
+  because the commands/queries behind them do not exist yet; adding UI panels for
+  not-yet-real data would be exactly the fabricated status this program's own rules forbid.
+- **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
+  `/home/xxthatguyxx/ComfyUI` on 2026-08-09, WSL-native, not the Windows side this repo's earlier
+  target-host scan checked; not yet run/exercised, so no real execution is claimed — see
+  `docs/reviews/target-host-validation.md`) and **Game's Summer-backed real adapters** (needs
+  Summer, not installed) remain as previously recorded — unrelated to the system-build program
+  above, tracked independently in the Video/Game sections.
 
 ## Session-start rule
 

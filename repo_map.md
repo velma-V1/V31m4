@@ -114,8 +114,8 @@ on the current target machine.
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
 - **Frozen L1–10 core regression (audited baseline `78dc2b7`):** **340 passing cases across 71 test files**.
 - **Current full post-core workspace regression (re-run and verified 2026-08-09, without
-  `V31M4_TARGET_HOST`):** **375 passing cases / 10 skipped (385 total) across 81 passing + 2
-  skipped test files (83 total)** — the frozen core tests plus the additive post-core packages:
+  `V31M4_TARGET_HOST`):** **382 passing cases / 10 skipped (392 total) across 83 passing + 2
+  skipped test files (85 total)** — the frozen core tests plus the additive post-core packages:
   department host (12), Video Production (7 reference-adapter cases passing + 10 real-adapter
   cases correctly skipped across the two target-host test files), 3D/Game Production (8), and
   department independence/integration (2). The 10 skipped cases are the real ffmpeg/Ollama
@@ -129,7 +129,10 @@ on the current target machine.
   exactly the allowed set documented in `docs/dependency-rules.md`, mirroring the existing pattern
   in `packages/application` and `packages/infrastructure`. This machine-verifies the
   reverse-dependency and cross-department-import invariants that were previously only
-  documentation/code-review claims for these six packages.
+  documentation/code-review claims for these six packages. The remaining 7 added cases are the
+  system-build program's first real runtime wiring: `apps/runtime`'s `project.create` command
+  (5 tests) and its static operator-UI route (2 tests) — see "System build" in
+  `docs/current-state.md` for what this covers and what remains.
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
 - **Typecheck / Build:** the frozen audited L1–10 core (5 packages: domain, contracts, application, infrastructure, runtime) is **5/5** typecheck and **5/5** build; the current full post-core workspace (9 packages, adding department-host and the three department/integration packages) is **9/9** typecheck and **9/9** build (each package compiles under `tsc --noEmit`).
@@ -139,8 +142,9 @@ on the current target machine.
 ### Native gate status
 
 All native gates are green across the full post-core workspace (re-run 2026-08-09): `pnpm typecheck`
-(9/9), `pnpm build` (9/9), `pnpm test` (**375 passing / 10 skipped across 81 passing + 2 skipped
-test files**, no `V31M4_TARGET_HOST` set), `pnpm lint` (0 errors, 5 warnings, 1 info), and `pnpm
+(9/9), `pnpm build` (9/9), `pnpm test` (**382 passing / 10 skipped across 83 passing + 2 skipped
+test files**, no `V31M4_TARGET_HOST` set), `pnpm lint` (0 errors, 8 warnings, 10 infos — the new
+`apps/runtime/public/index.html` is HTML-linted too), and `pnpm
 check` (aggregates lint + typecheck + test; PASS) — the frozen L1–10 core subset is 340 cases / 71
 files at 5/5. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
