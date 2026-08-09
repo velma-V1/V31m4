@@ -63,14 +63,26 @@ packages/
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
     └── tests/                            # Layer 4–6 verification
-└── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store
+├── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store
+└── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
 
 apps/
-└── runtime/                             # Layer 10: node:http runtime, auth, typed routes, external-command executor, event-stream coordinator, recovery, shutdown
+├── runtime/                             # Layer 10: node:http runtime, auth, typed routes, external-command executor, event-stream coordinator, recovery, shutdown
+└── departments-integration/             # Post-core: independence-matrix integration tests (core-only / both departments / after removal)
+
+plugins/
+├── video-production/                    # Post-core: removable Video Production department (shot pipeline: generate→QC→correct→assemble+verify)
+└── game-production/                     # Post-core: removable 3D/Game Production department (scene pipeline: acquire→build→validate→package+verify)
 
 schemas/                                 # 7 portable draft 2020-12 schemas
 docs/                                    # Architecture, maps, plans, reviews, and deferred extension designs
 ```
+
+The core (L1–10) is frozen; `department-host` and the `plugins/*` departments are additive post-core
+packages that depend on the core only through existing ports. Core imports nothing from them, and the
+departments do not import each other — each is independently removable. Real production tools
+(ffmpeg/Blender/Godot/Unreal/ComfyUI/generation-vision models) sit behind replaceable adapter
+boundaries, with deterministic reference adapters for verification in this environment.
 
 ### Verified application-service behavior
 
@@ -92,7 +104,7 @@ docs/                                    # Architecture, maps, plans, reviews, a
 - **Layer 4** application-port regression: **16 passing cases across 6 test files**.
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
-- **Full Layer 1–10 regression:** **340 passing cases across 71 test files** (re-run and verified 2026-08-09).
+- **Full Layer 1–10 regression:** **369 passing cases across 75 test files** (re-run and verified 2026-08-09).
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
 - **Typecheck:** `pnpm typecheck` → **5/5 packages pass**. **Build:** `pnpm build` → **5/5 pass** (each package compiles under `tsc --noEmit`).
@@ -101,7 +113,7 @@ docs/                                    # Architecture, maps, plans, reviews, a
 
 ### Native gate status
 
-All native gates are green: `pnpm typecheck`, `pnpm test` (**340 cases across 71 files**),
+All native gates are green: `pnpm typecheck`, `pnpm test` (**369 cases across 75 files**),
 `pnpm build`, `pnpm lint`, and `pnpm check`. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
@@ -119,9 +131,10 @@ gateways (real-path `PathPolicy` containment, fail-closed rule-based policy engi
 plugin registry, and supervised provider-neutral model/tool/kernel gateways with fallback and
 failure classification). **Layer 10** is implemented under `apps/runtime`: the authoritative
 `node:http` runtime, composition root, durable committed-event replay, the resumable
-event-stream coordinator, and the external-command idempotency contract. Outside the L1–10
-core, not yet implemented: desktop, CLI, concrete provider adapter processes, plugin SDK,
-plugins, laboratories, and production workflows, plus outbox retention/pruning (an additive
-operational feature — see `docs/reviews/production-readiness-audit.md`). Video Production and
-3D/Game Production are intentionally deferred and are not counted as missing core
-implementation.
+event-stream coordinator, and the external-command idempotency contract. Post-core, the generic
+department/plugin host SDK (`packages/department-host`) and the removable Video and 3D/Game
+departments (`plugins/*`) are implemented and verified (see
+`docs/reviews/post-core-program-status.md`). Not yet implemented outside that: desktop, CLI,
+concrete provider adapter *processes* for the departments' optional external tools, laboratories,
+and additional production workflows, plus outbox retention/pruning (an additive operational
+feature — see `docs/reviews/production-readiness-audit.md`).

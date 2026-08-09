@@ -1,0 +1,20 @@
+{
+  "name": "@v31m4/departments-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json --noEmit",
+    "lint": "biome ci tests",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@v31m4/application": "workspace:*",
+    "@v31m4/department-host": "workspace:*",
+    "@v31m4/game-production": "workspace:*",
+    "@v31m4/infrastructure": "workspace:*",
+    "@v31m4/video-production": "workspace:*"
+  }
+}

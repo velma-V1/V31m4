@@ -1,88 +1,91 @@
 # Post-Core Program Status (2026-08-09)
 
-Status of the approved post-core sequence (main promotion, stable tag, core freeze, Video and
-3D/Game departments, outbox retention). The immutable audited product-code baseline is `78dc2b7`.
+Status of the approved post-core sequence (main promotion, stable tag, core freeze, department
+host, Video and 3D/Game departments, outbox retention). The immutable audited product-code baseline
+is `78dc2b7`; the post-core work is additive and does not modify the frozen L1–10 core tree.
 
 ## Phase 1 — Main promotion: COMPLETE
 
 `main` was fast-forwarded from `fbbebdd` to the promoted core commit (`9801338`) — a clean
-fast-forward of 38 commits, no force, no merge commit, all prior `main` history preserved. `main`,
-`canonical/layers-6-10`, and the source branch are aligned. The delta from `78dc2b7` to the promoted
-commit is documentation/control-state only (no product-code change).
+fast-forward of 38 commits, no force, no merge commit, all prior history preserved.
 
-## Phase 2 — Stable core release tag: BLOCKED (remote), local tag created
+## Phase 2 — Stable core release tag: LOCAL only, remote push BLOCKED (external)
 
-An annotated tag `v31m4-core-l1-10-stable` was created locally at the promoted core commit
-(`9801338`). Pushing it to the remote is **blocked by egress/organization policy**: `git push` of a
-`refs/tags/*` ref returns **HTTP 403** (branch pushes to `refs/heads/*` succeed). Per environment
-policy, 403 denials are not retried. The GitHub MCP server exposes no tag/release/ref-creation tool
-(`create_branch` only creates `refs/heads/*`), so there is no alternate automated path.
-
-**Needs:** an admin to allow tag-ref pushes for this session (Claude GitHub settings / repo ruleset),
-or a human to create the annotated tag/release at commit `9801338`. `78dc2b7` remains the immutable
-audited code baseline regardless of where the tag lands.
+Annotated tag `v31m4-core-l1-10-stable` exists locally at `9801338`. Pushing it is blocked by
+egress/organization policy: `git push` of a `refs/tags/*` ref returns HTTP 403 (branch pushes to
+`refs/heads/*` succeed), and the GitHub MCP server exposes no tag/release/ref-creation tool. Not
+retried per policy. Needs an admin to allow tag pushes, or a human to create the tag/release at
+`9801338`. Tag publication is recorded as an external/human action and does not gate engineering.
 
 ## Phase 3 — Core freeze: IN EFFECT
 
-L1–L10 is the frozen platform. Core changes are allowed only for an evidence-backed defect, a
-genuinely missing generic extension seam surfaced by department integration, or a minimal fix that
-keeps existing behavior protected by regression tests. No speculative core layers, no redesign of the
-working architecture, no core dependency on Video or 3D/Game, and no weakening of security/reliability
-boundaries. Departments consume the platform; they do not redefine it.
+L1–L10 is the frozen platform. The post-core work added new packages only and changed no core
+source: departments and the host depend on the core through existing ports; core imports nothing
+from them.
 
-## Phases 4 & 5 — Video and 3D/Game departments: BLOCKED (prerequisite + design + resources)
+## Phase A — Generic department host SDK: COMPLETE
 
-These cannot be implemented to a genuine, verifiable standard from the current repository and
-environment. Three independent, evidence-backed blockers:
+`packages/department-host` — the generic post-core extension platform. It owns the department
+lifecycle (install → enable → start → invoke/health → stop → disable → remove) on the existing
+`PluginRegistryPort` (durable registration + coarse status) and unit of work; isolation is delegated
+to a swappable `DepartmentConnector` (supervised process or in-process module); isolated storage is
+allocated via a `WorkspaceAllocator` with install/remove rollback. Fails closed on invalid manifest,
+incompatible host API version, ungranted permission, and missing tool/model dependency. **12 tests.**
 
-1. **Unmet resume-gate precondition — no generic plugin slots exist.** Both deferred designs state:
-   "Do not implement this department until the core is release-complete AND its generic plugin slots
-   are verified without [the department] installed." The core has a plugin *registration ledger*
-   (`SqlitePluginRegistry`) but **no plugin SDK, host, or loader** — nothing that packages, loads,
-   isolates, runs, or removes a first-party department. The `plugins/` and `adapters/` workspace
-   directories do not exist (only reserved globs). `repo_map.md` lists "plugin SDK, plugins" as not
-   implemented. Building that host/SDK is a new platform capability with its own architecture
-   decisions (packaging, lifecycle install/enable/disable/remove, isolation, capability/tool/model/
-   job/artifact/checkpoint/verification/resource/approval/workspace/event wiring, versioning) — not a
-   "minimal missing seam," and not specified by any source-of-truth document.
+## Phase B — Video Production department: COMPLETE
 
-2. **Deferred designs are direction documents, not implementable architectures.**
-   `docs/deferred/video-production/README.md` and `docs/deferred/game-production/README.md` define
-   purpose, priorities, and a hard integration boundary — not a concrete department architecture,
-   contracts, or module structure to "follow as authoritative." Implementing would require inventing
-   that architecture, which the program rules forbid without evidence the design is invalid.
+`plugins/video-production` — a removable department derived from
+`docs/deferred/video-production`. Deterministic software owns the long-horizon workflow (per-shot
+generate → vision-QC → bounded correction/repair → accept; assemble; verify); generation, QC, and
+assembly are replaceable adapters with deterministic reference implementations so orchestration,
+caching, and recovery are verifiable without ffmpeg/Blender/ComfyUI/generation-vision models present
+(those are `optionalToolIds`, dropped in behind the same interfaces on a target host). Project
+workflow state is separated from the content-addressed accepted-shot cache; interrupted productions
+resume from their last checkpoint without regenerating accepted shots; output is checksum-verified.
+**7 tests.**
 
-3. **Mandated reuse targets are unavailable in this environment.** The designs mandate
-   "existing-component-first": evaluate/reuse ViMax, Blender, Godot/Unreal, ffmpeg, and image/video +
-   vision-QC models before custom-building, and explicitly forbid rebuilding what established tooling
-   already solves ("do not build a replacement game engine when established tooling satisfies the
-   requirement"). None of that tooling, nor GPU/model-provider access, is present in this sandboxed,
-   egress-restricted environment. Hand-rolling TypeScript replacements would directly violate the
-   design and produce unverifiable, hollow "departments."
+## Phase C — 3D/Game Production department: COMPLETE
 
-**Needs (product/architecture + environment decisions):**
-- The plugin/department **host SDK** architecture (how departments are packaged, isolated, loaded,
-  and removed) — designed and approved as an explicit platform step, since both departments sit on it.
-- A resolution for the "reuse existing external tooling" mandate given this environment (which real
-  engines/models/tools are available/approved, or an execution environment that has them).
-- Concrete, implementable department specs (or approval to derive them), replacing the current
-  direction documents.
+`plugins/game-production` — a removable department derived from
+`docs/deferred/game-production`, independent of Video (no cross-import). Deterministic software owns
+the project workflow (per-scene acquire assets → engine build → validate → bounded repair → accept;
+package; verify); asset, build, validation, and packaging are replaceable adapters with deterministic
+reference implementations so orchestration is verifiable without Godot/Unreal/Blender present (those
+are `optionalToolIds`). No replacement engine is built. Workflow state is separated from the
+content-addressed built-scene cache; interrupted projects resume without rebuilding accepted scenes;
+the package is checksum-verified. **8 tests.**
 
-Fabricating placeholder departments was deliberately **not** done: it would violate the designs'
-reuse-first mandate and DO_NOT rules, could not be meaningfully verified (render/cache/QC/output),
-and would lower result quality — contrary to the operating contract's CORRECTNESS-first priority.
+## Phase D — Independence / integration: COMPLETE
+
+`apps/departments-integration` proves the independence matrix with a composite connector binding both
+departments by manifest id: core operates with zero departments; both run together; removing one
+leaves the other working; and the host operates after both are removed. **2 tests.**
+
+Dependency direction verified: core (`domain`/`contracts`/`application`/`infrastructure`/`apps/runtime`)
+imports nothing from the host or departments; the host imports no department; Video and Game do not
+import each other; department source imports only `@v31m4/application` and `@v31m4/department-host`
+(infrastructure is a test-only dev dependency); zero explicit `any`; no Open Generative AI or
+provider/engine SDK in core — external engines/models remain strictly at replaceable adapter
+boundaries.
 
 ## Phase 6 — Outbox retention/pruning: INTENTIONALLY DEFERRED
 
-Unbounded durable-log growth is an operational scalability limitation, not a correctness defect. It
-remains deferred pending real workload/storage evidence (retention requirements, safe horizon,
-recovery/replay expectations, operational thresholds). The replay store already supports pruned
-history (`refresh_required` when a cursor predates `oldest`), so the future work has a landing point.
-See `docs/reviews/production-readiness-audit.md`.
+Unbounded durable-log growth remains an operational scalability limitation, not a correctness defect,
+deferred pending real workload/storage evidence (retention requirements, safe horizon, recovery/replay
+expectations, thresholds). The replay store already supports pruned history (`refresh_required`), so
+the future work has a landing point. See `docs/reviews/production-readiness-audit.md`.
+
+## Verification
+
+Full native gate with departments installed: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test`
+369 cases / 75 files, `pnpm lint` / `pnpm check` green (0 errors, 1 info). Real external
+integrations (ffmpeg/Blender/Godot/Unreal/ComfyUI/generation-vision models) are contract-tested via
+replaceable adapters and deterministic reference adapters; execution against those tools on a target
+host is separate validation, out of scope for this sandbox.
 
 ## Net state
 
-- Completed: Phase 1 (main promotion), Phase 3 (freeze policy in effect), Phase 6 (deferral recorded).
-- Blocked, needs a decision/action outside repository evidence: Phase 2 (tag-push policy), Phases 4–5
-  (department host SDK + implementable specs + reuse-tooling environment).
-- Frozen audited code baseline: `78dc2b7`. Promoted core commit on `main`/`canonical`: `9801338`.
+- Completed: Phases 1, 3, A, B, C, D; Phase 6 deferred by design.
+- Blocked, external action: Phase 2 remote tag push (403 policy) — local tag exists at `9801338`.
+- Frozen audited code baseline: `78dc2b7`. Core packages unchanged; departments are additive and
+  removable.

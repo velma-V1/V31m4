@@ -146,15 +146,24 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
      locally at `9801338`; `git push` of the tag ref returns HTTP 403 (egress/org policy allows
      branch pushes, denies tag-ref pushes), and no GitHub MCP tag/release/ref tool exists. Needs an
      admin to allow tag pushes or a human to create the tag/release at `9801338`.
-   - **Core freeze: IN EFFECT.** L1–L10 frozen; core changes only for evidence-backed defects or a
-     genuinely missing generic extension seam, kept minimal and regression-protected.
-   - **Video + 3D/Game departments: BLOCKED.** No generic plugin slots exist (only a
-     `SqlitePluginRegistry` ledger — no plugin SDK/host/loader; `plugins/` and `adapters/` absent),
-     so the departments' own resume-gate precondition is unmet; the deferred docs are direction
-     documents, not implementable architectures; and their mandated reuse targets (Blender, Godot/
-     Unreal, ffmpeg, generation/vision models, ViMax) are unavailable in this sandboxed,
-     egress-restricted environment. Not fabricated — needs a plugin-host SDK architecture decision,
-     implementable department specs, and a reuse-tooling environment.
+   - **Core freeze: IN EFFECT.** L1–L10 frozen; the post-core work added new packages only and
+     changed no core source (verified: core imports nothing from the host/departments).
+   - **Department host SDK: COMPLETE.** `packages/department-host` — generic removable-department
+     lifecycle (install→enable→start→invoke/health→stop→disable→remove) on the existing
+     `PluginRegistryPort` + unit of work, with swappable isolation connector, workspace rollback, and
+     fail-closed manifest/version/permission/dependency checks. 12 tests.
+   - **Video Production department: COMPLETE.** `plugins/video-production` — removable; per-shot
+     generate→vision-QC→bounded-correction→assemble with output verification, checkpoint/resume, and
+     project/cache storage separation; production tools (ffmpeg/Blender/ComfyUI/generation-vision
+     models) behind replaceable adapters with deterministic reference adapters. 7 tests.
+   - **3D/Game Production department: COMPLETE.** `plugins/game-production` — removable, independent of
+     Video; per-scene acquire→build→validate→bounded-repair→package with verification and
+     checkpoint/resume; engines (Godot/Unreal/Blender) behind replaceable adapters. 8 tests.
+   - **Independence matrix: VERIFIED.** `apps/departments-integration` — core-only, both departments
+     together, cross-removal independence, and host operable after both removed. Dependency direction
+     verified (no core→department imports; no video↔game import; departments' src import only
+     application + department-host). Full gate: typecheck 9/9, 369 tests / 75 files, build 9/9,
+     lint/check clean.
    - **Outbox retention: intentionally deferred** pending workload evidence.
 
 ## Session-start rule
