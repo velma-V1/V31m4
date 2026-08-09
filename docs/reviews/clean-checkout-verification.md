@@ -8,7 +8,7 @@ evidence supports.
 ## Environment
 
 - **Branch:** `claude/v31m4-layers-validation-impl-dmlccn`
-- **SHA:** `d6fd0abbcfed18f21c56ac798676f95dfc55cf94`
+- **SHA:** `25b30bb39eff3ff7e11ae0df3cefa913d2fe381e` (includes the production-readiness audit fixes).
 - **Install:** `pnpm install --frozen-lockfile` — succeeded (no lockfile drift).
 - **Toolchain:** Node 22.22, pnpm 11.17, TypeScript 7.0.2, Biome 2.5.6, Vitest 4.1.10 (all pinned).
 - **Date:** 2026-08-09.
@@ -17,7 +17,7 @@ evidence supports.
 
 - **Typecheck:** `pnpm typecheck` → 5/5 packages pass.
 - **Build:** `pnpm build` → 5/5 pass (`tsc --noEmit`).
-- **Tests:** `pnpm test` → **70 test files, 335 cases, 0 failures, 0 skips.**
+- **Tests:** `pnpm test` → **71 test files, 340 cases, 0 failures, 0 skips.**
 - **Lint / check:** `pnpm lint` and `pnpm check` → 0 errors, 1 info.
 - **Source-size scan:** no source file exceeds 500 lines; largest is
   `packages/contracts/src/common.schemas.ts` at 468 lines.
@@ -32,6 +32,9 @@ evidence supports.
   not part of this verification; only their extension seams are preserved.
 - The event stream is bound over SSE rather than WebSocket (ADR 0009); the coordinator is
   transport-agnostic, so a WebSocket binding is additive and does not change replay semantics.
+- Outbox retention/pruning is not implemented; the durable event log grows with committed events.
+  The replay store already handles pruned history, so retention is an additive operational feature,
+  intentionally deferred (see `docs/reviews/production-readiness-audit.md`).
 - No confirmed defects outstanding. Readiness verdict: the canonical Layers 6–10 core is complete and
   green at this SHA on the feature branch; promotion to `canonical/layers-6-10` or `main` remains a
   human decision and is not performed automatically.
