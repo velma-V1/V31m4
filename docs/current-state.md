@@ -169,6 +169,10 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
      application + department-host). Full gate: typecheck 9/9, 369 tests / 75 files, build 9/9,
      lint/check clean.
    - **Outbox retention: intentionally deferred** pending workload evidence.
+   - **Next engineering phase: target-host validation** of the real production adapters (ffmpeg,
+     Blender, Godot, Unreal, ComfyUI, generation/vision models). These were **not** executed in this
+     sandbox — only the deterministic reference adapters ran. Procedure and honesty rule:
+     `docs/reviews/target-host-validation.md`.
 
 ## Session-start rule
 
