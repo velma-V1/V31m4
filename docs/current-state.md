@@ -137,10 +137,25 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    `canonical/layers-6-10` and the source branch `claude/v31m4-layers-validation-impl-dmlccn` must
    remain aligned, and subsequent commits may advance their HEAD for documentation/control-state
    maintenance **without changing the frozen product-code baseline**. Do not copy a live HEAD SHA
-   from this document — always verify the current HEAD from git at session start. `main` was not
-   modified; promotion to `main` remains a separate human decision.
-7. Keep Video Production and 3D/Game Production deferred while preserving only their required
-   extension points during core work.
+   from this document — always verify the current HEAD from git at session start.
+7. Post-core program (2026-08-09) — see `docs/reviews/post-core-program-status.md`:
+   - **Main promotion: COMPLETE.** `main` fast-forwarded `fbbebdd → 9801338` (clean FF, 38 commits,
+     no force); `main` == `canonical/layers-6-10` == source branch. Delta from `78dc2b7` is
+     documentation/control-state only.
+   - **Stable core tag: local only, remote push BLOCKED.** Annotated `v31m4-core-l1-10-stable` created
+     locally at `9801338`; `git push` of the tag ref returns HTTP 403 (egress/org policy allows
+     branch pushes, denies tag-ref pushes), and no GitHub MCP tag/release/ref tool exists. Needs an
+     admin to allow tag pushes or a human to create the tag/release at `9801338`.
+   - **Core freeze: IN EFFECT.** L1–L10 frozen; core changes only for evidence-backed defects or a
+     genuinely missing generic extension seam, kept minimal and regression-protected.
+   - **Video + 3D/Game departments: BLOCKED.** No generic plugin slots exist (only a
+     `SqlitePluginRegistry` ledger — no plugin SDK/host/loader; `plugins/` and `adapters/` absent),
+     so the departments' own resume-gate precondition is unmet; the deferred docs are direction
+     documents, not implementable architectures; and their mandated reuse targets (Blender, Godot/
+     Unreal, ffmpeg, generation/vision models, ViMax) are unavailable in this sandboxed,
+     egress-restricted environment. Not fabricated — needs a plugin-host SDK architecture decision,
+     implementable department specs, and a reuse-tooling environment.
+   - **Outbox retention: intentionally deferred** pending workload evidence.
 
 ## Session-start rule
 
