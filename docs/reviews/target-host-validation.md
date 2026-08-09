@@ -15,7 +15,7 @@ Local-first target machine: WSL2 (Linux) on Windows 11 Home, RTX 4070 SUPER 12GB
 | Node.js | yes | v24.18.0 | WSL-native (`nvm`) | native | n/a | n/a | yes | none |
 | pnpm | yes | 11.17.0 | WSL-native (corepack) | native | n/a | n/a | yes | none |
 | ffmpeg | yes | 8.1.2-full_build (gyan.dev) | `C:\Users\Matt\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe` | invokable as `ffmpeg.exe` via PATH interop | native Windows binary | not exercised (no GPU encode used) | **yes — implemented** | none |
-| Ollama | yes | 0.32.6 | `C:\Users\Matt\AppData\Local\Programs\Ollama\ollama.exe`, service on `localhost:11434` | invokable as `ollama.exe` via PATH interop; HTTP API reachable from WSL | native Windows service | models report `vision` capability where applicable | not yet — no Video/Game contract wired | see below |
+| Ollama | yes | 0.32.6 | `C:\Users\Matt\AppData\Local\Programs\Ollama\ollama.exe`, service on `localhost:11434` | invokable as `ollama.exe` via PATH interop; HTTP API reachable from WSL | native Windows service | models report `vision` capability where applicable | **yes — implemented** (`VisionQcAdapter`, model `qwen3.5:9b`) | none |
 | Blender | no | — | not found (Program Files, Start Menu, winget, registry App Paths all checked) | — | — | — | no | not installed; large/material install |
 | Godot | no | — | not found (same checks) | — | — | — | no | not installed; large/material install |
 | Unreal | no | — | not found | — | — | — | no | not installed; very large/material install |
@@ -27,9 +27,10 @@ Ollama models installed at discovery time (`ollama list` / `/api/show` capabilit
 thinking), `gemma3:12b` (completion, **vision**), `qwen3:14b` (completion, tools, thinking),
 `devstral-small-2:24b` (completion, **vision**, tools), `qwen2.5-coder:14b` (completion, tools,
 insert), `qwen3.5:9b` (completion, **vision**, tools, thinking). Three installed models
-(`gemma3:12b`, `devstral-small-2:24b`, `qwen3.5:9b`) report real `vision` capability and are
-candidates for a future `VisionQcAdapter`, but no adapter wiring to Ollama exists yet — this is
-recorded as capability, not execution.
+(`gemma3:12b`, `devstral-small-2:24b`, `qwen3.5:9b`) report real `vision` capability.
+`OllamaVisionQcAdapter` is wired to and validated against `qwen3.5:9b` (see "Real adapter
+evidence" below); `gemma3:12b` and `devstral-small-2:24b` are configurable via the same adapter's
+`model` option but have not been exercised.
 
 WSL↔Windows interop verified empirically: a Windows-native `ffmpeg.exe`, invoked from WSL, reads and
 writes WSL-native filesystem paths (e.g. `/tmp/...`) directly with no manual path translation
@@ -41,17 +42,22 @@ required in this WSL2 configuration.
   orchestration/lifecycle/recovery/verification tests (department-host 12, Video 7, 3D/Game 8,
   integration 2). These use no external executables and prove the workflow, caching, checkpoint/
   resume, output verification, and removability.
-- **Executed and passing here (real tool, 2026-08-09):** `FfmpegAssemblyAdapter`
-  (`plugins/video-production/src/ffmpeg-assembly-adapter.ts`) against the real Windows `ffmpeg.exe`
-  described above, invoked from WSL. See "Real adapter evidence" below.
-- **NOT executed here:** Blender, Godot, Unreal, ComfyUI, any real image/video generation model, and
-  any real vision-QC model (Ollama's vision-capable models are installed but not yet wired to a
-  `VisionQcAdapter`). Blender/Godot/Unreal/ComfyUI are not installed on this machine and installing
-  them is a material user choice (large downloads / licensing), so they were not installed
-  automatically per the operating contract. The production adapters that would drive those tools
-  remain defined as replaceable interfaces (`ShotGenerationAdapter`/`VisionQcAdapter` for Video;
-  `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/`PackageAdapter` for Game, and
-  `AssemblyAdapter` where Blender is the target) but their real implementations are not built.
+- **Executed and passing here (real tools, 2026-08-09):**
+  - `FfmpegAssemblyAdapter` (`plugins/video-production/src/ffmpeg-assembly-adapter.ts`) against the
+    real Windows `ffmpeg.exe` described above, invoked from WSL.
+  - `OllamaVisionQcAdapter` (`plugins/video-production/src/ollama-vision-qc-adapter.ts`) against the
+    same real `ffmpeg.exe` (frame extraction) and a real inference call to the real, installed
+    Ollama model `qwen3.5:9b`, GPU-loaded on the RTX 4070 SUPER 12GB.
+
+  See "Real adapter evidence" below for both.
+- **NOT executed here, and deferred:** Blender, Godot, Unreal, ComfyUI, and any real image/video
+  *generation* model. These are not installed on this machine, and installing them is a material
+  user choice (large downloads / licensing), so they were not installed automatically per the
+  operating contract. The adapters that would drive them remain defined as replaceable interfaces
+  with only their deterministic reference implementation: Video's `ShotGenerationAdapter` (needs
+  ComfyUI or a local generation model — no installed Ollama model does video/image generation, only
+  text/vision) and all of 3D/Game's `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/
+  `PackageAdapter` (need Blender/Godot/Unreal).
 
 ## Real adapter evidence — Video `AssemblyAdapter` (ffmpeg)
 
@@ -124,12 +130,28 @@ Prerequisites on the target machine (record exact versions actually used):
 - The external tools under test, on `PATH`: ffmpeg; Blender; Godot (and/or Unreal); ComfyUI or the
   chosen generation backend; the chosen vision-QC model endpoint. GPU as required.
 
+Process boundary (verified approach, as implemented by both real adapters): a **department
+plugin's runtime code must not gain `@v31m4/infrastructure` as a runtime dependency** — that
+package remains a test/dev-only dependency, preserving the verified dependency direction (core →
+nothing from departments; departments → `@v31m4/application` + `@v31m4/department-host` only; see
+`docs/reviews/post-core-program-status.md`, Phase D). Layer 8's `ProcessSupervisor`/`JsonRpcClient`
+are therefore **not** used by department adapters; they remain available inside
+`packages/infrastructure` for the core's own supervised long-lived adapter processes. Instead, a
+real one-shot external-tool adapter spawns via `node:child_process` directly, with an **argument
+array (never a shell string)**, and implements timeout, cancellation (`context.signal`), stderr
+capture, and fail-closed `DEPENDENCY_FAILURE`/`CANCELLED` classification itself. This logic is
+shared, not duplicated, across a plugin's adapters via a small internal helper — see
+`plugins/video-production/src/internal/run-external-process.ts`, used by both
+`FfmpegAssemblyAdapter` and `OllamaVisionQcAdapter`. A network-based tool (e.g. Ollama's HTTP API)
+uses the platform `fetch`/`AbortController` directly, under the same cancellation/timeout/
+fail-closed discipline, with no process boundary needed at all.
+
 Steps:
 1. Clone the repo at the tag/commit under validation and `pnpm install --frozen-lockfile`.
-2. Implement the production adapters behind the existing interfaces (a new `plugins/*/src` module or
-   a separate adapter package), wiring each to its real tool via the Layer 8 supervised-process +
-   JSON-RPC boundary where a child process is involved. Do **not** modify the department
-   orchestrators or the frozen core.
+2. Implement the production adapter behind the existing interface (in the owning
+   `plugins/*/src` package), following the process boundary above. Do **not** modify the department
+   orchestrators or the frozen core, and do **not** add `@v31m4/infrastructure` as a runtime
+   dependency of the plugin.
 3. Add target-host integration tests (kept separate from the sandbox unit tests; gate them behind an
    env flag such as `V31M4_TARGET_HOST=1` so they never run in CI without the tools):
    - Video: render a small real production; assert the department reaches `completed`, the final
@@ -206,6 +228,14 @@ Steps:
 
 ## Honesty rule
 
-Never state that Blender, Godot, Unreal, ffmpeg, ComfyUI, or any real generation/vision model was
-executed unless it was actually executed on a target host and the evidence above was recorded. In
-this repository's current state, they were not.
+Never state that a real external tool or model was executed unless it was actually executed on a
+target host and the evidence above was recorded.
+
+Current, accurate status of this repository (2026-08-09):
+
+- **Actually executed and evidenced:** ffmpeg (via `FfmpegAssemblyAdapter` and, for frame
+  extraction, `OllamaVisionQcAdapter`) and Ollama's `qwen3.5:9b` vision model (via
+  `OllamaVisionQcAdapter`) — see "Real adapter evidence" above for both.
+- **NOT executed here, and not to be claimed as executed:** Blender, Godot, Unreal, ComfyUI, any
+  real image/video generation model, and any Ollama vision model other than `qwen3.5:9b`
+  (`gemma3:12b` and `devstral-small-2:24b` are installed and vision-capable but unexercised).

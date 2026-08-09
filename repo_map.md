@@ -23,18 +23,19 @@ startup recovery over the durable log, and checkpoint-safe shutdown. The superse
 was used only as reference and reconciled according to
 `docs/reviews/layer-6-reconciliation-matrix.md`.
 
-### Core completion scope decision
+### Core completion scope decision (historical) and current department state
 
-Video Production and 3D/Game Production are deferred until after V31M4 core completion.
-They remain first-party removable production plugins in the architecture, but neither is a
+V31M4 core (L1–10) completed first, deferring Video Production and 3D/Game Production until
+afterward; their original preserved designs live under `docs/deferred/video-production/` and
+`docs/deferred/game-production/` as historical reference. That deferral is now resolved: both
+departments were subsequently implemented as post-core, removable first-party plugins
+(`packages/department-host`, `plugins/video-production`, `plugins/game-production`) — see
+"Implemented and functional" below and `docs/reviews/post-core-program-status.md`. Neither is a
 core dependency, startup dependency, release gate, packaging prerequisite, or acceptance
-prerequisite. Their preserved designs live under `docs/deferred/video-production/` and
-`docs/deferred/game-production/`.
+prerequisite; the core remains frozen and imports nothing from them.
 
-Core work may build only generic extension seams needed by production plugins. No
-video-specific or game-specific implementation belongs in the core completion path.
-Open Generative AI is not a core dependency; it may be evaluated later only for optional
-reuse inside the deferred Video Production department.
+Open Generative AI is not a core dependency; it may be evaluated only for optional reuse inside
+the Video Production department.
 
 ### Implemented and functional
 
@@ -80,9 +81,14 @@ docs/                                    # Architecture, maps, plans, reviews, a
 
 The core (L1–10) is frozen; `department-host` and the `plugins/*` departments are additive post-core
 packages that depend on the core only through existing ports. Core imports nothing from them, and the
-departments do not import each other — each is independently removable. Real production tools
-(ffmpeg/Blender/Godot/Unreal/ComfyUI/generation-vision models) sit behind replaceable adapter
-boundaries, with deterministic reference adapters for verification in this environment.
+departments do not import each other — each is independently removable. Real production tools sit
+behind replaceable adapter boundaries, with deterministic reference adapters retained for CI/unit
+verification. Two of those boundaries now have a real, target-host-validated implementation as well
+as their reference adapter: Video's `AssemblyAdapter` (real ffmpeg) and `VisionQcAdapter` (real
+ffmpeg + a real installed Ollama vision model) — see `docs/reviews/target-host-validation.md`. The
+remaining boundaries (Video `ShotGenerationAdapter`; Game/3D's `AssetAdapter`/`SceneBuildAdapter`/
+`SceneValidationAdapter`/`PackageAdapter`) still have only their reference adapter: their real tools
+(ComfyUI/a generation model; Blender/Godot/Unreal) are not installed on the current target machine.
 
 ### Verified application-service behavior
 
@@ -105,7 +111,16 @@ boundaries, with deterministic reference adapters for verification in this envir
 - **Layer 5** application-service regression: **97 passing cases across 10 test files** (includes a seeded budget fuzz, order-invariance, and purity guardrails).
 - **Layer 6** application-use-case regression: **19 passing cases across 8 focused test files**, plus domain/contract practice-parity coverage.
 - **Frozen L1–10 core regression (audited baseline `78dc2b7`):** **340 passing cases across 71 test files**.
-- **Current full post-core workspace regression:** **369 passing cases across 75 test files** (re-run and verified 2026-08-09) — the frozen core tests plus the additive post-core packages: department host (12), Video Production (7), 3D/Game Production (8), and department independence/integration (2).
+- **Current full post-core workspace regression (re-run and verified 2026-08-09, without
+  `V31M4_TARGET_HOST`):** **369 passing cases / 10 skipped (379 total) across 75 passing + 2
+  skipped test files (77 total)** — the frozen core tests plus the additive post-core packages:
+  department host (12), Video Production (7 reference-adapter cases passing + 10 real-adapter
+  cases correctly skipped across the two target-host test files), 3D/Game Production (8), and
+  department independence/integration (2). The 10 skipped cases are the real ffmpeg/Ollama
+  target-host tests (5 each for `AssemblyAdapter` and `VisionQcAdapter`); they pass for real when
+  run with `V31M4_TARGET_HOST=1` on a machine with ffmpeg and Ollama installed — see
+  `docs/reviews/target-host-validation.md`. They are never required, and never silently skipped
+  without being reported as skipped, for normal workspace verification.
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
 - **Typecheck / Build:** the frozen audited L1–10 core (5 packages: domain, contracts, application, infrastructure, runtime) is **5/5** typecheck and **5/5** build; the current full post-core workspace (9 packages, adding department-host and the three department/integration packages) is **9/9** typecheck and **9/9** build (each package compiles under `tsc --noEmit`).
@@ -114,9 +129,11 @@ boundaries, with deterministic reference adapters for verification in this envir
 
 ### Native gate status
 
-All native gates are green across the full post-core workspace: `pnpm typecheck` (9/9),
-`pnpm test` (**369 cases across 75 files**), `pnpm build` (9/9), `pnpm lint`, and `pnpm check`
-(the frozen L1–10 core subset is 340 cases / 71 files at 5/5). The repo-wide Biome formatting debt from the
+All native gates are green across the full post-core workspace (re-run 2026-08-09): `pnpm typecheck`
+(9/9), `pnpm build` (9/9), `pnpm test` (**369 passing / 10 skipped across 75 passing + 2 skipped
+test files**, no `V31M4_TARGET_HOST` set), `pnpm lint` (0 errors, 5 warnings, 1 info), and `pnpm
+check` (aggregates lint + typecheck + test; PASS) — the frozen L1–10 core subset is 340 cases / 71
+files at 5/5. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
 (`useLiteralKeys` off — conflicts with `noPropertyAccessFromIndexSignature`; a justified
@@ -136,7 +153,12 @@ failure classification). **Layer 10** is implemented under `apps/runtime`: the a
 event-stream coordinator, and the external-command idempotency contract. Post-core, the generic
 department/plugin host SDK (`packages/department-host`) and the removable Video and 3D/Game
 departments (`plugins/*`) are implemented and verified (see
-`docs/reviews/post-core-program-status.md`). Not yet implemented outside that: desktop, CLI,
-concrete provider adapter *processes* for the departments' optional external tools, laboratories,
-and additional production workflows, plus outbox retention/pruning (an additive operational
-feature — see `docs/reviews/production-readiness-audit.md`).
+`docs/reviews/post-core-program-status.md`). Two real, target-host-validated production adapters
+are implemented for Video: `FfmpegAssemblyAdapter` and `OllamaVisionQcAdapter` (see
+`docs/reviews/target-host-validation.md`). Not yet implemented outside that: desktop, CLI,
+laboratories, additional production workflows, outbox retention/pruning (an additive operational
+feature — see `docs/reviews/production-readiness-audit.md`), Video's `ShotGenerationAdapter`, and
+any of 3D/Game's real `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/`PackageAdapter`
+implementations — these remain on their deterministic reference adapter because their real tools
+(ComfyUI/a generation model; Blender/Godot/Unreal) are not installed on the current target
+machine.

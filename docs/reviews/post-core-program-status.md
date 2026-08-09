@@ -77,11 +77,17 @@ the future work has a landing point. See `docs/reviews/production-readiness-audi
 
 ## Verification
 
-Full native gate with departments installed: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test`
-369 cases / 75 files, `pnpm lint` / `pnpm check` green (0 errors, 1 info). Real external
-integrations (ffmpeg/Blender/Godot/Unreal/ComfyUI/generation-vision models) are contract-tested via
-replaceable adapters and deterministic reference adapters; execution against those tools on a target
-host is separate validation, out of scope for this sandbox.
+Full native gate with departments installed (re-run 2026-08-09, no `V31M4_TARGET_HOST` set):
+`pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 369 passing / 10 skipped across 75 passing + 2
+skipped test files, `pnpm lint` / `pnpm check` green (0 errors, 5 warnings, 1 info). Real external
+integrations are contract-tested via replaceable adapters, with deterministic reference adapters
+covering orchestration in this and any other sandbox. Two of those integrations have since been
+implemented and validated for real on a target host: Video's `AssemblyAdapter` (ffmpeg) and
+`VisionQcAdapter` (ffmpeg + a real Ollama vision model) — see
+`docs/reviews/target-host-validation.md`. The remaining integrations (Video's
+`ShotGenerationAdapter`; Game/3D's `AssetAdapter`/`SceneBuildAdapter`/`SceneValidationAdapter`/
+`PackageAdapter`, needing Blender/Godot/Unreal/ComfyUI) remain reference-adapter-only pending
+target-host validation, same document.
 
 ## Net state
 
