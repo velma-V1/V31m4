@@ -88,11 +88,11 @@
 - Consumes: Layer 4 gateway/policy/workspace ports and Layer 8 supervisors.
 - Produces: model, tool, kernel gateway implementations; plugin registry; policy engine; and `PathPolicy`.
 
-- [ ] Write failing tests for provider fallback, unavailable optional integrations, policy denial, approval replay/scope escalation, plugin collisions, external failure classification, and kernel isolation.
-- [ ] Implement provider-neutral gateways and promotion/rollback behavior.
-- [ ] Write failing filesystem tests for traversal, absolute/drive/UNC/device paths, mixed separators, Unicode/case ambiguity, symlinks, junctions/reparse points, and approved-root escapes.
-- [ ] Implement canonical real-path containment and fail-closed platform handling.
-- [ ] Run focused and complete gates, update documentation/ADRs/evidence, and commit `feat: add governed production gateway layer`.
+- [x] Write failing tests for provider fallback, unavailable optional integrations, policy denial, approval replay/scope escalation, plugin collisions, external failure classification, and kernel isolation.
+- [x] Implement provider-neutral gateways and promotion/rollback behavior.
+- [x] Write failing filesystem tests for traversal, absolute/drive/UNC/device paths, mixed separators, Unicode/case ambiguity, symlinks, junctions/reparse points, and approved-root escapes.
+- [x] Implement canonical real-path containment and fail-closed platform handling.
+- [x] Run focused and complete gates, update documentation/ADRs/evidence, and commit the governed production gateway layer. (Committed as `4e0065d` "feat: add Layer 9 production gateways"; `PathPolicy`, `RuleBasedPolicyEngine`, `SqlitePluginRegistry`, and supervised model/tool/kernel gateways under `packages/infrastructure/src/{paths,policy,plugins,gateways}`, verified green and incorporated into the completed canonical L6–10 line.)
 
 ### Task 5: Layer 10 authoritative runtime and external guarantees
 

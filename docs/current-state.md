@@ -26,7 +26,7 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 - `docs/repository-map.md` records ownership for the Layer 6 application-use-case surface and Layer 7 persistence/artifact infrastructure.
 - `docs/reviews/layers-1-8-improvement-ledger.md` records Layer 8 process/adapter infrastructure and its failure-path coverage.
 
-Reconciled on 2026-08-08: `repo_map.md` now labels the current layer as Layer 8 and records Layer 7 persistence plus Layer 8 process/adapter infrastructure with the verified regression numbers above.
+Reconciled on 2026-08-08: `repo_map.md` labelled the current layer as Layer 8 and recorded Layer 7 persistence plus Layer 8 process/adapter infrastructure with the regression numbers noted then. Superseded on 2026-08-09: the L1–10 core is complete and `repo_map.md` now labels the current layer as Authoritative Runtime Layer 10; the current verified evidence is in the "Known verification evidence" section below (340 tests / 71 files).
 
 ## Known verification evidence
 
@@ -131,8 +131,11 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    non-duplicate write failures) and three MEDIUM/LOW fixes (health metric truthfulness/perf,
    SSE mid-backpressure disconnect leak, empty-secret log redaction), each with a regression;
    remaining surfaces audited sound. Report: `docs/reviews/production-readiness-audit.md`.
-6. The canonical Layers 6–10 plan is complete on this feature branch. Promotion to
-   `canonical/layers-6-10` or `main` is a human decision and is not performed automatically.
+6. Canonical promotion: COMPLETE (2026-08-09). `canonical/layers-6-10` was fast-forwarded from
+   `6c24c9e` to `78dc2b7` (clean fast-forward, 0 divergent commits, no force); the source branch
+   `claude/v31m4-layers-validation-impl-dmlccn` and `canonical/layers-6-10` are aligned at
+   `78dc2b7`, the stable core baseline. `main` was not modified; promotion to `main` remains a
+   separate human decision.
 7. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
 

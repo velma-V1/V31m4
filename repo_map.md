@@ -112,13 +112,16 @@ lines and no file exceeds 500.
 
 ### Not implemented
 
-Layers 8–9 are implemented in `packages/infrastructure`: supervised process/adapter
-infrastructure (process supervision, JSON-RPC framing, adapter registration, scheduling,
-resource monitoring, secret leases, redacted logging) and production gateways (real-path
-`PathPolicy` containment, fail-closed rule-based policy engine, durable plugin registry,
-and supervised provider-neutral model/tool/kernel gateways with fallback and failure
-classification). Not yet implemented: **Layer 10** — the authoritative runtime API server
-(HTTP/WebSocket), composition root, durable event replay, and external-command idempotency
-— plus desktop, CLI, concrete provider adapter processes, plugin SDK, plugins,
-laboratories, and production workflows. Video Production and 3D/Game Production are
-intentionally deferred and are not counted as missing core implementation.
+Layers 1–10 core is complete. Layers 8–9 are implemented in `packages/infrastructure`:
+supervised process/adapter infrastructure (process supervision, JSON-RPC framing, adapter
+registration, scheduling, resource monitoring, secret leases, redacted logging) and production
+gateways (real-path `PathPolicy` containment, fail-closed rule-based policy engine, durable
+plugin registry, and supervised provider-neutral model/tool/kernel gateways with fallback and
+failure classification). **Layer 10** is implemented under `apps/runtime`: the authoritative
+`node:http` runtime, composition root, durable committed-event replay, the resumable
+event-stream coordinator, and the external-command idempotency contract. Outside the L1–10
+core, not yet implemented: desktop, CLI, concrete provider adapter processes, plugin SDK,
+plugins, laboratories, and production workflows, plus outbox retention/pruning (an additive
+operational feature — see `docs/reviews/production-readiness-audit.md`). Video Production and
+3D/Game Production are intentionally deferred and are not counted as missing core
+implementation.

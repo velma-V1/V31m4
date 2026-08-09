@@ -1,9 +1,14 @@
 # Clean-Checkout Verification (Task 7)
 
 Reproducible readiness evidence for the canonical Layers 6–10 line, produced from a clean detached
-worktree at the final SHA with a frozen install. This records evidence only; it does not merge to
-`canonical/layers-6-10` or `main`, and it does not assert production readiness beyond what the
-evidence supports.
+worktree at the final SHA with a frozen install. When this evidence was produced it recorded results
+only and had not yet been promoted; it did not itself merge to `canonical/layers-6-10` or `main`, and
+it asserts no production readiness beyond what the evidence supports.
+
+**Promotion status (updated 2026-08-09):** the audited SHA below was subsequently promoted —
+`canonical/layers-6-10` was fast-forwarded from `6c24c9e` to `78dc2b7` (clean fast-forward, 0
+divergent commits, no force). The evidence in this document was produced before that promotion and is
+unchanged; `main` was not modified.
 
 ## Environment
 
@@ -36,5 +41,5 @@ evidence supports.
   The replay store already handles pruned history, so retention is an additive operational feature,
   intentionally deferred (see `docs/reviews/production-readiness-audit.md`).
 - No confirmed defects outstanding. Readiness verdict: the canonical Layers 6–10 core is complete and
-  green at this SHA on the feature branch; promotion to `canonical/layers-6-10` or `main` remains a
-  human decision and is not performed automatically.
+  green at this SHA. It has since been promoted to `canonical/layers-6-10` (now the stable core
+  baseline at `78dc2b7`); promotion to `main` remains a separate human decision.
