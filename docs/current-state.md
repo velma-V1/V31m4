@@ -132,12 +132,13 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    SSE mid-backpressure disconnect leak, empty-secret log redaction), each with a regression;
    remaining surfaces audited sound. Report: `docs/reviews/production-readiness-audit.md`.
 6. Canonical promotion: COMPLETE (2026-08-09). `canonical/layers-6-10` was fast-forwarded from
-   `6c24c9e` to `78dc2b7` (clean fast-forward, 0 divergent commits, no force). `78dc2b7` is the
-   frozen audited **code** baseline; documentation-only reconciliation commits since then advanced
-   both branches by fast-forward, so the current `canonical/layers-6-10` and source
-   `claude/v31m4-layers-validation-impl-dmlccn` HEAD is `a854e90` (identical to `78dc2b7` except for
-   `docs/` and `repo_map.md`). `main` was not modified; promotion to `main` remains a separate human
-   decision.
+   `6c24c9e` to the frozen audited **code** baseline `78dc2b7` (clean fast-forward, 0 divergent
+   commits, no force). `78dc2b7` is immutable: it pins the audited product-code tree. Since then,
+   `canonical/layers-6-10` and the source branch `claude/v31m4-layers-validation-impl-dmlccn` must
+   remain aligned, and subsequent commits may advance their HEAD for documentation/control-state
+   maintenance **without changing the frozen product-code baseline**. Do not copy a live HEAD SHA
+   from this document — always verify the current HEAD from git at session start. `main` was not
+   modified; promotion to `main` remains a separate human decision.
 7. Keep Video Production and 3D/Game Production deferred while preserving only their required
    extension points during core work.
 
