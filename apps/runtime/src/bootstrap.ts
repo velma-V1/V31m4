@@ -1,6 +1,10 @@
 import type { Server } from "node:http";
 import { createRuntimeServer } from "./api/server.js";
-import { buildComposition, type RuntimeComposition } from "./composition-root.js";
+import {
+  buildComposition,
+  type CompositionOverrides,
+  type RuntimeComposition,
+} from "./composition-root.js";
 import type { RuntimeConfig } from "./runtime-config.js";
 import { gracefulShutdown } from "./shutdown.js";
 
@@ -15,10 +19,14 @@ export interface RunningRuntime {
 /**
  * Boots the runtime: assembles the composition, runs startup recovery over the durable log, binds
  * the HTTP surface, and returns a handle whose {@link RunningRuntime.shutdown} performs a
- * checkpoint-safe teardown.
+ * checkpoint-safe teardown. `overrides` is a test-only composition seam (see
+ * {@link CompositionOverrides}); production boot (`main.ts`) never passes it.
  */
-export async function startRuntime(config: RuntimeConfig): Promise<RunningRuntime> {
-  const composition = buildComposition(config);
+export async function startRuntime(
+  config: RuntimeConfig,
+  overrides?: CompositionOverrides,
+): Promise<RunningRuntime> {
+  const composition = buildComposition(config, overrides);
   const startup = composition.recoverOnStartup();
   const server = createRuntimeServer(composition);
   await new Promise<void>((resolve, reject) => {

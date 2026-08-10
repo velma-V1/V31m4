@@ -25,6 +25,7 @@ import {
   startJob,
   submitMission,
   type UnitOfWorkTransaction,
+  type VerifierPort,
   type Versioned,
   verifyCandidates,
   type WorkspaceManagerPort,
@@ -45,6 +46,7 @@ import {
   Job,
   JobId,
   type ModelId,
+  type ProjectId,
   SafePath,
   VerificationPlanId,
 } from "@v31m4/domain";
@@ -201,12 +203,26 @@ export interface RuntimeComposition {
 }
 
 /**
+ * Test-only composition seam: never populated from `RuntimeConfig`, the environment, or any
+ * HTTP-facing input, so it cannot be activated by normal runtime operation. `verifierFactory`
+ * lets tests inject a deterministic verifier (e.g. one that always fails) in place of the real
+ * `ReferenceVerifier` to exercise job.execute's negative-verification path without making
+ * `ReferenceVerifier` itself nondeterministic or environment-dependent.
+ */
+export interface CompositionOverrides {
+  readonly verifierFactory?: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
+}
+
+/**
  * Wires the runtime's durable authority (SQLite), its committed-event log, the resumable stream
  * coordinator, the idempotent command executor, local authentication, and the built-in command
  * handlers into a single composition. This is the only place concrete implementations are
  * assembled; routes and lifecycle code depend on the returned interface, not on construction.
  */
-export function buildComposition(config: RuntimeConfig): RuntimeComposition {
+export function buildComposition(
+  config: RuntimeConfig,
+  overrides: CompositionOverrides = {},
+): RuntimeComposition {
   const database = new SqliteRuntimeDatabase(config.databasePath);
   const records = new SqliteRecordStore(database);
   const outbox = new SqliteOutbox(database);
@@ -363,6 +379,8 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
   // actor+key+commandType+payloadHash idempotency contract explicitly, against the same durable
   // idempotency_records table ExternalCommandExecutor's canonical commands use.
   const idempotency = new SqliteIdempotencyStore(database);
+  const verifierFactory: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort =
+    overrides.verifierFactory ?? ((store, projectId) => new ReferenceVerifier(store, projectId));
   // No real production-kernel adapter process is installed on this machine; ReferenceProductionKernel
   // proves job orchestration deterministically, exactly like the Video/Game departments' reference
   // adapters, and must never be represented as real production-kernel execution.
@@ -550,7 +568,7 @@ export function buildComposition(config: RuntimeConfig): RuntimeComposition {
 
     const projectId = job.value.projectId;
     const modelGateway = new ReferenceModelGateway(artifacts, database.unitOfWork, projectId);
-    const verifier = new ReferenceVerifier(artifacts, projectId);
+    const verifier = verifierFactory(artifacts, projectId);
 
     async function* textBytes(text: string): AsyncIterable<Uint8Array> {
       yield Buffer.from(text, "utf8");
