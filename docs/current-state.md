@@ -79,7 +79,9 @@ VIDEO := {
   real_external_adapters: {
     AssemblyAdapter: REAL_FFMPEG_VALIDATED,        // FfmpegAssemblyAdapter, see target-host-validation.md
     VisionQcAdapter: REAL_FFMPEG_OLLAMA_VALIDATED, // OllamaVisionQcAdapter (qwen3.5:9b), see target-host-validation.md
-    ShotGenerationAdapter: TARGET_HOST_VALIDATION_PENDING   // ComfyUI/gen model — not installed here;
+    ShotGenerationAdapter: TARGET_HOST_VALIDATION_PENDING   // ComfyUI installed (confirmed 2026-08-09
+                                                             // at /home/xxthatguyxx/ComfyUI, WSL-native)
+                                                             // but not yet executed/adapter-integrated;
                                                              // no installed Ollama model does video/image
                                                              // generation
   },
@@ -102,10 +104,11 @@ Distinction: the departments themselves are implemented and verified using deter
 adapters (orchestration, caching, checkpoint/resume, output verification, and removability all
 pass). Two of Video's real production adapters are now implemented and target-host-validated
 (ffmpeg `AssemblyAdapter`, ffmpeg+Ollama `VisionQcAdapter`). Still incomplete: Video's
-`ShotGenerationAdapter` (ComfyUI/generation model) and all of Game/3D's real adapters (Summer,
-reaching Godot via its own MCP/CLI, per
-`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) — none of these
-tools are installed here. This remains target-host validation, not department work. Do not
+`ShotGenerationAdapter` (needs ComfyUI — installed but not yet executed/adapter-integrated, see
+`docs/reviews/target-host-validation.md`) and all of Game/3D's real adapters (Summer, reaching
+Godot via its own MCP/CLI, per
+`docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md` — Summer itself is
+not installed). This remains target-host validation, not department work. Do not
 describe the departments as deferred. Open Generative AI is not a core dependency; it may be
 evaluated only for optional reusable parts within the Video department.
 
@@ -162,19 +165,43 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
    remaining surfaces audited sound. Report: `docs/reviews/production-readiness-audit.md`.
 6. Canonical promotion: COMPLETE (2026-08-09). `canonical/layers-6-10` was fast-forwarded from
    `6c24c9e` to the frozen audited **code** baseline `78dc2b7` (clean fast-forward, 0 divergent
-   commits, no force). `78dc2b7` is immutable: it pins the audited L1–10 product-code tree. Since
+   commits, no force). `78dc2b7` is an **immutable audited baseline snapshot** — that commit itself
+   never changes, and remains the fixed reference point for "what the L1–10 audit covered." Since
    then, `canonical/layers-6-10` and the source branch `claude/v31m4-layers-validation-impl-dmlccn`
-   must remain aligned, and later commits have added documentation/control-state and **additive
-   post-core packages**; the **frozen L1–10 core source tree is unchanged** — no commit modifies the
-   audited product-code baseline. Do not copy a live HEAD SHA from this document — always verify the
-   current HEAD from git at session start.
+   must remain aligned, and later commits added documentation/control-state, **additive post-core
+   packages**, and (see the correction below) one explicitly approved core correction.
+   **Correction (2026-08-10):** the live tree is no longer byte-for-byte unchanged since `78dc2b7`
+   — stop asserting that. `packages/application/src/use-cases/select-champion.ts` (commit
+   `2786ca9`) fixed a genuine, previously-undiscovered defect: the `no_verified_solution` decision
+   path unconditionally threw `INVALID_CHAMPION_DECISION` instead of ever succeeding, because it
+   passed `selectChampion`'s deliberately-empty summary-reason evidence straight through to a domain
+   entity (`ChampionDecision.create`) that requires non-empty, reason-consistent evidence on every
+   decision, including a no-solution one. The fix stamps the no-solution decision with the real
+   verification evidence every evaluated candidate already carries; it changes no champion-selection
+   algorithm, no domain invariant, and no port/use-case signature, and shipped with a dedicated
+   regression test (`packages/application/tests/use-cases/select-champion.test.ts`) plus 5
+   integration tests proving the negative-verification path end to end
+   (`apps/runtime/tests/job-execution-negative-verification.test.ts`). `docs/architecture.md`
+   already anticipates this: "later work is additive post-core unless an explicitly approved core
+   correction is required" — this is that case. The freeze's *meaning* holds even though its
+   literal "unchanged since `78dc2b7`" wording does not: no uncontrolled redesign occurred, the core
+   dependency direction is still enforced, no public API/contract was casually changed, and the
+   correction required explicit evidence (a failing reproduction) and regression coverage before
+   being made. Also since `78dc2b7`: additive Layer-10 `apps/runtime` system-assembly extensions
+   (the system-build program below) and the P0 direct-command idempotency repair (`apps/runtime`
+   only — new runtime wiring, not a core-file modification). Do not copy a live HEAD SHA from this
+   document — always verify the current HEAD from git at session start.
 7. Post-core program (2026-08-09) — see `docs/reviews/post-core-program-status.md`:
    - **Main promotion: COMPLETE.** `main` fast-forwarded `fbbebdd → 9801338` (clean FF, 38 commits,
-     no force); `main` == `canonical/layers-6-10` == source branch. Since `78dc2b7` the frozen L1–10
-     core source is unchanged; later commits added documentation/control-state plus the additive
-     post-core packages (`packages/department-host`, `plugins/video-production`,
-     `plugins/game-production`, `apps/departments-integration`) and the corresponding
-     `pnpm-lock.yaml` update. Invariant: FROZEN_CORE_TREE = unchanged; POST_CORE_CODE = additive.
+     no force); `main` == `canonical/layers-6-10` == source branch. True of this `78dc2b7` →
+     `9801338` promotion window: the frozen L1–10 core source was unchanged; later commits in that
+     window added documentation/control-state plus the additive post-core packages
+     (`packages/department-host`, `plugins/video-production`, `plugins/game-production`,
+     `apps/departments-integration`) and the corresponding `pnpm-lock.yaml` update. **This is no
+     longer true of the current tree** — see item 6's 2026-08-10 correction above: one explicitly
+     approved core correction (`select-champion.ts`, commit `2786ca9`) landed after this promotion.
+     Invariant, corrected: FROZEN_CORE_TREE = unchanged **except by explicitly approved, evidence-
+     backed, regression-tested correction**; POST_CORE_CODE = additive.
    - **Stable core tag: local only, remote push BLOCKED.** Annotated `v31m4-core-l1-10-stable` created
      locally at `9801338`; `git push` of the tag ref returns HTTP 403 (egress/org policy allows
      branch pushes, denies tag-ref pushes), and no GitHub MCP tag/release/ref tool exists. Needs an
@@ -236,12 +263,14 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        Video package gate: typecheck clean, lint clean (0 errors), 17/17 tests pass with
        `V31M4_TARGET_HOST=1`; without the flag, the 10 real-tool tests (across both real adapters)
        skip cleanly and 7 reference-adapter tests still pass.
-     - **PENDING:** Blender, Godot, Unreal, Summer, ComfyUI are not installed on this machine
-       (checked Program Files, Start Menu, winget, registry App Paths — none found); installing
-       them is a material user choice (large downloads/licensing) and was not done automatically.
-       No real `ShotGenerationAdapter` exists yet — no installed Ollama model does video/image
-       generation (they are text/vision LLMs), and ComfyUI/a generation model would need to be
-       installed.
+     - **PENDING:** Blender, Godot, Unreal, and Summer are not installed on this machine (checked
+       Program Files, Start Menu, winget, registry App Paths — none found); installing them is a
+       material user choice (large downloads/licensing) and was not done automatically.
+       **Correction:** ComfyUI *is* installed — the scan above only checked the Windows side;
+       ComfyUI was later found at `/home/xxthatguyxx/ComfyUI` (WSL-native), see the "Not yet done"
+       list below and `docs/reviews/target-host-validation.md`. No real `ShotGenerationAdapter`
+       exists yet regardless — no installed Ollama model does video/image generation (they are
+       text/vision LLMs), and ComfyUI has not been executed or adapter-integrated for V31M4.
      - **Game department execution-platform decision (2026-08-09):** Summer is the primary
        execution platform for the Game department's real adapters, reaching Godot through Summer's
        own MCP/CLI, behind the *existing* `AssetAdapter`/`SceneBuildAdapter`/
@@ -250,74 +279,142 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
-   - **System-assembly program started (2026-08-09):** turning the verified backend into a
-     runnable, operable system, not just a passing test suite. Status: `pnpm dev` boots the
-     runtime for real (`scripts/dev.mjs`); one real business command (`project.create`) is wired
-     end-to-end through the runtime's command dispatcher; a minimal real operator UI exists. See
-     "System build (2026-08-09 onward)" below for exactly what's done and what remains — do not
-     re-derive this from the git log; the section below is the authoritative summary.
+   - **System-assembly program (started 2026-08-09, current through `86c3d1a`):** turned the
+     verified backend into a runnable, operable system: a genuine end-to-end mission flow, a real
+     idempotency-defect repair, a real champion-decision-defect repair, negative-verification-path
+     proof, and evidence-durable-readback proof. Backend P1 work is complete; the next verified
+     incomplete task is browser UI proof. See "System build" below for exactly what's done and what
+     remains — do not re-derive this from the git log; the section below is the authoritative
+     summary.
 
-## System build (2026-08-09 onward)
+## System build (2026-08-09 → 2026-08-10) — vertical slice, backend correctness hardening, and durable-readback proof
 
-Turning the verified L1–10 core + post-core departments into a runnable, operable system. Three
-commits so far, each independently verified (full gate green) and pushed:
+Turned the verified L1–10 core + post-core departments into a runnable, operable system, reached a
+genuine end-to-end mission flow, then hardened it: a real idempotency defect and a real
+champion-decision defect were found and fixed, both with regression evidence. Twelve commits, each
+independently full-gate-verified and pushed, `09cc9df` → `86c3d1a` (current HEAD):
 
 1. **`pnpm dev` is a real, verified boot path.** `scripts/dev.mjs` creates `runtime-data/`
-   (already gitignored — anticipated), generates/persists a local dev session token there, and
-   runs `apps/runtime/src/main.ts` via `tsx` (no build step). Verified with real process
-   execution: fresh boot, `GET /health`, authenticated command dispatch, clean SIGINT shutdown,
-   and restart recovery (same token/database reused; durable log head and a pre-restart record
-   both survived). `tsx` needed esbuild's native postinstall, allowlisted in
+   (gitignored), generates/persists a local dev session token, runs `apps/runtime/src/main.ts` via
+   `tsx` (no build step). `tsx` needed esbuild's native postinstall, allowlisted in
    `pnpm-workspace.yaml` (`allowBuilds.esbuild: true`, dev-only).
-2. **`project.create` is the runtime's first real Layer 6 use-case command** — see
-   `apps/runtime/src/use-case-infrastructure.ts` and `composition-root.ts`. Until this, the
-   command dispatcher (`RuntimeService`) had exactly one handler, `record.put` (a generic KV
-   write proving the mechanism only) — none of the 21 use cases were reachable over HTTP. Closing
-   this gap required realizing `packages/infrastructure` implements only generic Layer 7
-   primitives (`SqliteRecordStore`, `SqliteOutbox`, ...), not concrete adapters for the
-   domain-specific Layer 4 ports (`ProjectRepositoryPort`, `ApprovalStorePort`, `AuditStorePort`,
-   `ClockPort`) — composing those was left to whichever composition root wires a real use case,
-   exactly `apps/runtime`'s job. Also required a `passthroughUnitOfWork` adapter: Layer 6 use
-   cases open their own transaction, but `ExternalCommandExecutor` already opens one per command
-   (so the idempotency record commits atomically with the effect) and `SqliteRuntimeDatabase`
-   forbids nested transactions — the passthrough runs the use case against the *same* transaction
-   instead of opening a new one, so nothing about the idempotency guarantee was weakened. No
-   frozen-core file changed. `apps/runtime` gained `@v31m4/contracts` and `zod` as real
-   (previously transitive-only) dependencies, used to validate/translate the external payload at
-   the runtime boundary, matching the already-documented intent for where that translation
-   belongs. Verified with real HTTP requests against a real server + real SQLite: happy path,
-   fail-closed policy denial (wrong role), malformed-payload 400 (not an opaque 500), idempotent
-   retry (no duplicate write), and a live SSE sequence bump.
-3. **A minimal real operator UI** — `apps/runtime/public/index.html`, served at `GET /`
-   (unauthenticated, like `/health`) by the existing runtime HTTP server; no framework, no build
-   step, no second process/port. Covers session token entry, system health, and project creation
-   (the only two real commands/queries that exist), plus a live event log using a hand-rolled
-   SSE-over-fetch reader (`EventSource` cannot set the `Authorization` header this runtime's
-   `/events` route requires, and weakening that requirement to suit the browser API was rejected).
-   Verified against the real wire format: captured actual SSE bytes from a real `project.create`
-   call and confirmed they match exactly what the client-side parser reads.
+2. **`project.create`** — the runtime's first real Layer 6 use-case command. Until this,
+   `RuntimeService` had exactly one handler, `record.put` (generic KV, proof of mechanism only) —
+   none of the 21 use cases were reachable over HTTP. Required realizing `packages/infrastructure`
+   has no concrete adapters for the Layer 4 domain ports (only generic `SqliteRecordStore`, etc.)
+   — composing those is `apps/runtime`'s job, done in `use-case-infrastructure.ts`. Required
+   `passthroughUnitOfWork`: Layer 6 use cases open their own transaction, but
+   `ExternalCommandExecutor` already opens one per command (atomic with the idempotency record) and
+   `SqliteRuntimeDatabase` forbids nesting — the passthrough runs the use case against the *same*
+   transaction instead of opening a new one. `apps/runtime` gained `@v31m4/contracts` + `zod` as
+   real dependencies for payload validation/translation at the runtime boundary.
+3. **Minimal real operator UI** — `apps/runtime/public/index.html`, served at `GET /`
+   (unauthenticated, like `/health`), no framework/build step/second process. Live events use a
+   hand-rolled SSE-over-fetch reader (`EventSource` cannot set `Authorization`).
+4. **`mission.submit`** — `SqliteMissionRepository` added; preserved that the real use case does
+   *not* call `authorizeAction` (unlike `createProject`) rather than inventing a policy check.
+5. **`job.start`** — genuinely different shape: `startJob` opens create+queue, then calls the
+   production kernel *outside* any transaction (Layer 7 forbids external execution during one),
+   then a second running-or-failed transaction. Cannot run inside `ExternalCommandExecutor`'s
+   single enclosing transaction at all, with any `UnitOfWorkPort`. Added
+   `RuntimeService.registerDirect` (new, additive, doesn't touch existing `register`/`dispatch`)
+   for commands that manage their own transactions. Idempotency: `jobId` deterministically derived
+   from `(actorId, idempotencyKey)`; `Job.create`'s own `mustNotExist()` rejects a retried create
+   with `CONFLICT` *before* the kernel is ever called again, caught and turned into the existing
+   job's state. `ReferenceProductionKernel` added (deterministic, no real model/tool execution, no
+   supervised child process — no real kernel adapter is installed on this machine).
+6. **`job.execute`** — the payoff: drives `run-solver-forge` → `verify-candidates` →
+   `select-champion` → `deliver-result` through the real, unmodified Layer 6 use cases, reaching a
+   real champion decision + delivery receipt (or an honest no-verified-solution outcome). New
+   adapters in `job-execution-infrastructure.ts`: `SqliteCandidateRepository`,
+   `SqliteEvidenceRepository`, `LocalWorkspaceManager` (real isolated directories),
+   `ReferenceModelGateway` (deterministic, but writes a *real* content-addressed artifact through
+   the existing, real `ContentAddressedArtifactStore` — reused, not reimplemented),
+   `ReferenceVerifier` (deterministic, but a real check: does the candidate's declared output
+   artifact actually exist with real bytes). Two real bugs found via direct reproduction and fixed:
+   `SafePath` rejects absolute paths (workspace manager was passing one — fixed to store the
+   relative id, real directory created separately); `ArtifactStorePort.write` requires an active
+   transaction but `ModelGatewayPort.invoke` has none by contract — `ReferenceModelGateway` now
+   opens its own short transaction per write, the same multi-transaction pattern `startJob`
+   established. At this point `job.execute` was idempotency-guarded only by the job's own status
+   machine (requires `"running"`) — see item 10 below (P0) for why that was insufficient and how it
+   was fixed; do not describe this as the current idempotency contract.
+7. **Operator UI mission/job/execute panels** — added only once each backend command was real;
+   mission submission uses a JSON textarea (a mission has 7 required nested arrays — the smallest
+   maintainable real form for that shape) pre-filled from the just-created project; job start/
+   execute auto-chain from the IDs the previous step returned.
+8. **Restart-recovery test** (`1cc464d`) — `apps/runtime/tests/vertical-slice-restart-recovery.test.ts`
+   runs the entire chain (create project → submit mission → start job → execute job to a delivered
+   champion receipt), shuts the runtime down, boots a **brand-new runtime instance** against the
+   same SQLite file, and confirms every record and the durable event sequence recovered correctly.
+9. **Immutable system-build checkpoint** (`97abe98`) —
+   `docs/checkpoints/2026-08-09-system-build-checkpoint.md`, a fact-only point-in-time snapshot,
+   committed alone, deliberately separate from ordinary documentation maintenance. Do not edit it;
+   it records what was true at that commit, not what is true now.
+10. **P0: direct-command idempotency repair** (`51d10b4`) — the audit behind the checkpoint found a
+    real bug: `job.start`'s deterministic `jobId = hash(actorId, idempotencyKey)` ignores payload
+    content, so a retry with the same key but a different `missionId`/`workflowId` silently returned
+    the *wrong* job instead of failing. Fixed by having both `job.start` and `job.execute` (both
+    `DirectCommandHandler`s, exempt from `ExternalCommandExecutor`'s automatic wrapping) use
+    `SqliteIdempotencyStore` explicitly — the same actor+key+commandType+payloadHash contract
+    `ExternalCommandExecutor` already enforces for canonical commands. `job.execute` also gained an
+    atomic pre-work "claim" transaction (`Job.updateProgress` under `WriteConditions.matchRevision`,
+    gated on `currentStage !== "executing"`), closing a genuine concurrency race where two
+    concurrent executions of the same job could each run the full solver → verify → champion →
+    deliver chain before either failed at the final write. 8 new tests prove same-key/different-
+    payload conflict, same-key/different-command-type conflict, concurrent-duplicate collapse,
+    restart replay, canonical post-completion replay, and fail-closed behavior on a job left claimed
+    by a simulated interrupted execution.
+11. **P1: negative-verification path** (`2786ca9`) — proved the path the vertical slice's happy-path
+    tests never could: forced verification failure → candidate excluded from champion selection →
+    `no_verified_solution` → `deliverResult` not invoked → no delivery receipt → job reaches its
+    terminal `"failed"` state → durable, survives restart. Exercised via a test-only composition
+    seam (`CompositionOverrides.verifierFactory`, never populated from `RuntimeConfig`/env/HTTP
+    input) injecting a deterministic always-fail verifier — `ReferenceVerifier` itself was not made
+    random or environment-dependent. Building this test surfaced a real defect (see the "Core
+    freeze" correction above): fixed in `select-champion.ts`, not in champion-selection policy.
+12. **P1: evidence durable readback by id** (`86c3d1a`) — the restart-recovery test proved project/
+    mission/job/candidate/decision/receipt survive a restart, but evidence itself had only ever
+    been inferred from a command response, never independently read back by its own id. Extended
+    the existing restart-recovery test (no new endpoint — `EvidenceRepositoryPort.getById` and the
+    generic `GET /records/:type/:id` route already existed) to read a concrete `evidenceId` back
+    before and after restart, confirm every critical field is unchanged, resolve its referenced
+    artifact both times via `GET /records/artifact/:id`, and confirm a nonexistent evidence id
+    returns 404 both before and after restart rather than fabricating a record.
 
-**Not yet done** (in priority order for continuing this program):
+**Verified, not asserted:** every command above has real HTTP-request tests against a real server
++ real SQLite (happy path, auth/policy denial, malformed payload, idempotent retry, not-found), and
+was *also* smoke-tested through the actual `pnpm dev` process via `curl`, not just the test harness.
 
-- **`mission.submit` and `job.start`/status commands** — same pattern as `project.create`
-  (contract validation → real use case → real port adapters → passthrough transaction → policy
-  rule → event), but each needs its own Layer 4 port adapters (`MissionRepositoryPort`,
-  `JobRepositoryPort`, workflow/evidence ports as needed). This is the next concrete step toward
-  a full vertical slice (create project → submit mission → start job → observe progress →
-  verify → evidence → result); nothing about the pattern is unknown, it is more of the same kind
-  of wiring `project.create` just proved out.
-- **Job execution itself** (`run-solver-forge`, `verify-candidates`, `select-champion`,
-  `deliver-result`) is unwired — no model/tool gateway wiring exists yet in the composition root
-  for these use cases to call through.
-- **Operator UI surfaces** for missions/jobs/approvals/evidence/results do not exist — deferred
-  because the commands/queries behind them do not exist yet; adding UI panels for
-  not-yet-real data would be exactly the fabricated status this program's own rules forbid.
+Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
+10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
+check` PASS, `git diff --check` clean.
+
+**Not yet done — next verified incomplete task is browser UI proof:**
+
+- **Browser UI proof (`P1_BROWSER_UI_PROOF`)** — the operator UI (project/mission/job-start/
+  job-execute panels, live SSE event log) exists and its static HTTP wire format has been verified
+  (real SSE bytes captured and matched against the client-side parser), but it has never been
+  driven through an actual browser. No browser automation has been performed. Do not mark this
+  done from the existing HTTP-level tests alone; if browser automation is unavailable when this is
+  next attempted, that must be recorded honestly as `NOT_DONE`/`BLOCKED`, not fabricated as a pass.
+- **List/query commands** for missions/jobs/candidates/evidence by project or mission (only
+  get-by-id exists, via the generic `/records/:type/:id` route) — the ports already support
+  listing internally (`listByProject`, `listCandidates`, etc.); no HTTP command exposes it yet.
+- **Approval flow** — `ApprovalStorePort` is wired (`SqliteApprovalStore`) but never exercised: the
+  one policy rule in place (`operator-project-actions`) always resolves to `allow`, so
+  `authorizeAction`'s `require_approval`/consume path has no real command reaching it yet.
+  `submitMission`/`startJob`/`run-solver-forge`/etc. don't call `authorizeAction` at all (a real
+  Layer 6 design choice, preserved as-is).
+- **Real model/verifier/production-kernel adapters** — `ReferenceModelGateway`, `ReferenceVerifier`,
+  `ReferenceProductionKernel` are deterministic by design (this session's mandate: prove
+  orchestration without inventing new external dependencies). Layer 9 already has
+  `SupervisedModelGateway`/`SupervisedProductionKernel` for when a real bound adapter process
+  exists; none does yet.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
-  `/home/xxthatguyxx/ComfyUI` on 2026-08-09, WSL-native, not the Windows side this repo's earlier
-  target-host scan checked; not yet run/exercised, so no real execution is claimed — see
-  `docs/reviews/target-host-validation.md`) and **Game's Summer-backed real adapters** (needs
-  Summer, not installed) remain as previously recorded — unrelated to the system-build program
-  above, tracked independently in the Video/Game sections.
+  `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
+  adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked
+  independently in the Video/Game sections.
 
 ## Session-start rule
 
