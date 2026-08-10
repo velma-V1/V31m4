@@ -4,25 +4,29 @@ import { join } from "node:path";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
-import { createRuntimeConfig } from "../src/runtime-config.js";
+import { createRuntimeConfig, type RuntimeConfig } from "../src/runtime-config.js";
 
 const OPERATOR_TOKEN = "token-abcdefghijklmnop";
 
 interface TestRuntime {
   readonly runtime: RunningRuntime;
   readonly base: string;
+  readonly databasePath: string;
 }
 
-async function startTestRuntime(): Promise<TestRuntime> {
-  const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-job-cmd-")), "state.db");
-  const config = createRuntimeConfig({
+function testConfig(databasePath: string): RuntimeConfig {
+  return createRuntimeConfig({
     port: 0,
     databasePath,
     sessions: [{ token: OPERATOR_TOKEN, actorId: "operator", roles: ["operator"] }],
     shutdownTimeoutMs: 200,
   });
-  const runtime = await startRuntime(config);
-  return { runtime, base: `http://127.0.0.1:${runtime.address.port}` };
+}
+
+async function startTestRuntime(): Promise<TestRuntime> {
+  const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-job-cmd-")), "state.db");
+  const runtime = await startRuntime(testConfig(databasePath));
+  return { runtime, base: `http://127.0.0.1:${runtime.address.port}`, databasePath };
 }
 
 function command(base: string, type: string, idempotencyKey: string, body: unknown) {
@@ -164,6 +168,121 @@ describe("job.start command", () => {
       expect(body.error.code).toBe("INVALID_APPLICATION_INPUT");
     } finally {
       await runtime.shutdown();
+    }
+  });
+
+  it("rejects reusing an idempotency key with a different payload as CONFLICT, not the first job", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      const { missionId: missionA } = await createProjectAndMission(base, "conflict-a");
+      const { missionId: missionB } = await createProjectAndMission(base, "conflict-b");
+
+      const first = await command(base, "job.start", "idem-job-conflict", {
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "req-job-conflict-a",
+        missionId: missionA,
+        workflowId: "default-workflow",
+      });
+      expect(first.status).toBe(200);
+      const firstBody = (await first.json()) as {
+        result: { job: { id: string; missionId: string } };
+      };
+      expect(firstBody.result.job.missionId).toBe(missionA);
+
+      // Same idempotency key, different missionId: must be rejected as a genuine conflict, never
+      // silently answered with the first call's job (the bug this repair fixes).
+      const second = await command(base, "job.start", "idem-job-conflict", {
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "req-job-conflict-b",
+        missionId: missionB,
+        workflowId: "default-workflow",
+      });
+      expect(second.status).toBe(409);
+      const secondBody = (await second.json()) as { error: { code: string } };
+      expect(secondBody.error.code).toBe("CONFLICT");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("rejects reusing an idempotency key across a different command type as CONFLICT", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      const { missionId } = await createProjectAndMission(base, "cross-type");
+      const sharedKey = "idem-cross-command-type";
+
+      const projectResponse = await command(base, "project.create", sharedKey, {
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "req-cross-type-project",
+        name: "Cross Type Project",
+        rootPath: "cross-type-project",
+      });
+      expect(projectResponse.status).toBe(200);
+
+      // The same actor+key was already recorded against project.create; reusing it for job.start
+      // must be rejected, proving idempotency identity spans command type, not just payload shape.
+      const jobResponse = await command(base, "job.start", sharedKey, {
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "req-cross-type-job",
+        missionId,
+        workflowId: "default-workflow",
+      });
+      expect(jobResponse.status).toBe(409);
+      const jobBody = (await jobResponse.json()) as { error: { code: string } };
+      expect(jobBody.error.code).toBe("CONFLICT");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("collapses concurrent identical retries (same key, same payload) into exactly one job", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      const { missionId } = await createProjectAndMission(base, "concurrent");
+      const payload = {
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "req-job-concurrent",
+        missionId,
+        workflowId: "default-workflow",
+      };
+      const [first, second] = await Promise.all([
+        command(base, "job.start", "idem-job-concurrent", payload),
+        command(base, "job.start", "idem-job-concurrent", payload),
+      ]);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      const firstBody = (await first.json()) as { result: { job: { id: string } } };
+      const secondBody = (await second.json()) as { result: { job: { id: string } } };
+      expect(secondBody.result.job.id).toBe(firstBody.result.job.id);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("survives a restart: retrying the same key after a restart returns the original job, not a duplicate", async () => {
+    const first = await startTestRuntime();
+    const { missionId } = await createProjectAndMission(first.base, "restart");
+    const payload = {
+      schemaVersion: CONTRACT_SCHEMA_VERSION,
+      requestId: "req-job-restart",
+      missionId,
+      workflowId: "default-workflow",
+    };
+    const before = await command(first.base, "job.start", "idem-job-restart", payload);
+    expect(before.status).toBe(200);
+    const beforeBody = (await before.json()) as { result: { job: { id: string } } };
+
+    await first.runtime.shutdown();
+
+    const second: RunningRuntime = await startRuntime(testConfig(first.databasePath));
+    const secondBase = `http://127.0.0.1:${second.address.port}`;
+    try {
+      const after = await command(secondBase, "job.start", "idem-job-restart", payload);
+      expect(after.status).toBe(200);
+      const afterBody = (await after.json()) as { result: { job: { id: string } } };
+      expect(afterBody.result.job.id).toBe(beforeBody.result.job.id);
+    } finally {
+      await second.shutdown();
     }
   });
 });

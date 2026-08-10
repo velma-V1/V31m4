@@ -1,28 +1,33 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
-import { createRuntimeConfig } from "../src/runtime-config.js";
+import { createRuntimeConfig, type RuntimeConfig } from "../src/runtime-config.js";
 
 const OPERATOR_TOKEN = "token-abcdefghijklmnop";
 
 interface TestRuntime {
   readonly runtime: RunningRuntime;
   readonly base: string;
+  readonly databasePath: string;
 }
 
-async function startTestRuntime(): Promise<TestRuntime> {
-  const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-job-exec-")), "state.db");
-  const config = createRuntimeConfig({
+function testConfig(databasePath: string): RuntimeConfig {
+  return createRuntimeConfig({
     port: 0,
     databasePath,
     sessions: [{ token: OPERATOR_TOKEN, actorId: "operator", roles: ["operator"] }],
     shutdownTimeoutMs: 200,
   });
-  const runtime = await startRuntime(config);
-  return { runtime, base: `http://127.0.0.1:${runtime.address.port}` };
+}
+
+async function startTestRuntime(): Promise<TestRuntime> {
+  const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-job-exec-")), "state.db");
+  const runtime = await startRuntime(testConfig(databasePath));
+  return { runtime, base: `http://127.0.0.1:${runtime.address.port}`, databasePath };
 }
 
 function command(base: string, type: string, idempotencyKey: string, body: unknown) {
@@ -160,4 +165,107 @@ describe("job.execute command (full vertical slice)", () => {
       await runtime.shutdown();
     }
   }, 15_000);
+
+  it("replays the exact result for a repeated key+payload after the job has already completed", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      const { jobId } = await createProjectMissionJob(base, "replay");
+      const payload = { jobId };
+
+      const first = await command(base, "job.execute", "idem-exec-replay", payload);
+      expect(first.status).toBe(200);
+      const firstBody = await first.json();
+
+      // Same actor+key+payload after the job is already completed: true idempotent replay must
+      // return the original recorded result, not fail closed on the job's terminal status.
+      const second = await command(base, "job.execute", "idem-exec-replay", payload);
+      expect(second.status).toBe(200);
+      const secondBody = await second.json();
+      expect(secondBody).toEqual(firstBody);
+    } finally {
+      await runtime.shutdown();
+    }
+  }, 15_000);
+
+  it("collapses concurrent job.execute calls for the same job into exactly one execution", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      const { jobId } = await createProjectMissionJob(base, "race");
+
+      // Two different idempotency keys targeting the same job, fired concurrently: the atomic
+      // claim step must let exactly one proceed to the solver/verify/champion/deliver chain and
+      // reject the other with CONFLICT before it duplicates any kernel/model/verifier/candidate/
+      // evidence/decision/receipt effect - not just at the final completion write.
+      const [a, b] = await Promise.all([
+        command(base, "job.execute", "idem-exec-race-a", { jobId }),
+        command(base, "job.execute", "idem-exec-race-b", { jobId }),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([200, 409]);
+
+      const winner = a.status === 200 ? a : b;
+      const loser = a.status === 200 ? b : a;
+      const winnerBody = (await winner.json()) as { result: { candidate: { id: string } } };
+      expect(winnerBody.result.candidate.id).toBeTruthy();
+      const loserBody = (await loser.json()) as { error: { code: string } };
+      expect(loserBody.error.code).toBe("CONFLICT");
+    } finally {
+      await runtime.shutdown();
+    }
+  }, 15_000);
+
+  it("survives a restart: retrying the same key+payload after a restart replays the completed result", async () => {
+    const first = await startTestRuntime();
+    const { jobId } = await createProjectMissionJob(first.base, "exec-restart");
+    const payload = { jobId };
+
+    const before = await command(first.base, "job.execute", "idem-exec-restart", payload);
+    expect(before.status).toBe(200);
+    const beforeBody = await before.json();
+
+    await first.runtime.shutdown();
+
+    const second: RunningRuntime = await startRuntime(testConfig(first.databasePath));
+    const secondBase = `http://127.0.0.1:${second.address.port}`;
+    try {
+      const after = await command(secondBase, "job.execute", "idem-exec-restart", payload);
+      expect(after.status).toBe(200);
+      const afterBody = await after.json();
+      expect(afterBody).toEqual(beforeBody);
+    } finally {
+      await second.shutdown();
+    }
+  }, 15_000);
+
+  it("fails closed on a retry against a job left claimed by an interrupted execution", async () => {
+    const { runtime, base, databasePath } = await startTestRuntime();
+    try {
+      const { jobId } = await createProjectMissionJob(base, "crashed");
+
+      // Simulate a process crash between the atomic claim transaction (which durably commits
+      // currentStage: "executing" before any external effect runs) and the completing transaction
+      // (which never ran, and is the only place the claim is cleared): write exactly that
+      // persisted state directly. This is exactly what a real crash leaves on disk - a committed
+      // claim with no completion record - not a synthetic shortcut.
+      const raw = new DatabaseSync(databasePath);
+      try {
+        const row = raw
+          .prepare("SELECT body FROM records WHERE record_type = 'job' AND record_id = ?")
+          .get(jobId) as { body: string };
+        const job = JSON.parse(row.body) as { currentStage: string };
+        job.currentStage = "executing";
+        raw
+          .prepare("UPDATE records SET body = ? WHERE record_type = 'job' AND record_id = ?")
+          .run(JSON.stringify(job), jobId);
+      } finally {
+        raw.close();
+      }
+
+      const retry = await command(base, "job.execute", "idem-exec-crash-retry", { jobId });
+      expect(retry.status).toBe(409);
+      const body = (await retry.json()) as { error: { code: string } };
+      expect(body.error.code).toBe("CONFLICT");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
 });
