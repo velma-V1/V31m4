@@ -99,6 +99,7 @@ function streamEvents(
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
+  response.flushHeaders();
   const subscription = composition.coordinator.subscribe(afterSequence, {
     deliver(frame: EventStreamFrame) {
       const idLine = frame.kind === "event" ? `id: ${frame.sequence}\n` : "";

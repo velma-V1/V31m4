@@ -4,7 +4,7 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
 ## Repository state
 
-- Branch: `canonical/layers-6-10`
+- Branch: `main`
 - Handoff baseline commit before this file was added: `2fe85cd708c6dffd4d05872f3a85926648e6a676`
 - Live HEAD: verify from git at every session start; do not trust a stored SHA as current after subsequent commits.
 - Architecture baseline: `V31M4-SRS-001 / 1.0.0`
@@ -279,20 +279,21 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
-   - **System-assembly program (started 2026-08-09, current through `86c3d1a`):** turned the
-     verified backend into a runnable, operable system: a genuine end-to-end mission flow, a real
-     idempotency-defect repair, a real champion-decision-defect repair, negative-verification-path
-     proof, and evidence-durable-readback proof. Backend P1 work is complete; the next verified
-     incomplete task is browser UI proof. See "System build" below for exactly what's done and what
-     remains — do not re-derive this from the git log; the section below is the authoritative
-     summary.
+   - **System-assembly program (started 2026-08-09, current through Stage 1 Browser UI Proof):**
+     turned the verified backend into a runnable, operable system: a genuine end-to-end mission
+     flow, a real idempotency-defect repair, a real champion-decision-defect repair,
+     negative-verification-path proof, evidence-durable-readback proof, and a real-browser operator
+     workflow. Stage 1 is complete; the next verified incomplete task is list/query commands. See
+     "System build" below for exactly what's done and what remains — do not re-derive this from the
+     git log; the section below is the authoritative summary.
 
-## System build (2026-08-09 → 2026-08-10) — vertical slice, backend correctness hardening, and durable-readback proof
+## System build (2026-08-09 → 2026-08-11) — vertical slice, correctness hardening, and browser proof
 
 Turned the verified L1–10 core + post-core departments into a runnable, operable system, reached a
 genuine end-to-end mission flow, then hardened it: a real idempotency defect and a real
-champion-decision defect were found and fixed, both with regression evidence. Twelve commits, each
-independently full-gate-verified and pushed, `09cc9df` → `86c3d1a` (current HEAD):
+champion-decision defect were found and fixed, both with regression evidence. The first twelve
+commits were independently full-gate-verified and pushed, `09cc9df` → `86c3d1a`; Stage 1 Browser
+UI Proof is the next coherent commit:
 
 1. **`pnpm dev` is a real, verified boot path.** `scripts/dev.mjs` creates `runtime-data/`
    (gitignored), generates/persists a local dev session token, runs `apps/runtime/src/main.ts` via
@@ -381,23 +382,43 @@ independently full-gate-verified and pushed, `09cc9df` → `86c3d1a` (current HE
     before and after restart, confirm every critical field is unchanged, resolve its referenced
     artifact both times via `GET /records/artifact/:id`, and confirm a nonexistent evidence id
     returns 404 both before and after restart rather than fabricating a record.
+13. **Stage 1: Browser UI Proof (2026-08-11)** —
+    `apps/runtime/tests/operator-ui.browser.test.ts` launches real Playwright Chromium against the
+    real `node:http` runtime and a temporary real SQLite database. It proves the public UI loads
+    without a credential while the first command fails closed and visibly renders
+    `PERMISSION_DENIED`; then a valid bearer token establishes the authenticated SSE stream and the
+    browser drives `project.create → mission.submit → job.start → job.execute`. The test asserts the
+    displayed project/mission/job identifiers, running/completed state, passing verification,
+    champion decision, delivery receipt, and every expected durable event type. It keeps the page
+    open while shutting down the runtime, starts a brand-new composition on the same port/database,
+    proves the UI reconnects from the last displayed SSE sequence, reads the completed job through
+    the browser after restart, and receives exactly the next event without duplicate replay.
+    Browser execution exposed one real SSE defect: with an empty log, `writeHead(200)` did not send
+    bytes, so browser `fetch()` remained at `connecting…` until the first event. A focused server
+    regression first reproduced the timeout; `response.flushHeaders()` in
+    `apps/runtime/src/api/server.ts` is the minimal fix and now establishes an authenticated idle
+    stream immediately. No other production defect was demonstrated.
 
 **Verified, not asserted:** every command above has real HTTP-request tests against a real server
 + real SQLite (happy path, auth/policy denial, malformed payload, idempotent retry, not-found), and
 was *also* smoke-tested through the actual `pnpm dev` process via `curl`, not just the test harness.
+Stage 1 additionally drives the complete workflow through a real Chromium browser and asserts the
+rendered UI plus SSE/restart behavior rather than inferring browser behavior from HTTP bytes.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
 check` PASS, `git diff --check` clean.
 
-**Not yet done — next verified incomplete task is browser UI proof:**
+Stage 1 workspace gate re-run on 2026-08-11: focused browser/runtime verification **11/11** across
+4 files; `pnpm check` PASS with lint at 0 errors (9 pre-existing warnings, 1 pre-existing info),
+typecheck 9/9, and **410 passing / 10 skipped (420 total) across 90 passing + 2 skipped test files**.
+The target WSL image lacked three Chromium shared libraries and sudo authentication was
+unavailable, so the real browser runs used the Playwright-downloaded Chromium with Ubuntu's
+`libnspr4`, `libnss3`, and `libasound2t64` extracted reversibly under `/tmp` and supplied through
+`LD_LIBRARY_PATH`; no system packages or repository binaries were installed.
 
-- **Browser UI proof (`P1_BROWSER_UI_PROOF`)** — the operator UI (project/mission/job-start/
-  job-execute panels, live SSE event log) exists and its static HTTP wire format has been verified
-  (real SSE bytes captured and matched against the client-side parser), but it has never been
-  driven through an actual browser. No browser automation has been performed. Do not mark this
-  done from the existing HTTP-level tests alone; if browser automation is unavailable when this is
-  next attempted, that must be recorded honestly as `NOT_DONE`/`BLOCKED`, not fabricated as a pass.
+**Not yet done — next verified incomplete task after Stage 1:**
+
 - **List/query commands** for missions/jobs/candidates/evidence by project or mission (only
   get-by-id exists, via the generic `/records/:type/:id` route) — the ports already support
   listing internally (`listByProject`, `listCandidates`, etc.); no HTTP command exposes it yet.

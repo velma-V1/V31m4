@@ -24,6 +24,16 @@ not the authoritative state record.
 - Node.js 22 or newer
 - pnpm 11.17.0
 
+The real-browser regression is part of `pnpm test` and `pnpm check`. Prepare Chromium and its host
+libraries once on a clean Linux/WSL verification machine:
+
+```bash
+pnpm exec playwright install --with-deps chromium
+```
+
+This is a development/test prerequisite only; Playwright is not used by runtime startup or
+production execution.
+
 ## Commands
 
 ```bash

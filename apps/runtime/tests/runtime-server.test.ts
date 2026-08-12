@@ -163,6 +163,30 @@ describe("runtime HTTP surface", () => {
     }
   });
 
+  it("establishes an authenticated SSE response while the durable log is idle", async () => {
+    const { runtime, base } = await startTestRuntime();
+    const controller = new AbortController();
+    try {
+      const outcome = await Promise.race([
+        fetch(`${base}/events?afterSequence=0`, {
+          headers: auth(),
+          signal: controller.signal,
+        }).then((response) => ({ kind: "response" as const, response })),
+        new Promise<{ readonly kind: "timeout" }>((resolve) => {
+          setTimeout(() => resolve({ kind: "timeout" }), 1_000);
+        }),
+      ]);
+
+      expect(outcome.kind).toBe("response");
+      if (outcome.kind !== "response") return;
+      expect(outcome.response.status).toBe(200);
+      expect(outcome.response.headers.get("content-type")).toContain("text/event-stream");
+    } finally {
+      controller.abort();
+      await runtime.shutdown();
+    }
+  });
+
   it("releases the subscription when an SSE client disconnects", async () => {
     const { runtime, base } = await startTestRuntime();
     try {

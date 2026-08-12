@@ -3,7 +3,7 @@
 ## Current State
 
 **Layer:** Authoritative Runtime Layer 10
-**Branch:** `canonical/layers-6-10`
+**Branch:** `main`
 **Parent layer:** hardened Layer 5 `5746e5f2571a08dea3cce0493adeac92ae025135`
 **Architecture baseline:** `V31M4-SRS-001 / 1.0.0`
 
@@ -107,7 +107,7 @@ per-tool capability matrix.
 | `job.execute`'s verifier (`ReferenceVerifier`) | Reference-minimal — a real check (declared output artifact exists with real bytes), not real test/build/lint execution |
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
-| Operator UI browser-driven proof | Not yet performed — HTTP/SSE wire-format verified only |
+| Operator UI browser-driven proof | VERIFIED — Playwright Chromium drives the authenticated full workflow, rendered results/events, runtime restart + SSE cursor resume, durable job readback, and a visible unauthenticated-command denial |
 
 ### Verified application-service behavior
 
@@ -135,6 +135,12 @@ per-tool capability matrix.
   approved core correction (commit `2786ca9`, with a dedicated regression test); this baseline
   number describes `78dc2b7` itself, not the current tree. See "Core freeze" in
   `docs/current-state.md` for the full explanation.
+- **Stage 1 current full workspace regression (re-run 2026-08-11):** **410 passing cases / 10
+  skipped (420 total) across 90 passing + 2 skipped test files (92 total)**. The two new passing
+  cases are the real Playwright Chromium operator workflow/restart proof and its focused idle-SSE
+  header regression. Chromium used three Ubuntu shared-library packages extracted reversibly under
+  `/tmp` because the target WSL image lacks those libraries and sudo authentication was unavailable;
+  no system or repository binary installation was performed.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:
@@ -163,7 +169,11 @@ per-tool capability matrix.
   delivery, durable failure state, restart-proven) plus 1 unit regression test for the
   `select-champion.ts` fix that made the path reachable at all. The evidence-durable-readback proof
   (P1, commit `86c3d1a`) added 0 net cases — it extended the existing restart-recovery test's
-  assertions in place rather than adding new test cases. See "System build" in
+  assertions in place rather than adding new test cases. Stage 1 Browser UI Proof adds one real
+  Playwright Chromium workflow/restart regression and one focused idle-SSE-header regression. The
+  browser run found and fixed one real defect: the SSE route now flushes its 200 headers immediately
+  so an authenticated client can establish an idle stream before the first event. See "System
+  build" in
   `docs/current-state.md` for exactly what this covers and what remains.
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
@@ -173,10 +183,11 @@ per-tool capability matrix.
 
 ### Native gate status
 
-All native gates are green across the full post-core workspace (re-run at `86c3d1a`): `pnpm typecheck`
-(9/9), `pnpm build` (9/9), `pnpm test` (**408 passing / 10 skipped across 89 passing + 2 skipped
-test files**, no `V31M4_TARGET_HOST` set), `pnpm lint` (0 errors, 9 warnings, 1 info), and `pnpm
-check` (aggregates lint + typecheck + test; PASS) — `git diff --check` clean. The frozen L1–10 core
+All native gates are green across the full post-core workspace (re-run 2026-08-11 for Stage 1):
+`pnpm check` PASS — `pnpm lint` 0 errors (9 pre-existing warnings, 1 pre-existing info), `pnpm
+typecheck` 9/9, and `pnpm test` **410 passing / 10 skipped across 90 passing + 2 skipped test
+files**. Browser execution used the reversible `/tmp` shared-library setup recorded in
+`docs/current-state.md`; `V31M4_TARGET_HOST` was not set. The frozen L1–10 core
 subset, as audited at `78dc2b7` (historical), was 340 cases / 71 files at 5/5. The repo-wide Biome formatting debt from the
 earlier no-network layer branches was cleared in an isolated formatting-only commit; two
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
@@ -208,6 +219,6 @@ not yet executed or adapter-integrated for V31M4; Summer (the Game department's 
 platform per
 `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) is not installed on
 the current target machine. Within the system-build program (`apps/runtime`): P0 direct-command
-idempotency repair and P1 negative-verification-path/evidence-durable-readback proof are complete
-(commits `51d10b4`/`2786ca9`/`86c3d1a`); the operator UI has never been driven through an actual
-browser — that proof is not yet performed.
+idempotency repair, P1 negative-verification-path/evidence-durable-readback proof, and Stage 1
+Browser UI Proof are complete. The next incomplete system-build item is the list/query command
+surface recorded in `docs/current-state.md`; Stage 2 has not started.
