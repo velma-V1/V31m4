@@ -13,7 +13,40 @@ describe("createRuntimeConfig", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.eventQueueLimit).toBe(1024);
     expect(config.replayBatchSize).toBe(512);
+    expect(config.executionProfile).toBe("hermetic_reference");
+    expect(config.supervisedLocal).toBeUndefined();
     expect(config.sessions).toHaveLength(1);
+  });
+
+  it("requires an exact loopback Ollama binding for the supervised local profile", () => {
+    const base = {
+      port: 0,
+      databasePath: "/tmp/state.db",
+      sessions: [validSession],
+      executionProfile: "supervised_local" as const,
+    };
+    expect(() => createRuntimeConfig(base)).toThrow(/supervised/i);
+    expect(() =>
+      createRuntimeConfig({
+        ...base,
+        supervisedLocal: {
+          ollamaEndpoint: "http://example.com:11434",
+          model: "devstral-small-2:24b",
+        },
+      }),
+    ).toThrow(/loopback/i);
+
+    const config = createRuntimeConfig({
+      ...base,
+      supervisedLocal: {
+        ollamaEndpoint: "http://127.0.0.1:11434",
+        model: "devstral-small-2:24b",
+      },
+    });
+    expect(config.supervisedLocal).toEqual({
+      ollamaEndpoint: "http://127.0.0.1:11434",
+      model: "devstral-small-2:24b",
+    });
   });
 
   it("rejects a non-loopback host", () => {
@@ -58,5 +91,28 @@ describe("createRuntimeConfig", () => {
     ]) {
       expect(() => loadRuntimeConfig({ ...required, ...malformed })).toThrow(/integer/i);
     }
+  });
+
+  it("loads the supervised local profile only from complete explicit environment input", () => {
+    const required = {
+      V31M4_AUTH_TOKEN: validSession.token,
+      V31M4_DATABASE: "/tmp/state.db",
+      V31M4_EXECUTION_PROFILE: "supervised_local",
+      V31M4_OLLAMA_ENDPOINT: "http://localhost:11434",
+      V31M4_OLLAMA_MODEL: "devstral-small-2:24b",
+    };
+    expect(loadRuntimeConfig(required)).toMatchObject({
+      executionProfile: "supervised_local",
+      supervisedLocal: {
+        ollamaEndpoint: "http://localhost:11434",
+        model: "devstral-small-2:24b",
+      },
+    });
+    expect(() => loadRuntimeConfig({ ...required, V31M4_OLLAMA_MODEL: undefined })).toThrow(
+      /supervised/i,
+    );
+    expect(() => loadRuntimeConfig({ ...required, V31M4_EXECUTION_PROFILE: "reference" })).toThrow(
+      /execution profile/i,
+    );
   });
 });

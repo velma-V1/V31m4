@@ -61,8 +61,10 @@ export class SupervisedModelGateway implements ModelGatewayPort {
       });
     }
     const invoker = selectInvoker(binding, request.modelId);
-    return invokeAdapter<ModelInvocationResult>(invoker, "model.invoke", request, {
+    const { metadata: _metadata, ...adapterRequest } = request;
+    return invokeAdapter<ModelInvocationResult>(invoker, "model.invoke", adapterRequest, {
       timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+      signal: context.signal,
     });
   }
 
@@ -70,7 +72,7 @@ export class SupervisedModelGateway implements ModelGatewayPort {
     for (const binding of this.#bindings.values()) {
       if (binding.primary.available()) {
         await binding.primary.invoke(
-          "model.cancel",
+          "adapter.cancel",
           { invocationId },
           {
             timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
@@ -91,10 +93,14 @@ export class SupervisedModelGateway implements ModelGatewayPort {
   }
 }
 
-export function remainingTimeout(context: OperationContext, fallbackMs: number): number {
+export function remainingTimeout(
+  context: OperationContext,
+  fallbackMs: number,
+  nowMs = Date.now(),
+): number {
   if (context.deadlineAt === undefined) return fallbackMs;
-  const remaining = Date.parse(context.deadlineAt) - Date.parse(context.startedAt);
-  return remaining > 0 ? remaining : 1;
+  const remaining = Date.parse(context.deadlineAt) - nowMs;
+  return Math.max(1, Math.min(fallbackMs, remaining));
 }
 
 function selectableAvailable(binding: AdapterBinding): boolean {

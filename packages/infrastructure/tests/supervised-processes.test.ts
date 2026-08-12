@@ -32,4 +32,30 @@ describe("ProcessSupervisor", () => {
     await supervisor.stop();
     expect(supervisor.process).toBeUndefined();
   });
+
+  it("inherits only allowlisted environment values plus explicit adapter configuration", async () => {
+    process.env["V31M4_TEST_PARENT_SECRET"] = "must-not-cross";
+    const supervisor = new ProcessSupervisor({
+      command: process.execPath,
+      args: [
+        "-e",
+        "setTimeout(()=>process.stdout.write(JSON.stringify({secret:process.env.V31M4_TEST_PARENT_SECRET,explicit:process.env.V31M4_ADAPTER_MODE,path:typeof process.env.PATH})),50)",
+      ],
+      environment: { V31M4_ADAPTER_MODE: "fixture" },
+      inheritEnvironment: ["PATH"],
+    });
+    try {
+      const child = await supervisor.start();
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+      await once(child, "exit");
+      expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual({
+        explicit: "fixture",
+        path: "string",
+      });
+    } finally {
+      delete process.env["V31M4_TEST_PARENT_SECRET"];
+      await supervisor.stop();
+    }
+  });
 });

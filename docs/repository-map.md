@@ -31,9 +31,9 @@
 | `/packages/infrastructure/src/events` | Event infrastructure | Transactional outbox plus durable committed-event replay used by Layer 10 |
 | `/packages/infrastructure/src/artifacts` | Artifact infrastructure | Atomic SHA-256 content-addressed artifact storage |
 | `/packages/infrastructure/src/backup` | Recovery infrastructure | Verified SQLite backup manifests and staged restore |
-| `/packages/infrastructure/src/processes` | Process infrastructure | Layer 8 supervised child-process lifecycle, cancellation, timeout, and bounded output handling |
+| `/packages/infrastructure/src/processes` | Process infrastructure | Layer 8 supervised child-process lifecycle, process-group shutdown, explicit environment inheritance, cancellation, timeout, and bounded output handling |
 | `/packages/infrastructure/src/rpc` | Adapter RPC infrastructure | Layer 8 bounded JSON-RPC framing/correlation and protocol handling |
-| `/packages/infrastructure/src/adapters` | Adapter infrastructure | Layer 8 adapter registration and restart-budget protection |
+| `/packages/infrastructure/src/adapters` | Adapter infrastructure | Layer 8 adapter registration/restart-budget protection plus the lazy restartable supervised JSON-RPC process invoker |
 | `/packages/infrastructure/src/scheduling` | Scheduling infrastructure | Layer 8 bounded scheduling implementation |
 | `/packages/infrastructure/src/resources` | Resource infrastructure | Layer 8 resource monitoring implementation |
 | `/packages/infrastructure/src/secrets` | Secret infrastructure | Layer 8 bounded secret-lease implementation |
@@ -46,14 +46,18 @@
 | `/packages/infrastructure/tests` | Infrastructure verification | Layers 7–10 persistence/process/gateway/replay integration and failure-path tests |
 | `/apps/runtime` | Authoritative runtime | Layer 10 composition, local auth, typed command/query/event HTTP routes, idempotent external commands, durable replay, resumable SSE, recovery, and shutdown |
 | `/apps/runtime/src/composition-root.ts` | Runtime composition | The one place concrete adapters, policy rules, and command/query surfaces are assembled; owns the test-only `CompositionOverrides` seam and exposes no generic authoritative write command |
-| `/apps/runtime/src/job-command-surface.ts` | Runtime job command composition | Direct `job.start`/`job.execute` registration, explicit durable idempotency, execution claim, reference orchestration, verification/champion/delivery finalization |
+| `/apps/runtime/src/job-command-surface.ts` | Runtime job command composition | Direct `job.start`/`job.execute` registration, explicit durable idempotency, runtime-owned execution claim/reconciliation, profile-selected orchestration, verification/champion/delivery finalization |
+| `/apps/runtime/src/supervised` | Runtime supervised boundary | Optional local profile composition, authoritative prompt/model/report artifact promotion, contained kernel work-product materialization, and independent verifier evidence translation |
 | `/apps/runtime/src/approval-surface.ts` | Runtime governance boundary | Strict `plugin.register`, `approval.decide`, and `approval.list` registration over existing policy/approval/audit/plugin ports |
 | `/apps/runtime/src/list-query-surface.ts` | Runtime query boundary | Strict authenticated `mission.list`, `job.list`, `candidate.list`, and `evidence.list` registration, project/mission/job relationship validation, existing-port dispatch, and typed response shaping |
 | `/apps/runtime/src/record-listing.ts` | Runtime persistence adapter support | Shared relationship-filter-before-pagination implementation so record items, totals, and cursors remain inside the requested authoritative boundary |
 | `/apps/runtime/src/use-case-infrastructure.ts` | Runtime adapters | Layer 4 port adapters backing real use-case commands and project/mission/job queries: SQLite repositories, event bus, `ReferenceProductionKernel`, approval/audit stores, `passthroughUnitOfWork` |
 | `/apps/runtime/src/job-execution-infrastructure.ts` | Runtime adapters | Candidate/evidence SQLite repositories backing execution and list queries, real isolated workspace filesystem (`LocalWorkspaceManager`), and the `ReferenceModelGateway`/`ReferenceVerifier` reference adapters driving `job.execute` |
 | `/apps/runtime/public/index.html` | Operator UI | Minimal real browser UI (session token, health, project/mission/job-start/job-execute panels, SSE-over-fetch live event log); no framework/build step; full workflow, displayed state, authenticated SSE/reconnect, restart recovery, and negative authentication path proven in real Chromium |
-| `/apps/runtime/tests` | Runtime verification | Typed command/query/governance, approval anti-forgery, idempotency, negative verification, restart recovery, filter-before-pagination, strict cursors/config, SSE, source-size, and real Playwright Chromium regressions against real HTTP + SQLite |
+| `/apps/runtime/tests` | Runtime verification | Typed command/query/governance, approval anti-forgery, idempotency, negative verification, supervised model/kernel/verifier effects, exactly-once restart recovery, filter-before-pagination, strict cursors/config, SSE, source-size, real Playwright Chromium, and opt-in real-Ollama regressions against real HTTP + SQLite |
+| `/adapters/local-supervised` | Optional local execution adapters | SQLite-free bounded JSON-RPC child hosts for real loopback Ollama inference, allowlisted contained kernel lifecycle, and independent permission-bounded Node verification |
+| `/scripts/prove-stage4-real.mjs` | Target-host verification | Explicit opt-in actual-Ollama Stage 4 acceptance command; excluded from the hermetic default gate |
+| `/docs/reviews/stage-4-real-supervised-execution-proof.md` | Architecture governance | Exact local model/process/artifact/kernel/verifier/restart evidence, failure matrix, confirmed defects, and honest remaining capability boundary |
 | `/docs/reviews/stage-3-system-integrity-drift-audit.md` | Architecture governance | Stage 3 evidence, confirmed defect ledger, three independent drift passes, reconciliation, critical path, and trajectory verdict |
 | `/packages/department-host` | Department host | Post-core generic removable-department lifecycle, isolation connector, rollback, manifest/version/permission/dependency checks |
 | `/plugins/video-production` | Video Production | Post-core removable video workflow; reference adapters plus target-host-validated ffmpeg Assembly and ffmpeg+Ollama Vision-QC adapters |

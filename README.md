@@ -61,6 +61,21 @@ shutdown.
 `runtime-data/` is local-only; it is never committed. To point at a different location or
 port, set `V31M4_DATABASE`, `V31M4_HOST`, `V31M4_PORT`, or `V31M4_ACTOR_ID` before running.
 
+The default execution profile is `hermetic_reference` and requires no model service. To select the
+proven optional local Stage 4 path, point the runtime only at an already-installed loopback Ollama
+model:
+
+```bash
+V31M4_EXECUTION_PROFILE=supervised_local \
+V31M4_OLLAMA_ENDPOINT=http://127.0.0.1:11434 \
+V31M4_OLLAMA_MODEL=devstral-small-2:24b \
+pnpm dev
+```
+
+The current real kernel is intentionally restricted to workflow `stage4.tiny-code`. The explicit
+target-host acceptance proof is `node scripts/prove-stage4-real.mjs`; it opts into real inference
+and is not part of the hermetic default test gate. It never pulls a model.
+
 ## Source of truth
 
 Read these files in order before making changes:

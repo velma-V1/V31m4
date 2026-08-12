@@ -6,6 +6,7 @@ export interface SupervisedProcessOptions {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly environment?: Readonly<Record<string, string>>;
+  readonly inheritEnvironment?: readonly string[];
   readonly stderrLimitBytes?: number;
   readonly shutdownTimeoutMs?: number;
 }
@@ -27,9 +28,7 @@ export class ProcessSupervisor {
     if (this.#child) throw new Error("Process is already running");
     const child = spawn(this.#options.command, [...(this.#options.args ?? [])], {
       cwd: this.#options.cwd,
-      env: this.#options.environment
-        ? { ...process.env, ...this.#options.environment }
-        : process.env,
+      env: buildEnvironment(this.#options.inheritEnvironment, this.#options.environment),
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -71,4 +70,29 @@ export class ProcessSupervisor {
       await exited;
     }
   }
+}
+
+const DEFAULT_INHERITED_ENVIRONMENT = Object.freeze([
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "PATH",
+  "SystemRoot",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "WINDIR",
+]);
+
+function buildEnvironment(
+  inherited: readonly string[] | undefined,
+  explicit: Readonly<Record<string, string>> | undefined,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of inherited ?? DEFAULT_INHERITED_ENVIRONMENT) {
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  for (const [key, value] of Object.entries(explicit ?? {})) environment[key] = value;
+  return environment;
 }

@@ -1,9 +1,10 @@
-import { ApplicationError } from "@v31m4/application";
+import { ApplicationError, type CancellationSignal } from "@v31m4/application";
 import type { JsonRpcClient } from "../rpc/json-rpc-client.js";
+import { RpcRemoteError } from "../rpc/json-rpc-client.js";
 
 export interface InvokeOptions {
   readonly timeoutMs: number;
-  readonly signal?: AbortSignal;
+  readonly signal?: CancellationSignal;
 }
 
 /**
@@ -46,7 +47,7 @@ export async function invokeAdapter<Result>(
     throw new ApplicationError("DEPENDENCY_FAILURE", "The supervised adapter call failed.", {
       cause: error,
       details: { adapterId: invoker.id, method },
-      retryable: true,
+      retryable: error instanceof RpcRemoteError ? error.retryable : true,
     });
   }
 }

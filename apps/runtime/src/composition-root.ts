@@ -13,6 +13,7 @@ import {
   type EvidenceRepositoryPort,
   type JobRepositoryPort,
   type MissionRepositoryPort,
+  type ModelGatewayPort,
   type OperationContext,
   type ProductionKernelPort,
   type ProjectRepositoryPort,
@@ -27,7 +28,7 @@ import {
   submitMissionRequestSchema,
   submitMissionResponseSchema,
 } from "@v31m4/contracts";
-import { createDomainEvent, type ProjectId } from "@v31m4/domain";
+import { createDomainEvent, type ModelId, type ProjectId } from "@v31m4/domain";
 import {
   ContentAddressedArtifactStore,
   EventReplayStore,
@@ -46,12 +47,14 @@ import { ExternalCommandExecutor } from "./external-command-executor.js";
 import { registerJobCommands } from "./job-command-surface.js";
 import {
   LocalWorkspaceManager,
+  ReferenceModelGateway,
   ReferenceVerifier,
   SqliteCandidateRepository,
   SqliteEvidenceRepository,
 } from "./job-execution-infrastructure.js";
 import { registerListQueries } from "./list-query-surface.js";
 import type { RuntimeConfig } from "./runtime-config.js";
+import { createLocalExecutionComposition } from "./supervised/local-execution-composition.js";
 import {
   parseCommandPayload,
   passthroughUnitOfWork,
@@ -186,7 +189,7 @@ export interface RuntimeComposition {
   readonly authenticator: LocalSessionAuthenticator;
   readonly service: RuntimeService;
   recoverOnStartup(): { readonly latestSequence: number };
-  close(): void;
+  close(): Promise<void>;
 }
 
 /**
@@ -198,6 +201,7 @@ export interface RuntimeComposition {
  */
 export interface CompositionOverrides {
   readonly verifierFactory?: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
+  readonly interruptAfterKernelEffect?: boolean;
 }
 
 /**
@@ -347,19 +351,41 @@ export function buildComposition(
   // actor+key+commandType+payloadHash idempotency contract explicitly, against the same durable
   // idempotency_records table ExternalCommandExecutor's canonical commands use.
   const idempotency = new SqliteIdempotencyStore(database);
-  const verifierFactory: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort =
-    overrides.verifierFactory ?? ((store, projectId) => new ReferenceVerifier(store, projectId));
-  // No real production-kernel adapter process is installed on this machine; ReferenceProductionKernel
-  // proves job orchestration deterministically, exactly like the Video/Game departments' reference
-  // adapters, and must never be represented as real production-kernel execution.
-  const kernel: ProductionKernelPort = new ReferenceProductionKernel();
-
   const artifactsRoot = join(dirname(config.databasePath), "artifacts");
   const artifacts: ArtifactStorePort = new ContentAddressedArtifactStore(database, artifactsRoot);
   const workspacesRoot = join(dirname(config.databasePath), "workspaces");
   const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(workspacesRoot);
   const candidates: CandidateRepositoryPort = new SqliteCandidateRepository(database);
   const evidenceRepo: EvidenceRepositoryPort = new SqliteEvidenceRepository(database);
+  const runtimeInstanceId = randomUUID();
+  let kernel: ProductionKernelPort;
+  let modelId: ModelId;
+  let modelFactory: (projectId: ProjectId) => ModelGatewayPort;
+  let verifierId: string;
+  let verifierFactory: (projectId: ProjectId, jobId: string) => VerifierPort;
+  let materializeCandidate:
+    | ((jobId: string, artifactId: string, context: OperationContext) => Promise<void>)
+    | undefined;
+  let closeExternal = async (): Promise<void> => {};
+  if (config.executionProfile === "supervised_local") {
+    const local = createLocalExecutionComposition(config, artifacts, database.unitOfWork);
+    kernel = local.kernel;
+    modelId = local.modelId;
+    modelFactory = (projectId) => local.model(projectId);
+    verifierId = local.verifierId;
+    verifierFactory = (projectId, jobId) => local.verifier(projectId, jobId);
+    materializeCandidate = local.materializeCandidate;
+    closeExternal = local.close;
+  } else {
+    kernel = new ReferenceProductionKernel();
+    modelId = "reference-model" as ModelId;
+    modelFactory = (projectId) =>
+      new ReferenceModelGateway(artifacts, database.unitOfWork, projectId);
+    verifierId = "reference-verifier";
+    const referenceFactory =
+      overrides.verifierFactory ?? ((store, projectId) => new ReferenceVerifier(store, projectId));
+    verifierFactory = (projectId) => referenceFactory(artifacts, projectId);
+  }
   registerListQueries(service, {
     projects,
     missions,
@@ -382,7 +408,16 @@ export function buildComposition(
     candidates,
     evidence: evidenceRepo,
     workspaces,
+    modelId,
+    modelFactory,
+    verifierId,
     verifierFactory,
+    runtimeInstanceId,
+    reconcileInterrupted: config.executionProfile === "supervised_local",
+    ...(materializeCandidate === undefined ? {} : { materializeCandidate }),
+    ...(overrides.interruptAfterKernelEffect === undefined
+      ? {}
+      : { interruptAfterKernelEffect: overrides.interruptAfterKernelEffect }),
   });
 
   return Object.freeze({
@@ -405,8 +440,9 @@ export function buildComposition(
         .get() as { latest: number | null } | undefined;
       return { latestSequence: row?.latest ?? 0 };
     },
-    close(): void {
+    async close(): Promise<void> {
       coordinator.closeAll();
+      await closeExternal();
       database.close();
     },
   });

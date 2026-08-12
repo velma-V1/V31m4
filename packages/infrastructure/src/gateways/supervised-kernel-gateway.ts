@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   KernelStartRequest,
   KernelStatus,
@@ -24,18 +25,25 @@ export class SupervisedProductionKernel implements ProductionKernelPort {
   ) {}
 
   async start(request: KernelStartRequest, context: OperationContext): Promise<OperationReceipt> {
-    return invokeAdapter<OperationReceipt>(this.#invoker(), "kernel.start", request, {
-      timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
-    });
+    return invokeAdapter<OperationReceipt>(
+      this.#invoker(),
+      "kernel.start_job",
+      { invocationId: `invocation-${randomUUID()}`, ...request },
+      {
+        timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+        signal: context.signal,
+      },
+    );
   }
 
   async checkpoint(jobId: JobId, context: OperationContext): Promise<CheckpointIdType> {
     const raw = await invokeAdapter<string>(
       this.#invoker(),
-      "kernel.checkpoint",
-      { jobId },
+      "kernel.checkpoint_job",
+      { invocationId: `invocation-${randomUUID()}`, jobId, stage: "checkpointing" },
       {
         timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+        signal: context.signal,
       },
     );
     return CheckpointId.parse(raw);
@@ -48,10 +56,11 @@ export class SupervisedProductionKernel implements ProductionKernelPort {
   ): Promise<OperationReceipt> {
     return invokeAdapter<OperationReceipt>(
       this.#invoker(),
-      "kernel.resume",
-      { jobId, checkpointId },
+      "kernel.resume_job",
+      { invocationId: `invocation-${randomUUID()}`, jobId, checkpointId },
       {
         timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+        signal: context.signal,
       },
     );
   }
@@ -63,10 +72,11 @@ export class SupervisedProductionKernel implements ProductionKernelPort {
   ): Promise<void> {
     await invokeAdapter<void>(
       this.#invoker(),
-      "kernel.stop",
-      { jobId, mode },
+      "kernel.stop_job",
+      { invocationId: `invocation-${randomUUID()}`, jobId, mode },
       {
         timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+        signal: context.signal,
       },
     );
   }
@@ -74,10 +84,11 @@ export class SupervisedProductionKernel implements ProductionKernelPort {
   async status(jobId: JobId, context: OperationContext): Promise<KernelStatus> {
     return invokeAdapter<KernelStatus>(
       this.#invoker(),
-      "kernel.status",
+      "kernel.job_status",
       { jobId },
       {
         timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+        signal: context.signal,
       },
     );
   }

@@ -1,18 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   ApplicationError,
-  type ApplicationJsonObject,
   type ApplicationJsonValue,
   type ArtifactStorePort,
   type AuditStorePort,
   type CandidateRepositoryPort,
+  type CandidateVerificationOutcome,
   type ClockPort,
+  checkpointJob,
   deliverResult,
   type EventBusPort,
   type EvidenceRepositoryPort,
   isApplicationError,
   type JobRepositoryPort,
   type MissionRepositoryPort,
+  type ModelGatewayPort,
   type ProductionKernelPort,
   runSolverForge,
   selectChampionUseCase,
@@ -32,15 +34,13 @@ import {
   type ProjectId,
   SafePath,
   VerificationPlanId,
+  VerificationResult,
 } from "@v31m4/domain";
 import type { SqliteIdempotencyStore, SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 import type { RuntimeService } from "./composition-root.js";
 import { canonicalJson } from "./external-command-executor.js";
-import { ReferenceModelGateway } from "./job-execution-infrastructure.js";
+import { asCommandObject, requireCommandId, stableDigest } from "./job-command-helpers.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
-
-const REFERENCE_MODEL_ID = "reference-model" as ModelId;
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
 export interface JobCommandDependencies {
   readonly service: RuntimeService;
@@ -56,24 +56,18 @@ export interface JobCommandDependencies {
   readonly candidates: CandidateRepositoryPort;
   readonly evidence: EvidenceRepositoryPort;
   readonly workspaces: WorkspaceManagerPort;
-  readonly verifierFactory: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
-}
-
-function asObject(value: ApplicationJsonValue): ApplicationJsonObject {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Command payload must be an object.");
-  }
-  return value as ApplicationJsonObject;
-}
-
-function requireId(object: ApplicationJsonObject, key: string): string {
-  const value = object[key];
-  if (typeof value !== "string" || !ID_PATTERN.test(value)) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", `Command field '${key}' is invalid.`, {
-      details: { field: key },
-    });
-  }
-  return value;
+  readonly modelId: ModelId;
+  readonly modelFactory: (projectId: ProjectId) => ModelGatewayPort;
+  readonly verifierId: string;
+  readonly verifierFactory: (projectId: ProjectId, jobId: string) => VerifierPort;
+  readonly runtimeInstanceId: string;
+  readonly reconcileInterrupted: boolean;
+  readonly materializeCandidate?: (
+    jobId: string,
+    artifactId: string,
+    context: Parameters<ModelGatewayPort["invoke"]>[1],
+  ) => Promise<void>;
+  readonly interruptAfterKernelEffect?: boolean;
 }
 
 /** Registers direct job commands whose external calls cannot run inside the command executor UoW. */
@@ -92,7 +86,14 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     candidates,
     evidence,
     workspaces,
+    modelId,
+    modelFactory,
+    verifierId,
     verifierFactory,
+    runtimeInstanceId,
+    reconcileInterrupted,
+    materializeCandidate,
+    interruptAfterKernelEffect,
   } = dependencies;
 
   service.registerDirect("job.start", async (payload, context) => {
@@ -179,7 +180,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     );
     if (cached?.status === "completed") return cached.result as ApplicationJsonValue;
 
-    const jobIdRaw = requireId(asObject(payload), "jobId");
+    const jobIdRaw = requireCommandId(asCommandObject(payload), "jobId");
     const jobId = JobId.parse(jobIdRaw);
     const job = await database.unitOfWork.execute(context, async (transaction) => {
       const current = await jobs.getById(jobId, context, transaction);
@@ -193,7 +194,12 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
           details: { status: current.value.status },
         });
       }
-      if (current.value.currentStage === "executing") {
+      const executionStage = reconcileInterrupted ? `executing:${runtimeInstanceId}` : "executing";
+      if (
+        current.value.currentStage === "executing" ||
+        current.value.currentStage === executionStage ||
+        (current.value.currentStage.startsWith("executing:") && !reconcileInterrupted)
+      ) {
         throw new ApplicationError("CONFLICT", "Job execution is already in progress.", {
           details: { jobId: jobIdRaw },
         });
@@ -202,7 +208,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
         eventId: `event-${randomUUID()}`,
         occurredAt: clock.now(),
         progress: current.value.progress,
-        stage: "executing",
+        stage: executionStage,
       });
       const saved = await jobs.save(
         claim.job,
@@ -221,109 +227,209 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       });
     }
     const projectId = job.value.projectId;
-    const modelGateway = new ReferenceModelGateway(artifacts, database.unitOfWork, projectId);
-    const verifier = verifierFactory(artifacts, projectId);
+    const modelGateway = modelFactory(projectId);
+    const verifier = verifierFactory(projectId, jobIdRaw);
     async function* textBytes(text: string): AsyncIterable<Uint8Array> {
       yield Buffer.from(text, "utf8");
     }
-    const promptArtifactId = await database.unitOfWork.execute(context, async (transaction) => {
-      const artifact = await artifacts.write(
+    const deterministic = reconcileInterrupted;
+    const promptArtifactIdValue = deterministic
+      ? `artifact-prompt-${stableDigest(jobIdRaw).slice(0, 32)}`
+      : `artifact-${randomUUID()}`;
+    const promptArtifactId = ArtifactId.parse(promptArtifactIdValue);
+    if ((await artifacts.get(promptArtifactId, context)) === null) {
+      await database.unitOfWork.execute(context, async (transaction) => {
+        const artifact = await artifacts.write(
+          {
+            id: promptArtifactId,
+            projectId,
+            kind: "document",
+            logicalPath: SafePath.parse(`job-${jobIdRaw}/prompt.txt`),
+            mediaType: "text/plain",
+            parentArtifactIds: [],
+            bytes: textBytes(`${mission.value.title}\n${mission.value.objective}`),
+          },
+          context,
+          transaction,
+        );
+        return artifact.value.id;
+      });
+    }
+
+    const candidateId = deterministic
+      ? `candidate-${stableDigest(jobIdRaw).slice(0, 32)}`
+      : `candidate-${randomUUID()}`;
+    let candidate = (await candidates.getCandidate(candidateId as never, context))?.value;
+    if (candidate === undefined) {
+      [candidate] = await runSolverForge(
+        { unitOfWork: database.unitOfWork, candidates, models: modelGateway, workspaces },
         {
-          id: ArtifactId.parse(`artifact-${randomUUID()}`),
+          jobId,
+          missionId: job.value.missionId,
           projectId,
-          kind: "document",
-          logicalPath: SafePath.parse(`job-${jobIdRaw}/prompt.txt`),
-          mediaType: "text/plain",
-          parentArtifactIds: [],
-          bytes: textBytes(`${mission.value.title}\n${mission.value.objective}`),
+          promptArtifactId,
+          configurations: [
+            Object.freeze({
+              modelId,
+              strategy: "direct" as const,
+              contextArtifactIds: Object.freeze([]),
+              toolIds: Object.freeze([]),
+              constraints: Object.freeze([]),
+            }),
+          ],
+          candidateIds: [candidateId],
+          invocationIds: [
+            deterministic
+              ? `invocation-model-${stableDigest(jobIdRaw).slice(0, 32)}`
+              : `invocation-${randomUUID()}`,
+          ],
+          createdAt: clock.now(),
+          resourceBudget: mission.value.resourceBudget,
         },
         context,
-        transaction,
       );
-      return artifact.value.id;
-    });
-
-    const candidateId = `candidate-${randomUUID()}`;
-    const [candidate] = await runSolverForge(
-      { unitOfWork: database.unitOfWork, candidates, models: modelGateway, workspaces },
-      {
-        jobId,
-        missionId: job.value.missionId,
-        projectId,
-        promptArtifactId,
-        configurations: [
-          Object.freeze({
-            modelId: REFERENCE_MODEL_ID,
-            strategy: "direct" as const,
-            contextArtifactIds: Object.freeze([]),
-            toolIds: Object.freeze([]),
-            constraints: Object.freeze([]),
-          }),
-        ],
-        candidateIds: [candidateId],
-        invocationIds: [`invocation-${randomUUID()}`],
-        createdAt: clock.now(),
-        resourceBudget: mission.value.resourceBudget,
-      },
-      context,
-    );
+    }
     if (candidate === undefined) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Solver forge produced no candidate.");
     }
 
-    const plan = Object.freeze({
-      id: VerificationPlanId.parse(`plan-${randomUUID()}`),
+    if (materializeCandidate !== undefined) {
+      const outputArtifactId = candidate.outputArtifactIds[0];
+      if (outputArtifactId === undefined) {
+        throw new ApplicationError("INTEGRITY_FAILURE", "Candidate has no kernel work product.");
+      }
+      await materializeCandidate(jobIdRaw, outputArtifactId, context);
+      let checkpointId = job.value.latestCheckpointId;
+      if (checkpointId === undefined) {
+        const artifact = await artifacts.get(outputArtifactId, context);
+        if (artifact === null) {
+          throw new ApplicationError("INTEGRITY_FAILURE", "Candidate artifact disappeared.");
+        }
+        const checkpoint = await checkpointJob(
+          { unitOfWork: database.unitOfWork, jobs, events: eventBus, kernel, clock },
+          {
+            jobId,
+            stage: `executing:${runtimeInstanceId}`,
+            stateArtifactId: outputArtifactId,
+            evidenceIds: [],
+            contentHash: artifact.value.contentHash,
+            verified: false,
+            beginEventId: `event-${randomUUID()}`,
+            recordedEventId: `event-${randomUUID()}`,
+            failureEventId: `event-${randomUUID()}`,
+          },
+          context,
+        );
+        checkpointId = checkpoint.value.id;
+      }
+      const kernelState = await kernel.status(jobId, context);
+      if (
+        kernelState.checkpointId !== checkpointId ||
+        (kernelState.status !== "paused" && kernelState.status !== "completed")
+      ) {
+        throw new ApplicationError(
+          "DEPENDENCY_FAILURE",
+          "Kernel state does not match the durable resume checkpoint.",
+          { details: { jobId: jobIdRaw, kernelStatus: kernelState.status }, retryable: false },
+        );
+      }
+      await kernel.resume(jobId, checkpointId, context);
+      if (interruptAfterKernelEffect === true) {
+        throw new ApplicationError(
+          "DEPENDENCY_UNAVAILABLE",
+          "Controlled interruption after kernel effect.",
+          {
+            retryable: true,
+          },
+        );
+      }
+    }
+
+    const plan = VerificationResult.createPlan({
+      id: VerificationPlanId.parse(
+        deterministic ? `plan-${stableDigest(jobIdRaw).slice(0, 32)}` : `plan-${randomUUID()}`,
+      ),
       missionId: job.value.missionId,
       candidateId: candidate.id,
-      checks: Object.freeze([
-        Object.freeze({
-          id: "output-artifact-presence",
+      checks: [
+        {
+          id: deterministic ? "stage4.tiny-code.tests" : "output-artifact-presence",
           criterionIds: Object.freeze(mission.value.acceptanceCriteria.map((entry) => entry.id)),
-          verifierId: "reference-verifier",
-          kind: "static_analysis" as const,
+          verifierId,
+          kind: deterministic ? ("unit_test" as const) : ("static_analysis" as const),
           mandatory: true,
           hidden: false,
           timeoutMs: 30_000,
-        }),
-      ]),
+        },
+      ],
     });
-    const [verification] = await verifyCandidates(
-      { unitOfWork: database.unitOfWork, evidence, verifier },
-      [{ plan, candidate }],
-      context,
-    );
+    const existingEvidence = deterministic
+      ? await evidence.getById(`evidence-${candidate.id}` as never, context)
+      : null;
+    let verification: CandidateVerificationOutcome | undefined;
+    if (existingEvidence !== null) {
+      verification = {
+        candidate,
+        evidence: [existingEvidence.value],
+        result: VerificationResult.calculate({
+          id: `verification-${candidate.id}`,
+          plan,
+          completedChecks: [
+            {
+              checkId: plan.checks[0]?.id ?? "stage4.tiny-code.tests",
+              status: existingEvidence.value.status,
+              evidenceIds: [existingEvidence.value.id],
+            },
+          ],
+        }),
+      };
+    } else {
+      [verification] = await verifyCandidates(
+        { unitOfWork: database.unitOfWork, evidence, verifier },
+        [{ plan, candidate }],
+        context,
+      );
+    }
     if (verification === undefined) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Verification produced no outcome.");
     }
     const passed = verification.result.status === "passed";
-    const decision = await selectChampionUseCase(
-      { unitOfWork: database.unitOfWork, candidates },
-      {
-        decisionId: `decision-${randomUUID()}`,
-        missionId: job.value.missionId,
-        decidedAt: clock.now(),
-        candidates: [
-          {
-            candidateId: candidate.id,
-            verification: verification.result,
-            metrics: Object.freeze({
-              correctness: passed ? 1 : 0,
-              coverage: passed ? 1 : 0,
-              security: 1,
-              performance: 1,
-              complexity: 0,
-              evidenceStrength: passed ? 1 : 0,
-            }),
-            unresolvedCriticalRisks: Object.freeze([]),
-            evidenceIds: verification.evidence.map((entry) => entry.id),
-          },
-        ],
-      },
-      context,
-    );
+    const existingDecision = deterministic
+      ? await candidates.getChampionDecision(job.value.missionId, context)
+      : null;
+    const decision =
+      existingDecision ??
+      (await selectChampionUseCase(
+        { unitOfWork: database.unitOfWork, candidates },
+        {
+          decisionId: `decision-${randomUUID()}`,
+          missionId: job.value.missionId,
+          decidedAt: clock.now(),
+          candidates: [
+            {
+              candidateId: candidate.id,
+              verification: verification.result,
+              metrics: Object.freeze({
+                correctness: passed ? 1 : 0,
+                coverage: passed ? 1 : 0,
+                security: 1,
+                performance: 1,
+                complexity: 0,
+                evidenceStrength: passed ? 1 : 0,
+              }),
+              unresolvedCriticalRisks: Object.freeze([]),
+              evidenceIds: verification.evidence.map((entry) => entry.id),
+            },
+          ],
+        },
+        context,
+      ));
     const receipt =
       decision.value.decision === "champion"
-        ? await deliverResult(
+        ? ((deterministic
+            ? await candidates.getDeliveryReceipt(job.value.missionId, context)
+            : null) ??
+          (await deliverResult(
             { unitOfWork: database.unitOfWork, candidates, clock },
             {
               receiptId: `receipt-${randomUUID()}`,
@@ -337,7 +443,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
               evidenceIds: verification.evidence.map((entry) => entry.id),
             },
             context,
-          )
+          )))
         : null;
 
     return database.unitOfWork.execute(context, async (transaction) => {

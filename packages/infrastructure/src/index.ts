@@ -1,4 +1,5 @@
 export * from "./adapters/adapter-registry.js";
+export * from "./adapters/supervised-adapter-process.js";
 export * from "./artifacts/content-addressed-artifact-store.js";
 export * from "./backup/sqlite-backup-manager.js";
 export * from "./database/schema.js";

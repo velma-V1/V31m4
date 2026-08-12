@@ -1,0 +1,179 @@
+import { createHash } from "node:crypto";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
+import { requireCanonicalId, requirePlainObject, runRpcHost } from "./rpc-host.mjs";
+
+const MAX_PROMPT_BYTES = 64 * 1024;
+const MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_OUTPUT_BYTES = 64 * 1024;
+const root = resolve(requiredEnvironment("V31M4_STAGE4_ROOT"));
+const endpoint = parseEndpoint(requiredEnvironment("V31M4_OLLAMA_ENDPOINT"));
+const model = requiredEnvironment("V31M4_OLLAMA_MODEL");
+const inputs = join(root, "model-inputs");
+const outputs = join(root, "model-outputs");
+const active = new Map();
+await Promise.all([mkdir(inputs, { recursive: true }), mkdir(outputs, { recursive: true })]);
+
+runRpcHost({
+  "adapter.health": async () => ({ status: "healthy", model, endpoint: endpoint.origin }),
+  "adapter.cancel": async (params) => {
+    const invocationId = requireCanonicalId(params.invocationId, "invocationId");
+    active.get(invocationId)?.abort();
+    return null;
+  },
+  "model.invoke": invokeModel,
+});
+
+async function invokeModel(raw) {
+  const params = requirePlainObject(raw, "model.invoke params");
+  const invocationId = requireCanonicalId(params.invocationId, "invocationId");
+  const jobId = requireCanonicalId(params.jobId, "jobId");
+  const modelId = requireCanonicalId(params.modelId, "modelId");
+  const promptArtifactId = requireCanonicalId(params.promptArtifactId, "promptArtifactId");
+  if (modelId !== model) throw new Error("Requested model is not the configured installed model.");
+  const cached = await readCached(invocationId);
+  if (cached !== null) return cached;
+
+  const promptPath = contained(inputs, `${promptArtifactId}.txt`);
+  const promptStat = await lstat(promptPath);
+  if (!promptStat.isFile() || promptStat.isSymbolicLink() || promptStat.size > MAX_PROMPT_BYTES) {
+    throw new Error("Prompt materialization is invalid or oversized.");
+  }
+  const prompt = await readFile(promptPath, "utf8");
+  const controller = new AbortController();
+  active.set(invocationId, controller);
+  const started = performance.now();
+  try {
+    const response = await fetch(new URL("/api/generate", endpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think: false,
+        prompt: [
+          "Return only JSON matching the supplied schema.",
+          "The content must be a complete JavaScript ES module with no Markdown fences.",
+          prompt,
+        ].join("\n\n"),
+        format: {
+          type: "object",
+          required: ["content"],
+          properties: { content: { type: "string" } },
+        },
+        options: { temperature: 0 },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw retryable(`Ollama returned HTTP ${response.status}.`);
+    const declared = Number(response.headers.get("content-length") ?? "0");
+    if (declared > MAX_RESPONSE_BYTES) throw new Error("Ollama response exceeds limit.");
+    const text = await response.text();
+    if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES)
+      throw new Error("Ollama response exceeds limit.");
+    const envelope = JSON.parse(text);
+    if (
+      envelope?.done !== true ||
+      envelope?.model !== model ||
+      typeof envelope?.response !== "string"
+    ) {
+      throw new Error("Ollama response envelope is malformed.");
+    }
+    const structured = JSON.parse(envelope.response);
+    if (
+      structured === null ||
+      typeof structured !== "object" ||
+      Array.isArray(structured) ||
+      Object.keys(structured).length !== 1 ||
+      typeof structured.content !== "string" ||
+      structured.content.trim().length === 0 ||
+      Buffer.byteLength(structured.content) > MAX_OUTPUT_BYTES ||
+      structured.content.includes("```") ||
+      structured.content.includes("\0")
+    ) {
+      throw new Error("Ollama structured output is malformed.");
+    }
+    const outputPath = contained(outputs, `${invocationId}.txt`);
+    await atomicWrite(outputPath, structured.content);
+    const artifactId = `artifact-model-${digest(invocationId).slice(0, 32)}`;
+    const result = {
+      invocationId,
+      modelId,
+      responseArtifactId: artifactId,
+      outputArtifactIds: [artifactId],
+      finishReason: "completed",
+      usage: {
+        inputTokens: optionalCount(envelope.prompt_eval_count),
+        outputTokens: optionalCount(envelope.eval_count),
+        wallClockMs: Math.max(1, Math.round(performance.now() - started)),
+      },
+      metadata: {
+        adapterId: "ollama-local-supervised",
+        realInference: true,
+        model,
+        outputFile: `${invocationId}.txt`,
+        jobId,
+      },
+    };
+    await atomicWrite(contained(outputs, `${invocationId}.json`), JSON.stringify(result));
+    return result;
+  } catch (error) {
+    if (error?.name === "AbortError") throw retryable("Ollama invocation was cancelled.");
+    if (error instanceof SyntaxError)
+      throw new Error("Ollama response is not valid structured JSON.");
+    throw error;
+  } finally {
+    active.delete(invocationId);
+  }
+}
+
+async function readCached(invocationId) {
+  try {
+    return JSON.parse(await readFile(contained(outputs, `${invocationId}.json`), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function requiredEnvironment(key) {
+  const value = process.env[key];
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${key} is required.`);
+  return value;
+}
+
+function parseEndpoint(value) {
+  const parsed = new URL(value);
+  const host = parsed.hostname === "[::1]" ? "::1" : parsed.hostname;
+  if (parsed.protocol !== "http:" || !new Set(["127.0.0.1", "::1", "localhost"]).has(host)) {
+    throw new Error("Ollama endpoint must be loopback HTTP.");
+  }
+  return parsed;
+}
+
+function contained(parent, name) {
+  requireCanonicalId(name.replace(/\.(?:txt|json)$/u, ""), "staged file identity");
+  const target = resolve(parent, name);
+  if (!target.startsWith(resolve(parent) + sep)) throw new Error("Staged path escapes its root.");
+  return target;
+}
+
+async function atomicWrite(path, content) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, content, { encoding: "utf8", flag: "wx" });
+  await rename(temporary, path);
+}
+
+function digest(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function optionalCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function retryable(message) {
+  const error = new Error(message);
+  error.retryable = true;
+  return error;
+}

@@ -67,8 +67,11 @@ packages/
 ├── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store
 └── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
 
+adapters/
+└── local-supervised/                    # Optional Stage 4 Ollama model, contained kernel, and independent verifier JSON-RPC children
+
 apps/
-├── runtime/                             # Layer 10: node:http runtime, auth, typed routes, external-command executor, event-stream coordinator, recovery, shutdown
+├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local execution composition
 └── departments-integration/             # Post-core: independence-matrix integration tests (core-only / both departments / after removal)
 
 plugins/
@@ -102,9 +105,8 @@ per-tool capability matrix.
 
 | Component | Status |
 |---|---|
-| `job.start`'s production kernel (`ReferenceProductionKernel`) | Reference — no real model/tool execution, no supervised child process |
-| `job.execute`'s model gateway (`ReferenceModelGateway`) | Reference — no real model inference, but writes a real content-addressed artifact |
-| `job.execute`'s verifier (`ReferenceVerifier`) | Reference-minimal — a real check (declared output artifact exists with real bytes), not real test/build/lint execution |
+| Default `hermetic_reference` kernel/model/verifier | Reference — retained for deterministic core boot and tests; no external service required |
+| Explicit `supervised_local` `stage4.tiny-code` path | VERIFIED REAL — installed Ollama 0.32.7 `devstral-small-2:24b` inference, three supervised child processes, contained checkpointed kernel apply, independent Node command verifier, immutable evidence, champion/delivery gate, and exactly-once restart reconciliation |
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
 | `mission.list` / `job.list` / `candidate.list` / `evidence.list` query surface | VERIFIED — authenticated strict `POST /queries/:type`, existing Layer 4 repositories, relationship validation, filtered pagination, valid empty/error/auth behavior, and persisted restart-stable results |
@@ -157,6 +159,12 @@ per-tool capability matrix.
   cursor/config parsing, post-commit transaction errors, JSON-RPC listener cleanup, and runtime
   source-size/explicit-`any` boundaries. Focused Stage 3 verification is 98/98 across 30 files; the
   post-repair cross-layer integrity selection is 195/195 across 46 files.
+- **Stage 4 current full workspace regression (re-run 2026-08-11):** **453 passing cases / 11
+  skipped (464 total) across 100 passing + 3 skipped test files (103 total)**. The explicitly
+  opt-in real Ollama test is skipped by the hermetic gate and passed separately 1/1 with installed
+  Ollama 0.32.7 `devstral-small-2:24b`. Focused Stage 4/owning-layer verification is 52/52 across
+  11 files; post-reconciliation runtime verification is 19/19 across 4 files. `pnpm check`,
+  dependency/source-size/explicit-`any` guards, and the independent real target-host proof pass.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:
@@ -238,6 +246,8 @@ the current target machine. Within the system-build program (`apps/runtime`): P0
 idempotency repair, P1 negative-verification-path/evidence-durable-readback proof, Stage 1 Browser
 UI Proof, Stage 2 List/Query Surface, and Stage 3 Approval-Flow Proof plus system-integrity/drift
 realignment are complete. The generic `record.put` mutation bypass is removed; only typed mutation
-surfaces remain. The next incomplete system-build item is a real supervised model/verifier/
-production-kernel path, recorded in `docs/current-state.md` and the Stage 3 audit. Stage 4 has not
-started.
+  surfaces remain. Stage 4 now proves one explicit optional real supervised model/verifier/
+  production-kernel path for the allowlisted `stage4.tiny-code` workflow, including restart
+  reconciliation. The next incomplete system-build item is its bounded generalization to real
+  project-owned coding workspaces/build packets and repair rounds, recorded in
+  `docs/current-state.md` and the Stage 4 proof.

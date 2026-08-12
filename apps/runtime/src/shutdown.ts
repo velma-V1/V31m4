@@ -39,5 +39,5 @@ export async function gracefulShutdown(
   } catch {
     // A checkpoint failure must not prevent an orderly close; the WAL is replayed on next open.
   }
-  composition.database.close();
+  await composition.close();
 }

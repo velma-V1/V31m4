@@ -62,6 +62,7 @@ export class SupervisedToolGateway implements ToolGatewayPort {
     const invoker = selectInvoker(binding, request.toolId);
     return invokeAdapter<ToolInvocationResult>(invoker, "tool.invoke", request, {
       timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+      signal: context.signal,
     });
   }
 
@@ -69,7 +70,7 @@ export class SupervisedToolGateway implements ToolGatewayPort {
     for (const binding of this.#bindings.values()) {
       if (binding.primary.available()) {
         await binding.primary.invoke(
-          "tool.cancel",
+          "adapter.cancel",
           { invocationId },
           {
             timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),

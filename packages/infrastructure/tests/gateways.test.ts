@@ -1,4 +1,8 @@
-import type { ModelInvocationRequest, ToolInvocationRequest } from "@v31m4/application";
+import type {
+  KernelStartRequest,
+  ModelInvocationRequest,
+  ToolInvocationRequest,
+} from "@v31m4/application";
 import { ResourceBudget } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
 import type {
@@ -6,8 +10,13 @@ import type {
   AdapterInvoker,
   InvokeOptions,
 } from "../src/gateways/adapter-invoker.js";
-import { SupervisedModelGateway } from "../src/gateways/supervised-model-gateway.js";
+import { SupervisedProductionKernel } from "../src/gateways/supervised-kernel-gateway.js";
+import {
+  remainingTimeout,
+  SupervisedModelGateway,
+} from "../src/gateways/supervised-model-gateway.js";
 import { SupervisedToolGateway } from "../src/gateways/supervised-tool-gateway.js";
+import { RpcRemoteError } from "../src/rpc/json-rpc-client.js";
 import { context } from "./fixtures.js";
 
 function budget() {
@@ -21,16 +30,16 @@ function budget() {
 }
 
 class FakeInvoker implements AdapterInvoker {
-  public calls: { method: string; params: unknown }[] = [];
+  public calls: { method: string; params: unknown; options: InvokeOptions }[] = [];
   constructor(
     readonly id: string,
-    private readonly behavior: { available?: boolean; result?: unknown; error?: Error } = {},
+    readonly behavior: { available?: boolean; result?: unknown; error?: Error } = {},
   ) {}
   available(): boolean {
     return this.behavior.available ?? true;
   }
   async invoke(method: string, params: unknown, _options: InvokeOptions): Promise<unknown> {
-    this.calls.push({ method, params });
+    this.calls.push({ method, params, options: _options });
     if (this.behavior.error) throw this.behavior.error;
     return this.behavior.result;
   }
@@ -65,6 +74,18 @@ const modelResult = {
 };
 
 describe("SupervisedModelGateway", () => {
+  it("uses only the wall-clock time remaining before the operation deadline", () => {
+    const started = Date.parse("2026-08-11T12:00:00.000Z");
+    const deadlineContext = {
+      ...context,
+      startedAt: new Date(started).toISOString(),
+      deadlineAt: new Date(started + 10_000).toISOString(),
+    };
+    expect(remainingTimeout(deadlineContext, 120_000, started + 3_000)).toBe(7_000);
+    expect(remainingTimeout(deadlineContext, 5_000, started + 3_000)).toBe(5_000);
+    expect(remainingTimeout(deadlineContext, 120_000, started + 11_000)).toBe(1);
+  });
+
   it("rejects malformed pagination cursors", async () => {
     const gateway = new SupervisedModelGateway([], new Map());
     await expect(gateway.list({ limit: 1, cursor: "1junk" })).rejects.toMatchObject({
@@ -78,6 +99,21 @@ describe("SupervisedModelGateway", () => {
     const result = await gateway.invoke(modelRequest(), context);
     expect(result.finishReason).toBe("completed");
     expect(primary.calls[0]?.method).toBe("model.invoke");
+    expect(primary.calls[0]?.options.signal).toBe(context.signal);
+    expect(primary.calls[0]?.params).toEqual({
+      invocationId: "invoke-1",
+      jobId: "job-1",
+      modelId: "model-1",
+      promptArtifactId: "prompt-1",
+      configuration: modelRequest().configuration,
+      resourceBudget: modelRequest().resourceBudget,
+    });
+
+    await gateway.cancel("invoke-1", context);
+    expect(primary.calls[1]).toMatchObject({
+      method: "adapter.cancel",
+      params: { invocationId: "invoke-1" },
+    });
   });
 
   it("falls back to the secondary adapter when the primary is unavailable", async () => {
@@ -106,10 +142,92 @@ describe("SupervisedModelGateway", () => {
     });
   });
 
+  it("preserves a remote adapter's non-retryable failure classification", async () => {
+    const primary = new FakeInvoker("adapter-1", {
+      error: new RpcRemoteError(-32000, "invalid candidate", false),
+    });
+    const gateway = new SupervisedModelGateway([], new Map([["model-1", { primary }]]));
+    await expect(gateway.invoke(modelRequest(), context)).rejects.toMatchObject({
+      code: "DEPENDENCY_FAILURE",
+      retryable: false,
+    });
+  });
+
   it("reports DEPENDENCY_UNAVAILABLE when the model has no binding", async () => {
     const gateway = new SupervisedModelGateway([], new Map());
     await expect(gateway.invoke(modelRequest(), context)).rejects.toMatchObject({
       code: "DEPENDENCY_UNAVAILABLE",
+    });
+  });
+});
+
+describe("SupervisedProductionKernel", () => {
+  it("translates the port to the frozen kernel RPC methods and required fields", async () => {
+    const primary = new FakeInvoker("kernel-adapter", {
+      result: {
+        operationId: "operation-1",
+        acceptedAt: "2026-08-07T12:00:00.000Z",
+        idempotencyKey: "job-1",
+      },
+    });
+    const gateway = new SupervisedProductionKernel({ primary });
+    const request: KernelStartRequest = {
+      jobId: "job-1" as never,
+      projectId: "project-1" as never,
+      missionId: "mission-1" as never,
+      workflowId: "stage4.tiny-code",
+      input: {},
+      resourceBudget: budget(),
+    };
+
+    await gateway.start(request, context);
+    expect(primary.calls[0]).toMatchObject({
+      method: "kernel.start_job",
+      params: { jobId: "job-1", workflowId: "stage4.tiny-code" },
+    });
+    expect(
+      (primary.calls[0]?.params as Record<string, unknown> | undefined)?.["invocationId"],
+    ).toEqual(expect.any(String));
+
+    primary.calls.length = 0;
+    primary.behavior.result = "checkpoint-1";
+    await gateway.checkpoint("job-1" as never, context);
+    expect(primary.calls[0]).toMatchObject({
+      method: "kernel.checkpoint_job",
+      params: { jobId: "job-1", stage: "checkpointing" },
+    });
+
+    primary.calls.length = 0;
+    primary.behavior.result = {
+      operationId: "operation-2",
+      acceptedAt: "2026-08-07T12:00:00.000Z",
+      idempotencyKey: "job-1",
+    };
+    await gateway.resume("job-1" as never, "checkpoint-1" as never, context);
+    expect(primary.calls[0]).toMatchObject({
+      method: "kernel.resume_job",
+      params: { jobId: "job-1", checkpointId: "checkpoint-1" },
+    });
+
+    primary.calls.length = 0;
+    await gateway.stop("job-1" as never, "emergency_stop", context);
+    expect(primary.calls[0]).toMatchObject({
+      method: "kernel.stop_job",
+      params: { jobId: "job-1", mode: "emergency_stop" },
+    });
+
+    primary.calls.length = 0;
+    primary.behavior.result = {
+      jobId: "job-1",
+      status: "running",
+      stage: "started",
+      progress: 0,
+      details: {},
+    };
+    await gateway.status("job-1" as never, context);
+    expect(primary.calls[0]).toMatchObject({
+      method: "kernel.job_status",
+      params: { jobId: "job-1" },
     });
   });
 });
@@ -150,5 +268,11 @@ describe("SupervisedToolGateway", () => {
     const result = await gateway.invoke(toolRequest(), context);
     expect(result.status).toBe("completed");
     expect(primary.calls[0]?.method).toBe("tool.invoke");
+    expect(primary.calls[0]?.options.signal).toBe(context.signal);
+    await gateway.cancel("invoke-1", context);
+    expect(primary.calls[1]).toMatchObject({
+      method: "adapter.cancel",
+      params: { invocationId: "invoke-1" },
+    });
   });
 });

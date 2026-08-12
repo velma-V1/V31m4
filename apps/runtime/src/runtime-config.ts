@@ -7,6 +7,13 @@ export interface RuntimeSession {
   readonly roles: readonly string[];
 }
 
+export type ExecutionProfile = "hermetic_reference" | "supervised_local";
+
+export interface SupervisedLocalConfig {
+  readonly ollamaEndpoint: string;
+  readonly model: string;
+}
+
 /** Fully validated runtime configuration. Construct only through {@link createRuntimeConfig}. */
 export interface RuntimeConfig {
   readonly host: string;
@@ -17,6 +24,8 @@ export interface RuntimeConfig {
   readonly replayBatchSize: number;
   readonly maxRequestBytes: number;
   readonly shutdownTimeoutMs: number;
+  readonly executionProfile: ExecutionProfile;
+  readonly supervisedLocal?: SupervisedLocalConfig;
 }
 
 export interface RuntimeConfigInput {
@@ -28,10 +37,13 @@ export interface RuntimeConfigInput {
   readonly replayBatchSize?: number;
   readonly maxRequestBytes?: number;
   readonly shutdownTimeoutMs?: number;
+  readonly executionProfile?: ExecutionProfile;
+  readonly supervisedLocal?: SupervisedLocalConfig;
 }
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/u;
 
 function invalid(message: string, details: Record<string, string | number>): never {
   throw new ApplicationError("INVALID_APPLICATION_INPUT", message, { details });
@@ -58,6 +70,35 @@ function parseEnvironmentInteger(
     invalid(`${label} must be a safe integer.`, { label, value });
   }
   return parsed;
+}
+
+function validateSupervisedLocal(value: SupervisedLocalConfig): SupervisedLocalConfig {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value.ollamaEndpoint);
+  } catch {
+    invalid("Supervised local Ollama endpoint must be a valid URL.", {
+      ollamaEndpoint: value.ollamaEndpoint,
+    });
+  }
+  const hostname = endpoint.hostname === "[::1]" ? "::1" : endpoint.hostname;
+  if (
+    endpoint.protocol !== "http:" ||
+    !LOOPBACK_HOSTS.has(hostname) ||
+    endpoint.username.length > 0 ||
+    endpoint.password.length > 0 ||
+    (endpoint.pathname !== "/" && endpoint.pathname !== "") ||
+    endpoint.search.length > 0 ||
+    endpoint.hash.length > 0
+  ) {
+    invalid("Supervised local Ollama endpoint must be an uncredentialed loopback HTTP origin.", {
+      ollamaEndpoint: value.ollamaEndpoint,
+    });
+  }
+  if (!MODEL_NAME_PATTERN.test(value.model)) {
+    invalid("Supervised local model name is invalid.", { model: value.model });
+  }
+  return Object.freeze({ ollamaEndpoint: endpoint.origin, model: value.model });
 }
 
 /**
@@ -102,6 +143,21 @@ export function createRuntimeConfig(input: RuntimeConfigInput): RuntimeConfig {
       roles: Object.freeze([...session.roles]),
     });
   });
+  const executionProfile = input.executionProfile ?? "hermetic_reference";
+  if (executionProfile === "supervised_local" && input.supervisedLocal === undefined) {
+    invalid("The supervised local execution profile requires Ollama configuration.", {
+      executionProfile,
+    });
+  }
+  if (executionProfile === "hermetic_reference" && input.supervisedLocal !== undefined) {
+    invalid("Supervised local configuration requires the supervised_local execution profile.", {
+      executionProfile,
+    });
+  }
+  const supervisedLocal =
+    input.supervisedLocal === undefined
+      ? undefined
+      : validateSupervisedLocal(input.supervisedLocal);
   return Object.freeze({
     host,
     port,
@@ -121,6 +177,8 @@ export function createRuntimeConfig(input: RuntimeConfigInput): RuntimeConfig {
       0,
       600_000,
     ),
+    executionProfile,
+    ...(supervisedLocal === undefined ? {} : { supervisedLocal }),
   });
 }
 
@@ -140,11 +198,35 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     .filter((role) => role.length > 0);
   const queueLimit = env["V31M4_EVENT_QUEUE_LIMIT"];
   const batchSize = env["V31M4_REPLAY_BATCH_SIZE"];
+  const profileValue = env["V31M4_EXECUTION_PROFILE"] ?? "hermetic_reference";
+  if (profileValue !== "hermetic_reference" && profileValue !== "supervised_local") {
+    invalid("Execution profile V31M4_EXECUTION_PROFILE is invalid.", {
+      executionProfile: profileValue,
+    });
+  }
+  const executionProfile: ExecutionProfile = profileValue;
+  const ollamaEndpoint = env["V31M4_OLLAMA_ENDPOINT"];
+  const ollamaModel = env["V31M4_OLLAMA_MODEL"];
+  if (
+    executionProfile === "supervised_local" &&
+    (ollamaEndpoint === undefined || ollamaModel === undefined)
+  ) {
+    invalid("The supervised local execution profile requires Ollama endpoint and model.", {
+      hasEndpoint: ollamaEndpoint === undefined ? "no" : "yes",
+      hasModel: ollamaModel === undefined ? "no" : "yes",
+    });
+  }
   return createRuntimeConfig({
     host: env["V31M4_HOST"] ?? "127.0.0.1",
     port: parseEnvironmentInteger(env["V31M4_PORT"], 8787, "V31M4_PORT"),
     databasePath,
     sessions: [{ token, actorId: env["V31M4_ACTOR_ID"] ?? "operator", roles }],
+    executionProfile,
+    ...(executionProfile === "supervised_local" &&
+    ollamaEndpoint !== undefined &&
+    ollamaModel !== undefined
+      ? { supervisedLocal: { ollamaEndpoint, model: ollamaModel } }
+      : {}),
     ...(queueLimit === undefined
       ? {}
       : { eventQueueLimit: parseEnvironmentInteger(queueLimit, 1024, "V31M4_EVENT_QUEUE_LIMIT") }),

@@ -279,17 +279,18 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
-   - **System-assembly program (started 2026-08-09, current through Stage 3 Approval-Flow Proof):**
+   - **System-assembly program (started 2026-08-09, current through Stage 4 Real Supervised Execution):**
      turned the verified backend into a runnable, operable system: a genuine end-to-end mission
      flow, a real idempotency-defect repair, a real champion-decision-defect repair,
      negative-verification-path proof, evidence-durable-readback proof, a real-browser operator
      workflow, authoritative persisted collection queries, and real durable approval governance.
-     Stage 3 and its integrity/drift audit are complete; the next verified incomplete task is a
-     real supervised execution proof. See
+     Stage 4 proves the first real supervised model/kernel/verifier execution path and restart
+     reconciliation; the next verified incomplete task is the bounded generalization described
+     below. See
      "System build" below for exactly what's done and what remains — do not re-derive this from the
      git log; the section below is the authoritative summary.
 
-## System build (2026-08-09 → 2026-08-11) — vertical slice, browser/query/approval proof, and integrity realignment
+## System build (2026-08-09 → 2026-08-11) — through real supervised execution
 
 Turned the verified L1–10 core + post-core departments into a runnable, operable system, reached a
 genuine end-to-end mission flow, then hardened it: a real idempotency defect and a real
@@ -440,6 +441,19 @@ continue that coherent system-build line:
     The independent forward, reverse, and adversarial drift passes reconcile to
     **ON_TRACK_WITH_APPROVED_DEVIATIONS** after repair. See
     `docs/reviews/stage-3-system-integrity-drift-audit.md`.
+17. **Stage 4: Real Supervised Execution (2026-08-11)** — an explicit optional
+    `supervised_local` profile now binds the existing model/tool/production-kernel ports and
+    gateways to three supervised child processes. A real installed Ollama 0.32.7
+    `devstral-small-2:24b` inference produces a bounded candidate artifact; an allowlisted kernel
+    checkpoints and applies it exactly once inside a contained job workspace; a separate
+    permission-bounded Node verifier derives pass/fail from an actual command exit status and
+    persists immutable evidence before the unchanged champion/delivery gate. Default startup and
+    `pnpm check` remain hermetic and use the retained reference profile. Real HTTP + SQLite proof
+    interrupts after kernel apply, restarts a brand-new runtime on the same database/workspace,
+    inspects and resumes the durable checkpoint, and finishes with one model invocation,
+    candidate, checkpoint, evidence record, decision, receipt, and kernel apply. The negative path
+    applies incorrect code, records failed verifier evidence, selects no champion, and creates no
+    delivery. See `docs/reviews/stage-4-real-supervised-execution-proof.md`.
 
 **Verified, not asserted:** every externally reachable command/query above has real HTTP-request
 tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
@@ -451,6 +465,8 @@ Stage 2 additionally exercises all four list operations over the real authentica
 real repository adapters, and real SQLite before and after a brand-new runtime composition.
 Stage 3 additionally exercises approval creation/decision/consumption and the protected plugin
 effect through that same real boundary, including rollback and restart.
+Stage 4 additionally exercises actual Ollama inference and distinct supervised kernel/verifier
+processes; no reference component participates in that explicit profile.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -479,15 +495,20 @@ host omitted `libnspr4`; the successful run used the same reversible Stage 1 lib
 extracted under `/tmp` through `LD_LIBRARY_PATH`. No system or repository dependency was installed.
 `git diff --check` and final static/diff review are recorded in the Stage 3 audit.
 
-**Not yet done — next verified incomplete task after Stage 3:**
+Stage 4 final workspace gate: focused Stage 4/owning-layer verification **52/52 across 11 files**;
+post-reconciliation runtime selection **19/19 across 4 files**; actual installed-Ollama acceptance
+**1/1** (final rerun 22.07 seconds); `pnpm check` PASS with lint at 0 errors (9 existing warnings,
+1 existing info), typecheck 9/9, and **453 passing / 11 skipped (464 total) across 100 passing + 3
+skipped files (103 total)**. The additional default skip is the explicitly opt-in actual-Ollama
+test, which was run separately and passed. Source-size/dependency/explicit-`any` guards pass;
+`job-command-surface.ts` is 498 lines.
 
-- **Real supervised model/verifier/production-kernel execution** — `ReferenceModelGateway`, `ReferenceVerifier`,
-  `ReferenceProductionKernel` are deterministic by design (this session's mandate: prove
-  orchestration without misrepresenting reference capability). Layer 9 already has
-  `SupervisedModelGateway`/`SupervisedProductionKernel` for when a real bound adapter process
-  exists; none is composed into the system-build workflow yet. Stage 4 should bind one real model,
-  an independent deterministic verifier, and a real kernel/tool path through existing ports,
-  including interruption/checkpoint reconciliation, rather than add more generic API/UI surface.
+**Not yet done — next verified incomplete task after Stage 4:**
+
+- **General real coding-production execution** — Stage 4's `stage4.tiny-code` workflow is a proven
+  real vertical slice, not yet a general project-owned build-packet executor. The next system-build
+  task should generalize the same supervised model/kernel/verifier/evidence path to bounded
+  approved workspace operations and repair rounds without creating a second execution framework.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
   `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
   adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked

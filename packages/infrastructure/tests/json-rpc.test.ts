@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
+import type { RpcRemoteError } from "../src/index.js";
 import { JsonRpcClient, JsonRpcFramer, RpcProtocolError } from "../src/index.js";
 
 describe("strict JSON-RPC transport", () => {
@@ -44,5 +45,23 @@ describe("strict JSON-RPC transport", () => {
     ]);
     const client = new JsonRpcClient(child);
     await expect(client.call("echo", {}, 1_000)).rejects.toThrow("Malformed");
+  });
+
+  it("preserves a remote adapter error's bounded retry classification", async () => {
+    const child = spawn(process.execPath, [
+      "-e",
+      "process.stdin.on('data',b=>{const r=JSON.parse(b);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,error:{code:-32000,message:'invalid candidate',retryable:false}})+'\\n')})",
+    ]);
+    const client = new JsonRpcClient(child);
+    try {
+      await expect(client.call("reject", {}, 1_000)).rejects.toMatchObject({
+        name: "RpcRemoteError",
+        code: -32000,
+        message: "invalid candidate",
+        retryable: false,
+      } satisfies Partial<RpcRemoteError>);
+    } finally {
+      child.kill();
+    }
   });
 });

@@ -1,5 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "V31M4_EXECUTION_PROFILE",
+    "V31M4_OLLAMA_ENDPOINT",
+    "V31M4_OLLAMA_MODEL",
+    "V31M4_STAGE4_REAL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

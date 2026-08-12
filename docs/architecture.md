@@ -120,6 +120,12 @@ Timeouts, cancellation, framing/output limits, restart budgets, process cleanup,
 and structured-log redaction are host-enforced. Adapter-facing code cannot own SQLite state or
 retain secret-store implementation access.
 
+The optional local execution composition uses this authority directly: three distinct lazy child
+processes provide loopback Ollama inference, an allowlisted contained production kernel, and an
+independent deterministic verifier. Parent environment inheritance is explicit and allowlisted;
+adapter staging is non-authoritative until runtime-owned bridges promote it through the existing
+artifact/evidence ports.
+
 ## Governed production-gateway authority
 
 Layer 9 implements real-path containment, fail-closed policy evaluation, durable plugin
@@ -138,6 +144,12 @@ The runtime exposes only typed mutation commands. A generic record-write transpo
 it would bypass application invariants and could manufacture governance state. Generic authenticated
 record reads remain a non-mutating observation path; authoritative collection queries are
 relationship-scoped and filter before pagination.
+
+Execution composition is explicit. `hermetic_reference` is the default and keeps core startup
+independent of optional local services. `supervised_local` binds the existing provider-neutral
+ports/gateways to the Stage 4 local children for the allowlisted `stage4.tiny-code` workflow. Both
+profiles enter the same application use cases and authoritative repositories; the profile does not
+create a second state authority or allow an adapter to reach SQLite.
 
 ## Verification authority
 
