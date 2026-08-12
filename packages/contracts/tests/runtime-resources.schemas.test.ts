@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   capabilityScoreSchema,
   deliveryReceiptSchema,
+  listCandidatesRequestSchema,
+  listCandidatesResponseSchema,
   promotionRecordSchema,
 } from "../src/capabilities.schemas.js";
 import { evidenceRecordSchema } from "../src/evidence.schemas.js";
 import { jobSchema, stopJobRequestSchema } from "../src/jobs.schemas.js";
-import { submitMissionRequestSchema } from "../src/missions.schemas.js";
+import {
+  listMissionsRequestSchema,
+  listMissionsResponseSchema,
+  submitMissionRequestSchema,
+} from "../src/missions.schemas.js";
 import { createProjectRequestSchema, projectSchema } from "../src/projects.schemas.js";
 
 const metadata = { schemaVersion: "1.0.0", requestId: "request:1" } as const;
@@ -86,6 +92,129 @@ describe("runtime resource contracts", () => {
       submitMissionRequestSchema.safeParse({
         ...mission,
         requirements: [...mission.requirements, mission.requirements[0]],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("defines strict project-scoped mission and candidate list contracts", () => {
+    expect(
+      listMissionsRequestSchema.parse({
+        ...metadata,
+        projectId: "project:alpha",
+        pagination: { limit: 25 },
+      }),
+    ).toMatchObject({ projectId: "project:alpha", pagination: { limit: 25 } });
+    expect(
+      listMissionsRequestSchema.safeParse({
+        ...metadata,
+        pagination: { limit: 25 },
+      }).success,
+    ).toBe(false);
+    expect(
+      listMissionsRequestSchema.safeParse({
+        ...metadata,
+        projectId: "project:alpha",
+        pagination: { limit: 25 },
+        hidden: true,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      listCandidatesRequestSchema.parse({
+        ...metadata,
+        projectId: "project:alpha",
+        missionId: "mission:1",
+        pagination: { limit: 25 },
+      }),
+    ).toMatchObject({ projectId: "project:alpha", missionId: "mission:1" });
+    expect(
+      listCandidatesRequestSchema.safeParse({
+        ...metadata,
+        missionId: "mission:1",
+        pagination: { limit: 25 },
+      }).success,
+    ).toBe(false);
+
+    const mission = {
+      id: "mission:1",
+      projectId: "project:alpha",
+      title: "List persisted records",
+      objective: "Expose authoritative query results.",
+      requiredOutputs: [{ id: "output:1", kind: "source", description: "Query surface" }],
+      requirements: [
+        {
+          id: "requirement:1",
+          statement: "Return persisted state.",
+          priority: "required",
+          source: "user",
+        },
+      ],
+      constraints: [],
+      acceptanceCriteria: [
+        {
+          id: "criterion:1",
+          statement: "Queries are scoped.",
+          verificationMethod: "integration test",
+          mandatory: true,
+        },
+      ],
+      forbiddenChanges: [],
+      evidenceRequirements: [
+        { criterionId: "criterion:1", requiredEvidenceKinds: ["integration_test"] },
+      ],
+      resourceBudget: {
+        maxWallClockMs: 60_000,
+        maxModelInvocations: 2,
+        maxToolInvocations: 2,
+        maxRepairRounds: 1,
+        maxConcurrentWorkers: 1,
+      },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      revision: 1,
+    } as const;
+    expect(
+      listMissionsResponseSchema.safeParse({
+        ...metadata,
+        missions: [mission],
+        pagination: { total: 1 },
+      }).success,
+    ).toBe(true);
+    expect(
+      listMissionsResponseSchema.safeParse({
+        ...metadata,
+        missions: [mission, mission],
+        pagination: { total: 2 },
+      }).success,
+    ).toBe(false);
+
+    const candidate = {
+      id: "candidate:1",
+      missionId: "mission:1",
+      parentCandidateIds: [],
+      configuration: {
+        modelId: "model:1",
+        strategy: "direct",
+        contextArtifactIds: [],
+        toolIds: [],
+        constraints: [],
+      },
+      responseArtifactId: "artifact:response",
+      outputArtifactIds: ["artifact:output"],
+      original: true,
+      createdAt: "2026-08-11T12:01:00.000Z",
+    } as const;
+    expect(
+      listCandidatesResponseSchema.safeParse({
+        ...metadata,
+        candidates: [candidate],
+        pagination: { total: 1 },
+      }).success,
+    ).toBe(true);
+    expect(
+      listCandidatesResponseSchema.safeParse({
+        ...metadata,
+        candidates: [candidate, candidate],
+        pagination: { total: 2 },
       }).success,
     ).toBe(false);
   });

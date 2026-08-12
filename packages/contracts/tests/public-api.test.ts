@@ -6,7 +6,9 @@ describe("@v31m4/contracts public API", () => {
     expect(contracts.CONTRACT_SCHEMA_VERSION).toBe("1.0.0");
     expect(typeof contracts.createProjectRequestSchema.parse).toBe("function");
     expect(typeof contracts.submitMissionRequestSchema.parse).toBe("function");
+    expect(typeof contracts.listMissionsRequestSchema.parse).toBe("function");
     expect(typeof contracts.jobSchema.parse).toBe("function");
+    expect(typeof contracts.listCandidatesRequestSchema.parse).toBe("function");
     expect(typeof contracts.evidenceRecordSchema.parse).toBe("function");
     expect(typeof contracts.capabilityProfileSchema.parse).toBe("function");
     expect(typeof contracts.modelProfileSchema.parse).toBe("function");

@@ -47,6 +47,7 @@ import {
   VerificationResultId,
 } from "@v31m4/domain";
 import { SqliteRecordStore, type SqliteRuntimeDatabase } from "@v31m4/infrastructure";
+import { listPersistedRecords } from "./record-listing.js";
 
 const CANDIDATE_TYPE = "candidate";
 const ISSUE_TYPE = "issue";
@@ -54,34 +55,6 @@ const REPAIR_TYPE = "repair";
 const CHAMPION_DECISION_TYPE = "champion-decision";
 const DELIVERY_RECEIPT_TYPE = "delivery-receipt";
 const EVIDENCE_TYPE = "evidence";
-
-function listByType<Value>(
-  database: SqliteRuntimeDatabase,
-  recordType: string,
-  request: PortPageRequest,
-): PortPage<Versioned<Value>> {
-  const offset = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is malformed.");
-  }
-  const rows = database.connection
-    .prepare(
-      "SELECT revision, body FROM records WHERE record_type = ? ORDER BY rowid ASC LIMIT ? OFFSET ?",
-    )
-    .all(recordType, request.limit + 1, offset) as { revision: number; body: string }[];
-  const page = rows.slice(0, request.limit);
-  const items = page.map((row) =>
-    Object.freeze({ value: JSON.parse(row.body) as Value, revision: String(row.revision) }),
-  );
-  const total = database.connection
-    .prepare("SELECT COUNT(*) AS count FROM records WHERE record_type = ?")
-    .get(recordType) as { count: number };
-  return Object.freeze({
-    items: Object.freeze(items),
-    total: total.count,
-    ...(rows.length > request.limit ? { nextCursor: String(offset + request.limit) } : {}),
-  });
-}
 
 /** `CandidateRepositoryPort` backed by the generic record store: five related record types
  * (candidate/issue/repair/champion-decision/delivery-receipt), all thin wrappers. */
@@ -97,9 +70,12 @@ export class SqliteCandidateRepository implements CandidateRepositoryPort {
     missionId: string,
     request: PortPageRequest,
   ): Promise<PortPage<Versioned<SolverCandidate>>> {
-    const page = listByType<SolverCandidate>(this.database, CANDIDATE_TYPE, request);
-    const items = page.items.filter((entry) => entry.value.missionId === missionId);
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<SolverCandidate>(
+      this.database,
+      CANDIDATE_TYPE,
+      request,
+      (candidate) => candidate.missionId === missionId,
+    );
   }
   async appendCandidate(
     candidate: SolverCandidate,
@@ -115,9 +91,12 @@ export class SqliteCandidateRepository implements CandidateRepositoryPort {
     candidateId: string,
     request: PortPageRequest,
   ): Promise<PortPage<Versioned<IssueRecord>>> {
-    const page = listByType<IssueRecord>(this.database, ISSUE_TYPE, request);
-    const items = page.items.filter((entry) => entry.value.candidateId === candidateId);
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<IssueRecord>(
+      this.database,
+      ISSUE_TYPE,
+      request,
+      (issue) => issue.candidateId === candidateId,
+    );
   }
   async saveIssue(
     issue: IssueRecord,
@@ -178,19 +157,16 @@ export class SqliteEvidenceRepository implements EvidenceRepositoryPort {
     return this.#records.get<EvidenceRecord>(EVIDENCE_TYPE, id);
   }
   async list(query: EvidenceQuery): Promise<PortPage<Versioned<EvidenceRecord>>> {
-    const page = listByType<EvidenceRecord>(this.database, EVIDENCE_TYPE, query);
-    const items = page.items
-      .filter((entry) => query.projectId === undefined || entry.value.projectId === query.projectId)
-      .filter((entry) => query.jobId === undefined || entry.value.jobId === query.jobId)
-      .filter(
-        (entry) => query.subjectType === undefined || entry.value.subjectType === query.subjectType,
-      )
-      .filter((entry) => query.subjectId === undefined || entry.value.subjectId === query.subjectId)
-      .filter(
-        (entry) => query.statuses === undefined || query.statuses.includes(entry.value.status),
-      )
-      .filter((entry) => query.kinds === undefined || query.kinds.includes(entry.value.kind));
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<EvidenceRecord>(this.database, EVIDENCE_TYPE, query, (evidence) => {
+      if (query.projectId !== undefined && evidence.projectId !== query.projectId) return false;
+      if (query.jobId !== undefined && evidence.jobId !== query.jobId) return false;
+      if (query.subjectType !== undefined && evidence.subjectType !== query.subjectType) {
+        return false;
+      }
+      if (query.subjectId !== undefined && evidence.subjectId !== query.subjectId) return false;
+      if (query.statuses !== undefined && !query.statuses.includes(evidence.status)) return false;
+      return query.kinds === undefined || query.kinds.includes(evidence.kind);
+    });
   }
   async append(
     record: EvidenceRecord,

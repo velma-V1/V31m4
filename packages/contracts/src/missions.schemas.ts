@@ -7,8 +7,11 @@ import {
   canonicalIdSchema,
   canonicalNameSchema,
   canonicalStatementSchema,
+  hasUniqueStrings,
   isoDateTimeSchema,
   missionIdSchema,
+  paginationRequestSchema,
+  paginationResultSchema,
   projectIdSchema,
   requirementIdSchema,
   resourceBudgetSchema,
@@ -214,6 +217,31 @@ export const getMissionResponseSchema = z
   })
   .strict();
 
+export const listMissionsRequestSchema = z
+  .object({
+    ...apiRequestMetadataShape,
+    projectId: projectIdSchema,
+    pagination: paginationRequestSchema,
+  })
+  .strict();
+
+export const listMissionsResponseSchema = z
+  .object({
+    ...apiResponseMetadataShape,
+    missions: z.array(missionContractSchema).max(500),
+    pagination: paginationResultSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!hasUniqueStrings(value.missions.map((mission) => mission.id))) {
+      context.addIssue({
+        code: "custom",
+        message: "Missions must be unique.",
+        path: ["missions"],
+      });
+    }
+  });
+
 export type RequirementPriorityPayload = z.infer<typeof requirementPrioritySchema>;
 export type RequirementSourcePayload = z.infer<typeof requirementSourceSchema>;
 export type RequirementPayload = z.infer<typeof requirementSchema>;
@@ -227,3 +255,5 @@ export type SubmitMissionRequest = z.infer<typeof submitMissionRequestSchema>;
 export type SubmitMissionResponse = z.infer<typeof submitMissionResponseSchema>;
 export type GetMissionRequest = z.infer<typeof getMissionRequestSchema>;
 export type GetMissionResponse = z.infer<typeof getMissionResponseSchema>;
+export type ListMissionsRequest = z.infer<typeof listMissionsRequestSchema>;
+export type ListMissionsResponse = z.infer<typeof listMissionsResponseSchema>;

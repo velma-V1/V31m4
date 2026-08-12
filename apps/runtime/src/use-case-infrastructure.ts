@@ -45,6 +45,7 @@ import {
 } from "@v31m4/infrastructure";
 import type { ZodType } from "zod";
 import type { EventStreamCoordinator } from "./event-stream.js";
+import { listPersistedRecords } from "./record-listing.js";
 
 const PROJECT_TYPE = "project";
 const MISSION_TYPE = "mission";
@@ -104,34 +105,6 @@ export class SystemClock implements ClockPort {
   }
 }
 
-function listByType<Value>(
-  database: SqliteRuntimeDatabase,
-  recordType: string,
-  request: PortPageRequest,
-): PortPage<Versioned<Value>> {
-  const offset = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is malformed.");
-  }
-  const rows = database.connection
-    .prepare(
-      "SELECT revision, body FROM records WHERE record_type = ? ORDER BY rowid ASC LIMIT ? OFFSET ?",
-    )
-    .all(recordType, request.limit + 1, offset) as { revision: number; body: string }[];
-  const page = rows.slice(0, request.limit);
-  const items = page.map((row) =>
-    Object.freeze({ value: JSON.parse(row.body) as Value, revision: String(row.revision) }),
-  );
-  const total = database.connection
-    .prepare("SELECT COUNT(*) AS count FROM records WHERE record_type = ?")
-    .get(recordType) as { count: number };
-  return Object.freeze({
-    items: Object.freeze(items),
-    total: total.count,
-    ...(rows.length > request.limit ? { nextCursor: String(offset + request.limit) } : {}),
-  });
-}
-
 /** `ProjectRepositoryPort` backed by the runtime's generic content-addressed-by-id record store. */
 export class SqliteProjectRepository implements ProjectRepositoryPort {
   readonly #records: SqliteRecordStore;
@@ -142,7 +115,7 @@ export class SqliteProjectRepository implements ProjectRepositoryPort {
     return this.#records.get<Project>(PROJECT_TYPE, id);
   }
   async list(request: PortPageRequest): Promise<PortPage<Versioned<Project>>> {
-    return listByType<Project>(this.database, PROJECT_TYPE, request);
+    return listPersistedRecords<Project>(this.database, PROJECT_TYPE, request);
   }
   async save(
     project: Project,
@@ -167,9 +140,12 @@ export class SqliteMissionRepository implements MissionRepositoryPort {
     projectId: string,
     request: PortPageRequest,
   ): Promise<PortPage<Versioned<MissionContract>>> {
-    const page = listByType<MissionContract>(this.database, MISSION_TYPE, request);
-    const items = page.items.filter((entry) => entry.value.projectId === projectId);
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<MissionContract>(
+      this.database,
+      MISSION_TYPE,
+      request,
+      (mission) => mission.projectId === projectId,
+    );
   }
   async append(
     mission: MissionContract,
@@ -190,18 +166,11 @@ export class SqliteJobRepository implements JobRepositoryPort {
     return this.#records.get<Job>(JOB_TYPE, id);
   }
   async list(filter: JobListFilter): Promise<PortPage<Versioned<Job>>> {
-    const page = listByType<Job>(this.database, JOB_TYPE, filter);
-    const items = page.items
-      .filter(
-        (entry) => filter.projectId === undefined || entry.value.projectId === filter.projectId,
-      )
-      .filter(
-        (entry) => filter.missionId === undefined || entry.value.missionId === filter.missionId,
-      )
-      .filter(
-        (entry) => filter.statuses === undefined || filter.statuses.includes(entry.value.status),
-      );
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<Job>(this.database, JOB_TYPE, filter, (job) => {
+      if (filter.projectId !== undefined && job.projectId !== filter.projectId) return false;
+      if (filter.missionId !== undefined && job.missionId !== filter.missionId) return false;
+      return filter.statuses === undefined || filter.statuses.includes(job.status);
+    });
   }
   async save(
     job: Job,
@@ -222,7 +191,9 @@ export class SqliteJobRepository implements JobRepositoryPort {
     return this.#records.get<Checkpoint>(CHECKPOINT_TYPE, id);
   }
   async getLatestVerifiedCheckpoint(jobId: JobId): Promise<Versioned<Checkpoint> | null> {
-    const page = listByType<Checkpoint>(this.database, CHECKPOINT_TYPE, { limit: 10_000 });
+    const page = listPersistedRecords<Checkpoint>(this.database, CHECKPOINT_TYPE, {
+      limit: 10_000,
+    });
     const candidates = page.items
       .filter((entry) => entry.value.jobId === jobId && entry.value.verified)
       .sort((a, b) => Date.parse(b.value.createdAt) - Date.parse(a.value.createdAt));
@@ -327,7 +298,7 @@ export class SqliteApprovalStore implements ApprovalStorePort {
     status: ApprovalStatus | undefined,
     request: PortPageRequest,
   ): Promise<PortPage<Versioned<ApprovalRequest>>> {
-    const page = listByType<ApprovalRequest>(this.database, APPROVAL_TYPE, request);
+    const page = listPersistedRecords<ApprovalRequest>(this.database, APPROVAL_TYPE, request);
     if (status === undefined) return page;
     const items = page.items.filter((entry) => entry.value.status === status);
     return Object.freeze({ ...page, items: Object.freeze(items) });
@@ -369,7 +340,7 @@ export class SqliteAuditStore implements AuditStorePort {
     await this.#records.append(AUDIT_TYPE, record.id, record, transaction);
   }
   async list(query: AuditQuery): Promise<PortPage<AuditRecord>> {
-    const page = listByType<AuditRecord>(this.database, AUDIT_TYPE, query);
+    const page = listPersistedRecords<AuditRecord>(this.database, AUDIT_TYPE, query);
     const items = page.items
       .map((entry) => entry.value)
       .filter((record) => query.action === undefined || record.action === query.action)

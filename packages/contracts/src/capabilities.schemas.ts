@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   addDuplicateStringIssue,
+  apiRequestMetadataShape,
+  apiResponseMetadataShape,
   artifactIdSchema,
   candidateIdSchema,
   canonicalIdSchema,
@@ -9,10 +11,14 @@ import {
   championDecisionIdSchema,
   deliveryReceiptIdSchema,
   evidenceIdSchema,
+  hasUniqueStrings,
   isoDateTimeSchema,
   issueIdSchema,
   missionIdSchema,
   modelIdSchema,
+  paginationRequestSchema,
+  paginationResultSchema,
+  projectIdSchema,
   repairIdSchema,
   toolIdSchema,
   verificationPlanIdSchema,
@@ -94,6 +100,32 @@ export const solverCandidateSchema = z
         code: "custom",
         message: "Original candidates have no parents; reconstructed candidates require parents.",
         path: ["original"],
+      });
+    }
+  });
+
+export const listCandidatesRequestSchema = z
+  .object({
+    ...apiRequestMetadataShape,
+    projectId: projectIdSchema,
+    missionId: missionIdSchema,
+    pagination: paginationRequestSchema,
+  })
+  .strict();
+
+export const listCandidatesResponseSchema = z
+  .object({
+    ...apiResponseMetadataShape,
+    candidates: z.array(solverCandidateSchema).max(500),
+    pagination: paginationResultSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!hasUniqueStrings(value.candidates.map((candidate) => candidate.id))) {
+      context.addIssue({
+        code: "custom",
+        message: "Candidates must be unique.",
+        path: ["candidates"],
       });
     }
   });
@@ -335,6 +367,8 @@ export const deliveryReceiptSchema = z
 
 export type SolverConfigurationPayload = z.infer<typeof solverConfigurationSchema>;
 export type SolverCandidatePayload = z.infer<typeof solverCandidateSchema>;
+export type ListCandidatesRequest = z.infer<typeof listCandidatesRequestSchema>;
+export type ListCandidatesResponse = z.infer<typeof listCandidatesResponseSchema>;
 export type VerificationPlanPayload = z.infer<typeof verificationPlanSchema>;
 export type VerificationResultPayload = z.infer<typeof verificationResultSchema>;
 export type IssueRecordPayload = z.infer<typeof issueRecordSchema>;

@@ -203,6 +203,17 @@ export function createRuntimeServer(composition: RuntimeComposition): Server {
       return;
     }
 
+    if (method === "POST" && segments[0] === "queries" && segments.length === 2) {
+      const context = authenticator.contextFor(principal, {
+        ...identity,
+        idempotencyKey: identity.requestId,
+      });
+      const payload = await readJsonBody(request, config.maxRequestBytes);
+      const result = await service.query(segments[1] as string, payload, context);
+      respondJson(response, 200, { result });
+      return;
+    }
+
     if (method === "GET" && segments[0] === "records" && segments.length === 3) {
       const record = await service.getRecord(segments[1] as string, segments[2] as string);
       respondJson(response, 200, { record });

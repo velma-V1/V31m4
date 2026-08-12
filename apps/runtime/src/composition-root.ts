@@ -70,6 +70,7 @@ import {
   SqliteCandidateRepository,
   SqliteEvidenceRepository,
 } from "./job-execution-infrastructure.js";
+import { registerListQueries } from "./list-query-surface.js";
 import type { RuntimeConfig } from "./runtime-config.js";
 import {
   parseCommandPayload,
@@ -125,6 +126,12 @@ export type DirectCommandHandler = (
   context: OperationContext,
 ) => Promise<ApplicationJsonValue>;
 
+/** An authenticated, read-only query over authoritative runtime state. */
+export type QueryHandler = (
+  payload: ApplicationJsonValue,
+  context: OperationContext,
+) => Promise<ApplicationJsonValue>;
+
 /**
  * Command and query surface for the runtime. Most commands run through the
  * {@link ExternalCommandExecutor} so the external-command idempotency contract holds for the whole
@@ -135,6 +142,7 @@ export type DirectCommandHandler = (
 export class RuntimeService {
   readonly #handlers = new Map<string, CommandHandler>();
   readonly #directHandlers = new Map<string, DirectCommandHandler>();
+  readonly #queryHandlers = new Map<string, QueryHandler>();
 
   constructor(
     private readonly executor: ExternalCommandExecutor,
@@ -147,6 +155,10 @@ export class RuntimeService {
 
   registerDirect(commandType: string, handler: DirectCommandHandler): void {
     this.#directHandlers.set(commandType, handler);
+  }
+
+  registerQuery(queryType: string, handler: QueryHandler): void {
+    this.#queryHandlers.set(queryType, handler);
   }
 
   async dispatch(
@@ -172,6 +184,20 @@ export class RuntimeService {
       context,
       (transaction) => handler(payload, context, transaction),
     );
+  }
+
+  async query(
+    queryType: string,
+    payload: ApplicationJsonValue,
+    context: OperationContext,
+  ): Promise<ApplicationJsonValue> {
+    const handler = this.#queryHandlers.get(queryType);
+    if (handler === undefined) {
+      throw new ApplicationError("UNSUPPORTED_OPERATION", "Unknown query type.", {
+        details: { queryType },
+      });
+    }
+    return handler(payload, context);
   }
 
   async getRecord(recordType: string, recordId: string): Promise<ApplicationJsonValue> {
@@ -392,6 +418,13 @@ export function buildComposition(
   const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(workspacesRoot);
   const candidates: CandidateRepositoryPort = new SqliteCandidateRepository(database);
   const evidenceRepo: EvidenceRepositoryPort = new SqliteEvidenceRepository(database);
+  registerListQueries(service, {
+    projects,
+    missions,
+    jobs,
+    candidates,
+    evidence: evidenceRepo,
+  });
 
   // job.start is a DirectCommandHandler, not a CommandHandler: startJob opens its own create+queue
   // transaction, then calls the (here, reference) production kernel outside any transaction - Layer

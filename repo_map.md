@@ -107,6 +107,7 @@ per-tool capability matrix.
 | `job.execute`'s verifier (`ReferenceVerifier`) | Reference-minimal — a real check (declared output artifact exists with real bytes), not real test/build/lint execution |
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
+| `mission.list` / `job.list` / `candidate.list` / `evidence.list` query surface | VERIFIED — authenticated strict `POST /queries/:type`, existing Layer 4 repositories, relationship validation, filtered pagination, valid empty/error/auth behavior, and persisted restart-stable results |
 | Operator UI browser-driven proof | VERIFIED — Playwright Chromium drives the authenticated full workflow, rendered results/events, runtime restart + SSE cursor resume, durable job readback, and a visible unauthenticated-command denial |
 
 ### Verified application-service behavior
@@ -141,6 +142,13 @@ per-tool capability matrix.
   header regression. Chromium used three Ubuntu shared-library packages extracted reversibly under
   `/tmp` because the target WSL image lacks those libraries and sudo authentication was unavailable;
   no system or repository binary installation was performed.
+- **Stage 2 current full workspace regression (re-run 2026-08-11):** **413 passing cases / 10
+  skipped (423 total) across 91 passing + 2 skipped test files (93 total)**. Stage 2 adds one strict
+  mission/candidate list-contract case and two real HTTP + real SQLite query cases. The focused
+  Stage 2 selection is 10/10 across 3 files; the complete owning contract/runtime selection is
+  83/83 across 21 files. The integration proof exposed and protects the relationship-filter-before-
+  pagination correction for mission/job/candidate/evidence items, totals, offsets, and cursors,
+  plus exact rejection of partially numeric pagination cursors.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:
@@ -183,9 +191,9 @@ per-tool capability matrix.
 
 ### Native gate status
 
-All native gates are green across the full post-core workspace (re-run 2026-08-11 for Stage 1):
+All native gates are green across the full post-core workspace (re-run 2026-08-11 for Stage 2):
 `pnpm check` PASS — `pnpm lint` 0 errors (9 pre-existing warnings, 1 pre-existing info), `pnpm
-typecheck` 9/9, and `pnpm test` **410 passing / 10 skipped across 90 passing + 2 skipped test
+typecheck` 9/9, and `pnpm test` **413 passing / 10 skipped across 91 passing + 2 skipped test
 files**. Browser execution used the reversible `/tmp` shared-library setup recorded in
 `docs/current-state.md`; `V31M4_TARGET_HOST` was not set. The frozen L1–10 core
 subset, as audited at `78dc2b7` (historical), was 340 cases / 71 files at 5/5. The repo-wide Biome formatting debt from the
@@ -219,6 +227,6 @@ not yet executed or adapter-integrated for V31M4; Summer (the Game department's 
 platform per
 `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) is not installed on
 the current target machine. Within the system-build program (`apps/runtime`): P0 direct-command
-idempotency repair, P1 negative-verification-path/evidence-durable-readback proof, and Stage 1
-Browser UI Proof are complete. The next incomplete system-build item is the list/query command
-surface recorded in `docs/current-state.md`; Stage 2 has not started.
+idempotency repair, P1 negative-verification-path/evidence-durable-readback proof, Stage 1 Browser
+UI Proof, and Stage 2 List/Query Surface are complete. The next incomplete system-build item is the
+approval-flow proof recorded in `docs/current-state.md`; Stage 3 has not started.

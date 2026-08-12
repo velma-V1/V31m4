@@ -279,21 +279,22 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
-   - **System-assembly program (started 2026-08-09, current through Stage 1 Browser UI Proof):**
+   - **System-assembly program (started 2026-08-09, current through Stage 2 List/Query Surface):**
      turned the verified backend into a runnable, operable system: a genuine end-to-end mission
      flow, a real idempotency-defect repair, a real champion-decision-defect repair,
-     negative-verification-path proof, evidence-durable-readback proof, and a real-browser operator
-     workflow. Stage 1 is complete; the next verified incomplete task is list/query commands. See
+     negative-verification-path proof, evidence-durable-readback proof, a real-browser operator
+     workflow, and authoritative persisted collection queries. Stage 2 is complete; the next
+     verified incomplete task is approval-flow proof. See
      "System build" below for exactly what's done and what remains — do not re-derive this from the
      git log; the section below is the authoritative summary.
 
-## System build (2026-08-09 → 2026-08-11) — vertical slice, correctness hardening, and browser proof
+## System build (2026-08-09 → 2026-08-11) — vertical slice, correctness hardening, browser proof, and persisted queries
 
 Turned the verified L1–10 core + post-core departments into a runnable, operable system, reached a
 genuine end-to-end mission flow, then hardened it: a real idempotency defect and a real
 champion-decision defect were found and fixed, both with regression evidence. The first twelve
 commits were independently full-gate-verified and pushed, `09cc9df` → `86c3d1a`; Stage 1 Browser
-UI Proof is the next coherent commit:
+UI Proof and Stage 2 List/Query Surface are the next coherent commits:
 
 1. **`pnpm dev` is a real, verified boot path.** `scripts/dev.mjs` creates `runtime-data/`
    (gitignored), generates/persists a local dev session token, runs `apps/runtime/src/main.ts` via
@@ -398,12 +399,31 @@ UI Proof is the next coherent commit:
     regression first reproduced the timeout; `response.flushHeaders()` in
     `apps/runtime/src/api/server.ts` is the minimal fix and now establishes an authenticated idle
     stream immediately. No other production defect was demonstrated.
+14. **Stage 2: List/Query Surface (2026-08-11)** — the runtime now exposes authenticated,
+    read-only `POST /queries/mission.list`, `job.list`, `candidate.list`, and `evidence.list`
+    operations. Requests use strict `1.0.0` metadata and existing pagination/error conventions;
+    mission lists require a project, candidate lists require an agreeing project+mission, job
+    lists support their existing project/mission/status filters, and evidence lists use their
+    existing required project plus optional job/kind/status/subject filters. Runtime handlers
+    validate referenced project/mission/job relationships before calling the existing Layer 4
+    repositories, then validate typed response contracts. The real HTTP + real SQLite regression
+    proves authenticated results, valid empty collections, invalid input, fail-closed missing
+    authentication, cross-project non-disclosure, cursor and offset pagination, restart-stable
+    persisted results, and unchanged generic get-by-id reads. The test exposed two real adapter
+    defects. First, mission/job/candidate/evidence repositories applied their relationship predicates
+    after SQL `LIMIT/OFFSET`, so an unrelated earlier record could create an empty page and the
+    unfiltered total leaked the global record count. The shared runtime `listPersistedRecords`
+    helper now filters before slicing and derives totals/cursors from only the matching collection.
+    Second, the prior `Number.parseInt` cursor parser silently accepted a partially numeric value
+    such as `1junk`; cursor parsing now requires an exact non-negative decimal safe integer.
 
 **Verified, not asserted:** every command above has real HTTP-request tests against a real server
 + real SQLite (happy path, auth/policy denial, malformed payload, idempotent retry, not-found), and
 was *also* smoke-tested through the actual `pnpm dev` process via `curl`, not just the test harness.
 Stage 1 additionally drives the complete workflow through a real Chromium browser and asserts the
 rendered UI plus SSE/restart behavior rather than inferring browser behavior from HTTP bytes.
+Stage 2 additionally exercises all four list operations over the real authenticated HTTP boundary,
+real repository adapters, and real SQLite before and after a brand-new runtime composition.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -417,11 +437,14 @@ unavailable, so the real browser runs used the Playwright-downloaded Chromium wi
 `libnspr4`, `libnss3`, and `libasound2t64` extracted reversibly under `/tmp` and supplied through
 `LD_LIBRARY_PATH`; no system packages or repository binaries were installed.
 
-**Not yet done — next verified incomplete task after Stage 1:**
+Stage 2 workspace gate re-run on 2026-08-11: focused Stage 2 contract/runtime verification
+**10/10 across 3 files**; complete owning contract/runtime regression **83/83 across 21 files**;
+`pnpm check` PASS with lint at 0 errors (9 pre-existing warnings, 1 pre-existing info), typecheck
+9/9, and **413 passing / 10 skipped (423 total) across 91 passing + 2 skipped test files**.
+`git diff --check` is required again immediately before the Stage 2 commit.
 
-- **List/query commands** for missions/jobs/candidates/evidence by project or mission (only
-  get-by-id exists, via the generic `/records/:type/:id` route) — the ports already support
-  listing internally (`listByProject`, `listCandidates`, etc.); no HTTP command exposes it yet.
+**Not yet done — next verified incomplete task after Stage 2:**
+
 - **Approval flow** — `ApprovalStorePort` is wired (`SqliteApprovalStore`) but never exercised: the
   one policy rule in place (`operator-project-actions`) always resolves to `allow`, so
   `authorizeAction`'s `require_approval`/consume path has no real command reaching it yet.
