@@ -13,6 +13,7 @@ export * from "./gateways/supervised-kernel-gateway.js";
 export * from "./gateways/supervised-model-gateway.js";
 export * from "./gateways/supervised-tool-gateway.js";
 export * from "./logging/redacted-logger.js";
+export * from "./pagination-cursor.js";
 export * from "./paths/path-policy.js";
 export * from "./plugins/sqlite-plugin-registry.js";
 export * from "./policy/rule-based-policy-engine.js";

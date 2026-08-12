@@ -26,7 +26,9 @@ import {
   type PaginationRequest,
 } from "@v31m4/contracts";
 import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/domain";
+import { parsePaginationCursor } from "@v31m4/infrastructure";
 import type { RuntimeService } from "./composition-root.js";
+import { collectCompleteModelCatalog } from "./model-catalog.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
 
 export interface ListQueryDependencies {
@@ -106,20 +108,14 @@ export function registerListQueries(
 ): void {
   service.registerQuery("model.list", async (payload, context) => {
     const request = parseCommandPayload(listModelsRequestSchema, payload);
-    const all = await dependencies.models.list({ limit: 500 }, context);
-    const filtered = all.items.filter(
+    const all = await collectCompleteModelCatalog(dependencies.models, context);
+    const filtered = all.filter(
       (profile) =>
         (request.status === undefined || profile.status === request.status) &&
         (request.local === undefined || profile.local === request.local) &&
         (request.modality === undefined || profile.supportedModalities.includes(request.modality)),
     );
-    const start =
-      request.pagination.cursor === undefined
-        ? (request.pagination.offset ?? 0)
-        : Number(request.pagination.cursor);
-    if (!Number.isSafeInteger(start) || start < 0) {
-      throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is invalid.");
-    }
+    const start = request.pagination.offset ?? parsePaginationCursor(request.pagination.cursor);
     const models = filtered.slice(start, start + request.pagination.limit);
     const next = start + request.pagination.limit;
     return listModelsResponseSchema.parse({

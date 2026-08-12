@@ -197,10 +197,13 @@ export interface RuntimeComposition {
  * HTTP-facing input, so it cannot be activated by normal runtime operation. `verifierFactory`
  * lets tests inject a deterministic verifier (e.g. one that always fails) in place of the real
  * `ReferenceVerifier` to exercise job.execute's negative-verification path without making
- * `ReferenceVerifier` itself nondeterministic or environment-dependent.
+ * `ReferenceVerifier` itself nondeterministic or environment-dependent. `modelGatewayDecorator`
+ * supplies adversarial provider pagination without creating a production configuration path or a
+ * second model authority.
  */
 export interface CompositionOverrides {
   readonly verifierFactory?: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
+  readonly modelGatewayDecorator?: (gateway: ModelGatewayPort) => ModelGatewayPort;
   readonly interruptAfterKernelEffect?: boolean;
   readonly interruptAfterRepairKernelEffect?: boolean;
 }
@@ -409,6 +412,12 @@ export function buildComposition(
     const referenceFactory =
       overrides.verifierFactory ?? ((store, projectId) => new ReferenceVerifier(store, projectId));
     verifierFactory = (projectId) => referenceFactory(artifacts, projectId);
+  }
+  if (overrides.modelGatewayDecorator !== undefined) {
+    const decorate = overrides.modelGatewayDecorator;
+    const baseFactory = modelFactory;
+    modelCatalog = decorate(modelCatalog);
+    modelFactory = (projectId) => decorate(baseFactory(projectId));
   }
   registerListQueries(service, {
     projects,

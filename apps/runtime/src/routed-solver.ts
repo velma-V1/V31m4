@@ -9,6 +9,7 @@ import {
 } from "@v31m4/application";
 import type { ModelId, SolverCandidate, SolverConfiguration } from "@v31m4/domain";
 import { createJobModelConfiguration } from "./job-verification-plan.js";
+import { collectCompleteModelCatalog } from "./model-catalog.js";
 
 export interface RoutedSolverResult {
   readonly candidate: SolverCandidate;
@@ -25,9 +26,9 @@ export async function runRoutedSolver(
   },
   context: OperationContext,
 ): Promise<RoutedSolverResult> {
-  const catalog = await dependencies.models.list({ limit: 500 }, context);
+  const catalog = await collectCompleteModelCatalog(dependencies.models, context);
   const routing = routeModels({
-    profiles: catalog.items,
+    profiles: catalog,
     requiredModality: "text",
     requiredCapabilityId: "software.coding",
     minimumContextTokens: 0,

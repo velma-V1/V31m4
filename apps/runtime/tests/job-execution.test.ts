@@ -5,7 +5,9 @@ import { DatabaseSync } from "node:sqlite";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
+import type { CompositionOverrides } from "../src/composition-root.js";
 import { createRuntimeConfig, type RuntimeConfig } from "../src/runtime-config.js";
+import { AFTER_FIRST_PAGE_MODEL_ID, PagedModelGateway } from "./paged-model-gateway-fixture.js";
 
 const OPERATOR_TOKEN = "token-abcdefghijklmnop";
 
@@ -24,9 +26,9 @@ function testConfig(databasePath: string): RuntimeConfig {
   });
 }
 
-async function startTestRuntime(): Promise<TestRuntime> {
+async function startTestRuntime(overrides?: CompositionOverrides): Promise<TestRuntime> {
   const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-job-exec-")), "state.db");
-  const runtime = await startRuntime(testConfig(databasePath));
+  const runtime = await startRuntime(testConfig(databasePath), overrides);
   return { runtime, base: `http://127.0.0.1:${runtime.address.port}`, databasePath };
 }
 
@@ -105,6 +107,23 @@ async function createProjectMissionJob(
 }
 
 describe("job.execute command (full vertical slice)", () => {
+  it("routes to an eligible model after provider page one and records its provenance", async () => {
+    const { runtime, base } = await startTestRuntime({
+      modelGatewayDecorator: (gateway) => new PagedModelGateway(gateway),
+    });
+    try {
+      const { jobId } = await createProjectMissionJob(base, "paged-model");
+      const response = await command(base, "job.execute", "paged-model-execute", { jobId });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        result: { candidate: { configuration: { modelId: string } } };
+      };
+      expect(body.result.candidate.configuration.modelId).toBe(AFTER_FIRST_PAGE_MODEL_ID);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("runs solver -> verify -> select-champion -> deliver through the real use cases and completes the job", async () => {
     const { runtime, base } = await startTestRuntime();
     try {

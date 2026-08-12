@@ -43,7 +43,7 @@
 | `/packages/infrastructure/src/policy` | Policy infrastructure | Layer 9 fail-closed rule-based policy engine |
 | `/packages/infrastructure/src/plugins` | Plugin infrastructure | Layer 9 durable plugin registry implementation |
 | `/packages/infrastructure/src/gateways` | Governed execution infrastructure | Layer 9 provider-neutral supervised model/tool/production-kernel gateways |
-| `/packages/infrastructure/src/pagination-cursor.ts` | Infrastructure boundary support | Exact canonical safe-integer parsing shared by infrastructure list adapters |
+| `/packages/infrastructure/src/pagination-cursor.ts` | Infrastructure boundary support | Exact canonical safe-integer parsing shared by infrastructure list adapters and runtime external pagination |
 | `/packages/infrastructure/tests` | Infrastructure verification | Layers 7–10 persistence/process/gateway/replay integration and failure-path tests |
 | `/apps/runtime` | Authoritative runtime | Layer 10 composition, local auth, typed command/query/event HTTP routes, idempotent external commands, durable replay, resumable SSE, recovery, and shutdown |
 | `/apps/runtime/src/composition-root.ts` | Runtime composition | The one place concrete adapters, policy rules, and command/query surfaces are assembled; owns the test-only `CompositionOverrides` seam and exposes no generic authoritative write command |
@@ -51,6 +51,7 @@
 | `/apps/runtime/src/supervised` | Runtime supervised boundary | Optional local profile composition, authoritative prompt/model/report artifact promotion, contained project-copy/current-context preparation, bounded kernel work-product materialization, evidence-driven repair orchestration/checkpoint reconciliation, and independent verifier evidence translation |
 | `/apps/runtime/src/approval-surface.ts` | Runtime governance boundary | Strict `plugin.register`, `approval.decide`, and `approval.list` registration over existing policy/approval/audit/plugin ports |
 | `/apps/runtime/src/list-query-surface.ts` | Runtime query boundary | Strict authenticated `model.list`, `mission.list`, `job.list`, `candidate.list`, and `evidence.list` registration, filter-before-pagination, relationship validation, existing-port dispatch, and typed response shaping |
+| `/apps/runtime/src/model-catalog.ts` | Runtime model query support | Shared bounded complete-catalog traversal over opaque `ModelGatewayPort` pagination, with malformed totals/cursors, cycles, duplicates, and resource exhaustion refused before query filtering or routing |
 | `/apps/runtime/src/record-listing.ts` | Runtime persistence adapter support | Shared relationship-filter-before-pagination implementation so record items, totals, and cursors remain inside the requested authoritative boundary |
 | `/apps/runtime/src/use-case-infrastructure.ts` | Runtime adapters | Layer 4 port adapters backing real use-case commands and project/mission/job queries: SQLite repositories, event bus, `ReferenceProductionKernel`, approval/audit stores, `passthroughUnitOfWork` |
 | `/apps/runtime/src/job-execution-infrastructure.ts` | Runtime adapters | Candidate/evidence SQLite repositories backing execution and list queries, real isolated workspace filesystem (`LocalWorkspaceManager`), and the `ReferenceModelGateway`/`ReferenceVerifier` reference adapters driving `job.execute` |

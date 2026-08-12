@@ -25,7 +25,7 @@
 |---|---|---|---|
 | 1 General Real Coding Production | VERIFIED_COMPLETE | `feat: generalize supervised coding production` | `108c5571217ce2656bfdcd04ef651d232bb8b01d` |
 | 2 Autonomous Verified Repair | VERIFIED_COMPLETE | `feat: add verified autonomous repair rounds` | `60202d40b064254b5d802c1e065cd89f993bd20d` |
-| 3 Measured Model Routing | VERIFIED_COMPLETE | `feat: add measured model routing` | pending publication |
+| 3 Measured Model Routing | VERIFIED_COMPLETE | `feat: add measured model routing` + pagination correction | `23aecdec3d272a48433757ca15488821cd937ea8` + correction commit |
 | 4 General Tool Execution Plane | NOT_STARTED | — | — |
 | 5 Controlled Self-Improvement | NOT_STARTED | — | — |
 | 6 Model Expansion Laboratory | NOT_STARTED | — | — |
@@ -97,7 +97,7 @@
 - [x] Write RED discovery/routing/escalation/budget/provenance tests with two complete provider-neutral profiles and a loopback remote fixture.
 - [x] Implement dynamic `/api/tags` discovery and measured routing without provider types above infrastructure.
 - [x] Run real local discovery and real inference with installed `qwen3:8b` plus `qwen2.5-coder:14b`.
-- [x] Record `docs/reviews/model-routing-proof.md`, update truth maps, and prepare the phase gate; publication head is recorded after push.
+- [x] Record `docs/reviews/model-routing-proof.md`, update truth maps, gate, publish implementation commit `23aecdec3d272a48433757ca15488821cd937ea8`, then RED/GREEN-correct strict cursors and complete provider-catalog traversal before Item 4.
 
 ### Task 4: General Tool Execution Plane
 

@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
+import type { CompositionOverrides } from "../src/composition-root.js";
 import { createRuntimeConfig, type RuntimeConfig } from "../src/runtime-config.js";
+import { PagedModelGateway } from "./paged-model-gateway-fixture.js";
 
 const OPERATOR_TOKEN = "token-abcdefghijklmnop";
 
@@ -17,8 +19,11 @@ function testConfig(databasePath: string): RuntimeConfig {
   });
 }
 
-async function boot(databasePath: string): Promise<{ runtime: RunningRuntime; base: string }> {
-  const runtime = await startRuntime(testConfig(databasePath));
+async function boot(
+  databasePath: string,
+  overrides?: CompositionOverrides,
+): Promise<{ runtime: RunningRuntime; base: string }> {
+  const runtime = await startRuntime(testConfig(databasePath), overrides);
   return { runtime, base: `http://127.0.0.1:${runtime.address.port}` };
 }
 
@@ -161,6 +166,72 @@ describe("persisted list query surface", () => {
         }),
       });
       expect(unauthorized.status).toBe(403);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("accepts only canonical decimal cursors for model catalog pagination", async () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-model-cursor-")), "state.db");
+    const { runtime, base } = await boot(databasePath);
+    try {
+      const canonical = await query(base, "model.list", {
+        ...metadata("req-model-cursor-canonical"),
+        pagination: { limit: 1, cursor: "0" },
+      });
+      expect(canonical.status).toBe(200);
+
+      for (const cursor of ["1e2", "01", "9007199254740992"]) {
+        const response = await query(base, "model.list", {
+          ...metadata(`req-model-cursor-${cursor}`),
+          pagination: { limit: 1, cursor },
+        });
+        expect(response.status, cursor).toBe(400);
+        expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+          "INVALID_APPLICATION_INPUT",
+        );
+      }
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("filters the complete provider catalog before external pagination", async () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-model-pages-")), "state.db");
+    const { runtime, base } = await boot(databasePath, {
+      modelGatewayDecorator: (gateway) => new PagedModelGateway(gateway),
+    });
+    try {
+      const first = await resultOf<{
+        models: readonly { modelId: string }[];
+        pagination: { total: number; nextCursor?: string };
+      }>(
+        await query(base, "model.list", {
+          ...metadata("req-model-pages-first"),
+          status: "available",
+          modality: "text",
+          pagination: { limit: 2 },
+        }),
+      );
+      expect(first.models.map((model) => model.modelId)).toEqual([
+        "paged-model-500",
+        "paged-model-501",
+      ]);
+      expect(first.pagination).toEqual({ total: 3, nextCursor: "2" });
+
+      const second = await resultOf<{
+        models: readonly { modelId: string }[];
+        pagination: { total: number; nextCursor?: string };
+      }>(
+        await query(base, "model.list", {
+          ...metadata("req-model-pages-second"),
+          status: "available",
+          modality: "text",
+          pagination: { limit: 2, cursor: "2" },
+        }),
+      );
+      expect(second.models.map((model) => model.modelId)).toEqual(["paged-model-502"]);
+      expect(second.pagination).toEqual({ total: 3 });
     } finally {
       await runtime.shutdown();
     }

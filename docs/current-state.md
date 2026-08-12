@@ -479,6 +479,10 @@ continue that coherent system-build line:
     loopback-contract-proven without paid calls. The target-host proof passed real inference with
     installed `qwen3:8b` and `qwen2.5-coder:14b`. See
     `docs/reviews/model-routing-proof.md`.
+    Initial implementation SHA: `23aecdec3d272a48433757ca15488821cd937ea8`. A post-publication
+    RED/GREEN correction makes both the query and router consume the complete bounded provider
+    catalog, fails closed on malformed/cyclic pagination, and applies strict canonical decimal
+    parsing to the external query cursor.
 
 **Verified, not asserted:** every externally reachable command/query above has real HTTP-request
 tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
@@ -550,13 +554,13 @@ passing / 6 intentionally filtered skips** (9.11 seconds); `pnpm check` PASS wit
 across 105 passing + 3 skipped test files (108 total)**. The browser-inclusive gate used the same
 reversible `/tmp` libraries; no system or repository binary was installed.
 
-Item 3 final workspace gate: focused routing/runtime/adapter/application verification **39 passing /
-3 opt-in skips across 10 files**; actual installed-Ollama routing acceptance **1 passing** with
-`qwen3:8b` and `qwen2.5-coder:14b` (32.38 seconds); `pnpm check` PASS with lint at 0 errors
-(9 existing warnings, 1 existing info), typecheck 9/9, and **484 passing / 14 skipped (498 total)
-across 106 passing + 4 skipped test files (110 total)**. Dependency, source-size, and
-explicit-`any` guards passed as part of the complete suite; the browser-inclusive gate used the
-same reversible `/tmp` libraries.
+Item 3 corrected focused gate: routing/runtime/adapter/application verification **43 passing / 1
+opt-in skip across 7 passing + 1 skipped files**; corrected installed-Ollama routing acceptance **1
+passing** with `qwen3:8b` and `qwen2.5-coder:14b` (8.25 seconds); corrected `pnpm check` PASS with
+lint at 0 errors (9 existing warnings, 1 existing info), typecheck 9/9, and **490 passing / 14
+skipped (504 total) across 107 passing + 4 skipped test files (111 total)**. Dependency,
+source-size, and explicit-`any` guards passed in the complete suite; the browser-inclusive gate used
+the same reversible `/tmp` libraries.
 
 **Not yet done — next verified incomplete task after Item 3:**
 
