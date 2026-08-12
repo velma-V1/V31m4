@@ -11,7 +11,42 @@ import type { UnitOfWorkTransaction } from "../ports/unit-of-work.port.js";
 export interface AuthorizationDependencies {
   readonly policy: PolicyEnginePort;
   readonly approvals: ApprovalStorePort;
+  readonly audit: AuditStorePort;
   readonly clock: ClockPort;
+}
+
+function actorsMatch(left: OperationContext["actor"], right: OperationContext["actor"]): boolean {
+  return (
+    left.id === right.id &&
+    left.kind === right.kind &&
+    left.roles.length === right.roles.length &&
+    left.roles.every((role) => right.roles.includes(role))
+  );
+}
+
+function jsonValuesMatch(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonValuesMatch(value, right[index]))
+    );
+  }
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  return (
+    leftEntries.length === rightEntries.length &&
+    leftEntries.every(
+      ([key, value]) =>
+        Object.hasOwn(right, key) &&
+        jsonValuesMatch(value, (right as Record<string, unknown>)[key]),
+    )
+  );
 }
 
 export async function authorizeAction(
@@ -38,10 +73,11 @@ export async function authorizeAction(
     );
   }
   const stored = await dependencies.approvals.get(approvalId, context, transaction);
+  const now = Date.parse(dependencies.clock.now());
   if (
     stored === null ||
     stored.value.status !== "granted" ||
-    Date.parse(stored.value.expiresAt) <= Date.parse(dependencies.clock.now())
+    Date.parse(stored.value.expiresAt) <= now
   ) {
     throw new ApplicationError(
       "APPROVAL_REQUIRED",
@@ -49,6 +85,20 @@ export async function authorizeAction(
       {
         details: { approvalId },
       },
+    );
+  }
+  if (
+    stored.value.action !== request.action ||
+    stored.value.resourceType !== request.resourceType ||
+    stored.value.resourceId !== request.resourceId ||
+    !actorsMatch(stored.value.requestedBy, context.actor) ||
+    !jsonValuesMatch(stored.value.context, request.attributes) ||
+    (result.expiresAt !== undefined && Date.parse(result.expiresAt) <= now)
+  ) {
+    throw new ApplicationError(
+      "APPROVAL_REQUIRED",
+      "The supplied approval does not match this protected operation.",
+      { details: { approvalId } },
     );
   }
   const scopes = new Set(stored.value.requiredScopes);
@@ -64,6 +114,24 @@ export async function authorizeAction(
   await dependencies.approvals.consume(
     approvalId,
     WriteConditions.matchRevision(stored.revision),
+    context,
+    transaction,
+  );
+  await appendAudit(
+    dependencies.audit,
+    dependencies.clock,
+    {
+      id: `audit:approval.consume:${approvalId}`,
+      action: "approval.consume",
+      resourceType: "approval",
+      resourceId: approvalId,
+      outcome: "completed",
+      details: {
+        protectedAction: request.action,
+        protectedResourceType: request.resourceType,
+        ...(request.resourceId === undefined ? {} : { protectedResourceId: request.resourceId }),
+      },
+    },
     context,
     transaction,
   );

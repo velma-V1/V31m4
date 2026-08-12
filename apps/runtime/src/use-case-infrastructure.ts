@@ -298,10 +298,12 @@ export class SqliteApprovalStore implements ApprovalStorePort {
     status: ApprovalStatus | undefined,
     request: PortPageRequest,
   ): Promise<PortPage<Versioned<ApprovalRequest>>> {
-    const page = listPersistedRecords<ApprovalRequest>(this.database, APPROVAL_TYPE, request);
-    if (status === undefined) return page;
-    const items = page.items.filter((entry) => entry.value.status === status);
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    return listPersistedRecords<ApprovalRequest>(
+      this.database,
+      APPROVAL_TYPE,
+      request,
+      (approval) => status === undefined || approval.status === status,
+    );
   }
   async save(
     request: ApprovalRequest,
@@ -340,16 +342,17 @@ export class SqliteAuditStore implements AuditStorePort {
     await this.#records.append(AUDIT_TYPE, record.id, record, transaction);
   }
   async list(query: AuditQuery): Promise<PortPage<AuditRecord>> {
-    const page = listPersistedRecords<AuditRecord>(this.database, AUDIT_TYPE, query);
-    const items = page.items
-      .map((entry) => entry.value)
-      .filter((record) => query.action === undefined || record.action === query.action)
-      .filter(
-        (record) => query.resourceType === undefined || record.resourceType === query.resourceType,
-      )
-      .filter((record) => query.resourceId === undefined || record.resourceId === query.resourceId)
-      .filter((record) => query.actorId === undefined || record.actor.id === query.actorId)
-      .filter((record) => query.outcomes === undefined || query.outcomes.includes(record.outcome));
-    return Object.freeze({ ...page, items: Object.freeze(items) });
+    const page = listPersistedRecords<AuditRecord>(
+      this.database,
+      AUDIT_TYPE,
+      query,
+      (record) =>
+        (query.action === undefined || record.action === query.action) &&
+        (query.resourceType === undefined || record.resourceType === query.resourceType) &&
+        (query.resourceId === undefined || record.resourceId === query.resourceId) &&
+        (query.actorId === undefined || record.actor.id === query.actorId) &&
+        (query.outcomes === undefined || query.outcomes.includes(record.outcome)),
+    );
+    return Object.freeze({ ...page, items: page.items.map((entry) => entry.value) });
   }
 }

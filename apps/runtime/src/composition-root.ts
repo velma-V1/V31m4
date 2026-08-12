@@ -57,10 +57,12 @@ import {
   RuleBasedPolicyEngine,
   SqliteIdempotencyStore,
   SqliteOutbox,
+  SqlitePluginRegistry,
   SqliteRecordStore,
   SqliteRuntimeDatabase,
 } from "@v31m4/infrastructure";
 import { LocalSessionAuthenticator } from "./api/auth.js";
+import { registerApprovalSurface } from "./approval-surface.js";
 import { EventStreamCoordinator } from "./event-stream.js";
 import { canonicalJson, ExternalCommandExecutor } from "./external-command-executor.js";
 import {
@@ -310,6 +312,25 @@ export function buildComposition(
   const audit: AuditStorePort = new SqliteAuditStore(database);
   const policyRules: readonly PolicyRule[] = Object.freeze([
     {
+      id: "operator-plugin-registration-approval",
+      effect: "require_approval",
+      actions: ["plugin.register"],
+      resourceTypes: ["plugin"],
+      actorKinds: ["user"],
+      requiredRoles: ["operator"],
+      requiredApprovalScopes: ["plugin:register"],
+      reason: "Plugin registration requires an explicit operator approval.",
+    },
+    {
+      id: "operator-approval-actions",
+      effect: "allow",
+      actions: ["approval.decide", "approval.list"],
+      resourceTypes: ["approval"],
+      actorKinds: ["user"],
+      requiredRoles: ["operator"],
+      reason: "The local operator may review and decide approval requests.",
+    },
+    {
       id: "operator-project-actions",
       effect: "allow",
       actions: ["project.*"],
@@ -319,6 +340,8 @@ export function buildComposition(
     },
   ]);
   const policy = new RuleBasedPolicyEngine(policyRules);
+  const plugins = new SqlitePluginRegistry(database);
+  registerApprovalSurface(service, { approvals, audit, clock, plugins, policy });
 
   service.register("project.create", async (payload, context, transaction) => {
     const request = parseCommandPayload(createProjectRequestSchema, payload);

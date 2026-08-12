@@ -1,4 +1,5 @@
 export * from "./adapter-rpc.schemas.js";
+export * from "./approvals.schemas.js";
 export * from "./avatar.schemas.js";
 export * from "./capabilities.schemas.js";
 export * from "./common.schemas.js";

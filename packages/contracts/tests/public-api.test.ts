@@ -5,6 +5,8 @@ describe("@v31m4/contracts public API", () => {
   it("exports every Layer 3 contract family", () => {
     expect(contracts.CONTRACT_SCHEMA_VERSION).toBe("1.0.0");
     expect(typeof contracts.createProjectRequestSchema.parse).toBe("function");
+    expect(typeof contracts.approvalRequestSchema.parse).toBe("function");
+    expect(typeof contracts.registerGovernedPluginRequestSchema.parse).toBe("function");
     expect(typeof contracts.submitMissionRequestSchema.parse).toBe("function");
     expect(typeof contracts.listMissionsRequestSchema.parse).toBe("function");
     expect(typeof contracts.jobSchema.parse).toBe("function");
