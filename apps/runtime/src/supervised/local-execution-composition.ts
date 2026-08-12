@@ -24,6 +24,7 @@ import { SupervisedVerifier } from "./supervised-verifier.js";
 
 export interface LocalExecutionComposition {
   readonly modelId: ModelId;
+  readonly models: ModelGatewayPort;
   readonly verifierId: string;
   readonly kernel: ProductionKernelPort;
   model(projectId: ProjectId): ModelGatewayPort;
@@ -104,6 +105,8 @@ export function createLocalExecutionComposition(
       }),
     ],
     new Map([[modelId, { primary: modelProcess }]]),
+    120_000,
+    { primary: modelProcess },
   );
   const verifierToolId = "stage4-deterministic-verifier";
   const toolGateway = new SupervisedToolGateway(
@@ -127,6 +130,7 @@ export function createLocalExecutionComposition(
   );
   return Object.freeze({
     modelId,
+    models: modelGateway,
     verifierId: "stage4-node-verifier",
     kernel: new SupervisedProductionKernel({ primary: kernelProcess }),
     model: (projectId: ProjectId) =>

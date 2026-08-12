@@ -16,7 +16,6 @@ import {
   type ModelGatewayPort,
   type ProductionKernelPort,
   type ProjectRepositoryPort,
-  runSolverForge,
   selectChampionUseCase,
   type VerifierPort,
   type Versioned,
@@ -31,6 +30,7 @@ import {
   type ModelId,
   type ProjectId,
   SafePath,
+  type SolverConfiguration,
   VerificationResult,
 } from "@v31m4/domain";
 import type { SqliteIdempotencyStore, SqliteRuntimeDatabase } from "@v31m4/infrastructure";
@@ -39,6 +39,7 @@ import { canonicalJson } from "./external-command-executor.js";
 import { asCommandObject, requireCommandId, stableDigest } from "./job-command-helpers.js";
 import { registerJobStartCommand } from "./job-start-command.js";
 import { createJobModelConfiguration, createJobVerificationPlan } from "./job-verification-plan.js";
+import { runRoutedSolver } from "./routed-solver.js";
 import { applyRepairKernelEffect } from "./supervised/repair-kernel-effect.js";
 import { runBoundedRepairRounds } from "./supervised/repair-orchestrator.js";
 import { supervisedEvidenceId } from "./supervised/supervised-verifier.js";
@@ -85,7 +86,6 @@ export interface JobCommandDependencies {
   readonly interruptAfterKernelEffect?: boolean;
   readonly interruptAfterRepairKernelEffect?: boolean;
 }
-
 /** Registers direct job commands whose external calls cannot run inside the command executor UoW. */
 export function registerJobCommands(dependencies: JobCommandDependencies): void {
   registerJobStartCommand(dependencies);
@@ -174,7 +174,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     const projectId = job.value.projectId;
     const modelGateway = modelFactory(projectId);
     const verifier = verifierFactory(projectId, jobIdRaw);
-    const configuration = createJobModelConfiguration(modelId);
+    let configuration: SolverConfiguration = createJobModelConfiguration(modelId);
     async function* textBytes(text: string): AsyncIterable<Uint8Array> {
       yield Buffer.from(text, "utf8");
     }
@@ -217,25 +217,28 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       : `candidate-${randomUUID()}`;
     let candidate = (await candidates.getCandidate(candidateId as never, context))?.value;
     if (candidate === undefined) {
-      [candidate] = await runSolverForge(
+      const routed = await runRoutedSolver(
         { unitOfWork: database.unitOfWork, candidates, models: modelGateway, workspaces },
         {
           jobId,
           missionId: job.value.missionId,
           projectId,
           promptArtifactId,
-          configurations: [configuration],
-          candidateIds: [candidateId],
-          invocationIds: [
+          candidateId,
+          preferredModelId: modelId,
+          invocationId: (index) =>
             deterministic
-              ? `invocation-model-${stableDigest(jobIdRaw).slice(0, 32)}`
+              ? `invocation-model-${stableDigest(`${jobIdRaw}:${index}`).slice(0, 32)}`
               : `invocation-${randomUUID()}`,
-          ],
           createdAt: clock.now(),
           resourceBudget: mission.value.resourceBudget,
         },
         context,
       );
+      candidate = routed.candidate;
+      configuration = routed.configuration;
+    } else {
+      configuration = candidate.configuration;
     }
     if (candidate === undefined) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Solver forge produced no candidate.");

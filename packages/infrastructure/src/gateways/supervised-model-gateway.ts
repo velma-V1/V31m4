@@ -8,7 +8,7 @@ import {
   type PortPage,
   type PortPageRequest,
 } from "@v31m4/application";
-import type { ModelId, ModelProfile } from "@v31m4/domain";
+import { type ModelId, ModelProfile } from "@v31m4/domain";
 import { parsePaginationCursor } from "../pagination-cursor.js";
 import { type AdapterBinding, invokeAdapter, selectInvoker } from "./adapter-invoker.js";
 
@@ -22,38 +22,51 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  * dependency-unavailable outcome, never a silent success.
  */
 export class SupervisedModelGateway implements ModelGatewayPort {
-  readonly #profiles: readonly ModelProfile[];
+  readonly #profiles = new Map<string, ModelProfile>();
   readonly #bindings: ReadonlyMap<string, AdapterBinding>;
+  #discoveryLoaded = false;
 
   constructor(
     profiles: readonly ModelProfile[],
     bindings: ReadonlyMap<string, AdapterBinding>,
     private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
+    private readonly discoveryBinding?: AdapterBinding,
   ) {
-    this.#profiles = Object.freeze([...profiles]);
+    for (const profile of profiles) this.#profiles.set(profile.modelId, profile);
     this.#bindings = bindings;
   }
 
-  async list(request: PortPageRequest): Promise<PortPage<ModelProfile>> {
+  async list(
+    request: PortPageRequest,
+    context?: OperationContext,
+  ): Promise<PortPage<ModelProfile>> {
+    await this.#ensureDiscovery(context);
     const start = parsePaginationCursor(request.cursor);
-    const items = this.#profiles.slice(start, start + request.limit);
+    const profiles = [...this.#profiles.values()].sort((left, right) =>
+      left.modelId.localeCompare(right.modelId),
+    );
+    const items = profiles.slice(start, start + request.limit);
     const next = start + request.limit;
     return Object.freeze({
       items,
-      total: this.#profiles.length,
-      ...(next < this.#profiles.length ? { nextCursor: String(next) } : {}),
+      total: profiles.length,
+      ...(next < profiles.length ? { nextCursor: String(next) } : {}),
     });
   }
 
-  async get(modelId: ModelId): Promise<ModelProfile | null> {
-    return this.#profiles.find((profile) => profile.modelId === modelId) ?? null;
+  async get(modelId: ModelId, context?: OperationContext): Promise<ModelProfile | null> {
+    await this.#ensureDiscovery(context);
+    return this.#profiles.get(modelId) ?? null;
   }
 
   async invoke(
     request: ModelInvocationRequest,
     context: OperationContext,
   ): Promise<ModelInvocationResult> {
-    const binding = this.#bindings.get(request.modelId);
+    await this.#ensureDiscovery(context);
+    const binding =
+      this.#bindings.get(request.modelId) ??
+      (this.#profiles.has(request.modelId) ? this.discoveryBinding : undefined);
     if (binding === undefined) {
       throw new ApplicationError("DEPENDENCY_UNAVAILABLE", "No adapter is bound to this model.", {
         details: { modelId: request.modelId },
@@ -69,8 +82,13 @@ export class SupervisedModelGateway implements ModelGatewayPort {
   }
 
   async cancel(invocationId: string, context: OperationContext): Promise<void> {
-    for (const binding of this.#bindings.values()) {
+    const bindings = [...this.#bindings.values()];
+    if (this.discoveryBinding !== undefined) bindings.push(this.discoveryBinding);
+    const invoked = new Set<string>();
+    for (const binding of bindings) {
       if (binding.primary.available()) {
+        if (invoked.has(binding.primary.id)) continue;
+        invoked.add(binding.primary.id);
         await binding.primary.invoke(
           "adapter.cancel",
           { invocationId },
@@ -82,8 +100,11 @@ export class SupervisedModelGateway implements ModelGatewayPort {
     }
   }
 
-  async health(modelId: ModelId): Promise<PortHealth> {
-    const binding = this.#bindings.get(modelId);
+  async health(modelId: ModelId, context?: OperationContext): Promise<PortHealth> {
+    await this.#ensureDiscovery(context);
+    const binding =
+      this.#bindings.get(modelId) ??
+      (this.#profiles.has(modelId) ? this.discoveryBinding : undefined);
     const available = binding !== undefined && selectableAvailable(binding);
     return Object.freeze({
       status: available ? "healthy" : "unavailable",
@@ -91,6 +112,112 @@ export class SupervisedModelGateway implements ModelGatewayPort {
       details: { modelId },
     });
   }
+
+  async #ensureDiscovery(context: OperationContext | undefined): Promise<void> {
+    if (this.#discoveryLoaded || this.discoveryBinding === undefined) return;
+    const invoker = selectInvoker(this.discoveryBinding, "model-discovery");
+    const response = await invokeAdapter<unknown>(
+      invoker,
+      "model.list",
+      {},
+      {
+        timeoutMs:
+          context === undefined
+            ? this.defaultTimeoutMs
+            : remainingTimeout(context, this.defaultTimeoutMs),
+        ...(context?.signal === undefined ? {} : { signal: context.signal }),
+      },
+    );
+    const discovered = parseDiscoveredProfiles(response, invoker.id);
+    for (const profile of discovered) this.#profiles.set(profile.modelId, profile);
+    this.#discoveryLoaded = true;
+  }
+}
+
+function parseDiscoveredProfiles(value: unknown, adapterId: string): readonly ModelProfile[] {
+  if (
+    !isExactRecord(value, ["models"]) ||
+    !Array.isArray(value["models"]) ||
+    value["models"].length > 500
+  ) {
+    throw new ApplicationError(
+      "DEPENDENCY_FAILURE",
+      "Model discovery returned an invalid response.",
+    );
+  }
+  const profiles = value["models"].map((candidate) => parseDiscoveredProfile(candidate, adapterId));
+  if (new Set(profiles.map((profile) => profile.modelId)).size !== profiles.length) {
+    throw new ApplicationError(
+      "DEPENDENCY_FAILURE",
+      "Model discovery returned duplicate model IDs.",
+    );
+  }
+  return Object.freeze(profiles);
+}
+
+function parseDiscoveredProfile(value: unknown, adapterId: string): ModelProfile {
+  const keys = [
+    "modelId",
+    "adapterId",
+    "displayName",
+    "status",
+    "local",
+    "measuredCapabilities",
+    "supportedModalities",
+  ];
+  if (
+    !isExactRecord(value, keys, ["contextLimit"]) ||
+    typeof value["modelId"] !== "string" ||
+    value["adapterId"] !== adapterId ||
+    typeof value["displayName"] !== "string" ||
+    !isAvailability(value["status"]) ||
+    typeof value["local"] !== "boolean" ||
+    (value["contextLimit"] !== undefined && typeof value["contextLimit"] !== "number") ||
+    !Array.isArray(value["measuredCapabilities"]) ||
+    value["measuredCapabilities"].length !== 0 ||
+    !Array.isArray(value["supportedModalities"]) ||
+    !value["supportedModalities"].every((modality) => typeof modality === "string")
+  ) {
+    throw new ApplicationError(
+      "DEPENDENCY_FAILURE",
+      "Model discovery returned an invalid profile.",
+    );
+  }
+  try {
+    return ModelProfile.create({
+      modelId: value["modelId"],
+      adapterId: value["adapterId"],
+      displayName: value["displayName"],
+      status: value["status"],
+      local: value["local"],
+      ...(value["contextLimit"] === undefined ? {} : { contextLimit: value["contextLimit"] }),
+      measuredCapabilities: [],
+      supportedModalities: value["supportedModalities"],
+    });
+  } catch (error) {
+    throw new ApplicationError(
+      "DEPENDENCY_FAILURE",
+      "Model discovery returned an invalid profile.",
+      {
+        cause: error,
+      },
+    );
+  }
+}
+
+function isExactRecord(
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = [],
+): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  const permitted = new Set([...requiredKeys, ...optionalKeys]);
+  return requiredKeys.every((key) => keys.includes(key)) && keys.every((key) => permitted.has(key));
+}
+
+function isAvailability(value: unknown): value is ModelProfile["status"] {
+  return value === "available" || value === "degraded" || value === "unavailable";
 }
 
 export function remainingTimeout(

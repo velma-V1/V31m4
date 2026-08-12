@@ -51,7 +51,7 @@ packages/
     │   ├── operation-context.ts
     │   ├── port-types.ts
     │   ├── ports/                        # 26 Layer 4 infrastructure-free ports
-    │   ├── services/                     # Layer 5: 9 application services
+    │   ├── services/                     # Layer 5: 10 application services, including model routing
     │       ├── compute-governor.ts
     │       ├── context-compiler.ts
     │       ├── diversity-planner.ts
@@ -61,6 +61,7 @@ packages/
     │       ├── capability-calculator.ts
     │       ├── practice-selector.ts
     │       ├── avatar-unlock-engine.ts
+    │       ├── model-router.ts
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 canonical + 2 approval-lifecycle entrypoints
     └── tests/                            # Layer 4–6 verification
@@ -68,7 +69,7 @@ packages/
 └── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
 
 adapters/
-└── local-supervised/                    # Optional Stage 4 Ollama model, contained kernel, and independent verifier JSON-RPC children
+└── local-supervised/                    # Optional dynamic Ollama/OpenAI-compatible model, contained kernel, and verifier JSON-RPC children
 
 apps/
 ├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local execution composition
@@ -108,6 +109,7 @@ per-tool capability matrix.
 | Default `hermetic_reference` kernel/model/verifier | Reference — retained for deterministic core boot and tests; no external service required |
 | Explicit `supervised_local` `stage4.tiny-code` path | VERIFIED REAL — installed Ollama 0.32.7 `devstral-small-2:24b` inference, three supervised child processes, contained checkpointed kernel apply, independent Node command verifier, immutable evidence, champion/delivery gate, and exactly-once restart reconciliation |
 | Explicit `supervised_local` `software.production.v1` path | VERIFIED REAL — strict project-owned build packet, bounded multi-file context/change manifest, isolated atomic kernel edits, packet-declared independent Node check, immutable evidence/delivery, idempotent replay, restart readback, and installed `devstral-small-2:24b` target-host proof |
+| Supervised model discovery/routing | VERIFIED REAL — authenticated provider-neutral catalog, dynamic Ollama profiles, verified-measurement-first bounded routing, retryable escalation with exact candidate provenance, loopback OpenAI-compatible contract, and real installed `qwen3:8b` plus `qwen2.5-coder:14b` proof |
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
 | `mission.list` / `job.list` / `candidate.list` / `evidence.list` query surface | VERIFIED — authenticated strict `POST /queries/:type`, existing Layer 4 repositories, relationship validation, filtered pagination, valid empty/error/auth behavior, and persisted restart-stable results |

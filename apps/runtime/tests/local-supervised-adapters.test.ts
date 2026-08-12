@@ -46,6 +46,23 @@ async function fakeOllama(
 ): Promise<{ readonly endpoint: string; readonly requests: object[] }> {
   const requests: object[] = [];
   const server = createServer((request, reply) => {
+    if (request.url === "/api/tags") {
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(
+        JSON.stringify({
+          models: [
+            { name: "provider/name-that-cannot-be-a-durable-id:7b" },
+            { name: "devstral-small-2:24b" },
+            {
+              name: "qwen-coder:7b",
+              details: { context_length: 32768 },
+              capabilities: ["completion", "vision", "tools"],
+            },
+          ],
+        }),
+      );
+      return;
+    }
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
@@ -80,6 +97,132 @@ function adapter(
 }
 
 describe("local supervised adapter processes", () => {
+  it("uses a configurable OpenAI-compatible transport without leaking its credential", async () => {
+    const root = await temporaryRoot();
+    const requests: { authorization?: string; body: Record<string, unknown> }[] = [];
+    const server = createServer((request, reply) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        requests.push({
+          ...(typeof request.headers.authorization === "string"
+            ? { authorization: request.headers.authorization }
+            : {}),
+          body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+        });
+        reply.writeHead(200, { "content-type": "application/json" });
+        reply.end(
+          JSON.stringify({
+            model: "remote-code-v1",
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { content: '{"content":"export const remote = true;\\n"}' },
+              },
+            ],
+            usage: { prompt_tokens: 8, completion_tokens: 7 },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    servers.push(server);
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Remote fixture failed");
+    await mkdir(join(root, "model-inputs"), { recursive: true });
+    await writeFile(join(root, "model-inputs/artifact-remote.txt"), "Implement remote.", "utf8");
+    const remote = adapter("openai-compatible-supervised", "openai-compatible-model-adapter.mjs", {
+      V31M4_STAGE4_ROOT: root,
+      V31M4_REMOTE_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      V31M4_REMOTE_MODELS: "remote-code-v1",
+      V31M4_REMOTE_API_KEY: "secret-loopback-key",
+    });
+    try {
+      await expect(remote.invoke("model.list", {}, { timeoutMs: 2_000 })).resolves.toMatchObject({
+        models: [{ modelId: "remote-code-v1", local: false }],
+      });
+      await remote.invoke(
+        "model.invoke",
+        {
+          invocationId: "invocation-remote-1",
+          jobId: "job-remote-1",
+          modelId: "remote-code-v1",
+          promptArtifactId: "artifact-remote",
+          configuration: {
+            modelId: "remote-code-v1",
+            strategy: "direct",
+            contextArtifactIds: [],
+            toolIds: [],
+            constraints: [],
+          },
+          resourceBudget: budget,
+        },
+        { timeoutMs: 2_000 },
+      );
+      expect(requests).toEqual([
+        expect.objectContaining({
+          authorization: "Bearer secret-loopback-key",
+          body: expect.objectContaining({ model: "remote-code-v1" }),
+        }),
+      ]);
+      expect(await readFile(join(root, "model-outputs/invocation-remote-1.txt"), "utf8")).toBe(
+        "export const remote = true;\n",
+      );
+    } finally {
+      await remote.stop();
+    }
+  });
+
+  it("discovers installed models and invokes the exact requested installed model", async () => {
+    const root = await temporaryRoot();
+    const ollama = await fakeOllama({
+      model: "qwen-coder:7b",
+      response: JSON.stringify({ content: "export const selected = true;\n" }),
+      done: true,
+    });
+    await mkdir(join(root, "model-inputs"), { recursive: true });
+    await writeFile(join(root, "model-inputs/artifact-routing.txt"), "Implement selected.", "utf8");
+    const model = adapter("ollama-model", "model-adapter.mjs", {
+      V31M4_STAGE4_ROOT: root,
+      V31M4_OLLAMA_ENDPOINT: ollama.endpoint,
+      V31M4_OLLAMA_MODEL: "devstral-small-2:24b",
+    });
+    try {
+      await expect(model.invoke("model.list", {}, { timeoutMs: 2_000 })).resolves.toMatchObject({
+        models: [
+          { modelId: "devstral-small-2:24b", local: true },
+          {
+            modelId: "qwen-coder:7b",
+            local: true,
+            contextLimit: 32768,
+            supportedModalities: ["text", "vision"],
+          },
+        ],
+      });
+      await model.invoke(
+        "model.invoke",
+        {
+          invocationId: "invocation-routing-1",
+          jobId: "job-routing-1",
+          modelId: "qwen-coder:7b",
+          promptArtifactId: "artifact-routing",
+          configuration: {
+            modelId: "qwen-coder:7b",
+            strategy: "direct",
+            contextArtifactIds: [],
+            toolIds: [],
+            constraints: [],
+          },
+          resourceBudget: budget,
+        },
+        { timeoutMs: 2_000 },
+      );
+      expect(ollama.requests).toEqual([expect.objectContaining({ model: "qwen-coder:7b" })]);
+    } finally {
+      await model.stop();
+    }
+  });
+
   it("performs a real loopback model request and stages bounded candidate output", async () => {
     const root = await temporaryRoot();
     const ollama = await fakeOllama();

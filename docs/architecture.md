@@ -121,10 +121,11 @@ and structured-log redaction are host-enforced. Adapter-facing code cannot own S
 retain secret-store implementation access.
 
 The optional local execution composition uses this authority directly: three distinct lazy child
-processes provide loopback Ollama inference, an allowlisted contained production kernel, and an
-independent deterministic verifier. Parent environment inheritance is explicit and allowlisted;
-adapter staging is non-authoritative until runtime-owned bridges promote it through the existing
-artifact/evidence ports.
+processes provide dynamically discovered loopback Ollama inference, an allowlisted contained
+production kernel, and an independent deterministic verifier. A separately contract-proven
+OpenAI-compatible model child can bind to the same model gateway without becoming a core startup
+dependency. Parent environment inheritance is explicit and allowlisted; adapter staging is
+non-authoritative until runtime-owned bridges promote it through existing artifact/evidence ports.
 
 ## Governed production-gateway authority
 
@@ -153,7 +154,11 @@ contained isolated working copy, accepts only a bounded change manifest, and der
 from packet-declared independent Node verification. Failed software candidates may enter a bounded
 evidence-driven repair loop: existing issue/repair use cases create immutable lineage, each repair
 effect receives its own durable kernel checkpoint, and distinct focused/regression verifier
-evidence is required before champion selection. Both profiles enter the same application use
+evidence is required before champion selection. Model selection uses a bounded provider-neutral
+route: availability/modality/context eligibility first, verified capability measurements before
+operator preference, and retryable dependency failures may escalate only within the mission's
+model-invocation budget. The immutable candidate records the model that actually completed. Both
+profiles enter the same application use
 cases and authoritative repositories; the profile does not create a second state authority or
 allow an adapter to reach SQLite.
 

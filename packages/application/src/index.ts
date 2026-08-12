@@ -37,6 +37,7 @@ export * from "./services/context-compiler.js";
 export * from "./services/diversity-planner.js";
 export * from "./services/evidence-linker.js";
 export * from "./services/improvement-policy.js";
+export * from "./services/model-router.js";
 export * from "./services/practice-selector.js";
 export * from "./use-cases/checkpoint-job.js";
 export * from "./use-cases/compile-training-packet.js";

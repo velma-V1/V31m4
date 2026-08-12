@@ -133,6 +133,39 @@ function metadata(requestId: string) {
 }
 
 describe("persisted list query surface", () => {
+  it("exposes the authenticated provider-neutral model catalog", async () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-model-list-")), "state.db");
+    const { runtime, base } = await boot(databasePath);
+    try {
+      const response = await query(base, "model.list", {
+        ...metadata("req-model-list"),
+        local: true,
+        modality: "text",
+        pagination: { limit: 10 },
+      });
+      const catalog = await resultOf<{
+        models: readonly { modelId: string; local: boolean }[];
+        pagination: { total: number };
+      }>(response);
+      expect(catalog).toMatchObject({
+        models: [{ modelId: "reference-model", local: true }],
+        pagination: { total: 1 },
+      });
+
+      const unauthorized = await fetch(`${base}/queries/model.list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...metadata("req-model-list-unauthorized"),
+          pagination: { limit: 10 },
+        }),
+      });
+      expect(unauthorized.status).toBe(403);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("fails closed, validates input, and returns empty collections for valid empty boundaries", async () => {
     const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-list-empty-")), "state.db");
     const { runtime, base } = await boot(databasePath);

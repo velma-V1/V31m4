@@ -25,6 +25,11 @@ afterEach(async () => {
 async function fakeOllama(content: string) {
   let count = 0;
   const server = createServer((request, reply) => {
+    if (request.url === "/api/tags") {
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(JSON.stringify({ models: [{ name: "devstral-small-2:24b" }] }));
+      return;
+    }
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
@@ -56,14 +61,56 @@ async function fakeOllama(content: string) {
   };
 }
 
-function config(databasePath: string, endpoint: string): RuntimeConfig {
+async function fakeRoutingOllama() {
+  const invoked: string[] = [];
+  const server = createServer((request, reply) => {
+    if (request.url === "/api/tags") {
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(
+        JSON.stringify({ models: [{ name: "preferred-code" }, { name: "fallback-code" }] }),
+      );
+      return;
+    }
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { model: string };
+      invoked.push(body.model);
+      if (body.model === "preferred-code") {
+        reply.writeHead(503, { "content-type": "application/json" });
+        reply.end(JSON.stringify({ error: "temporarily unavailable" }));
+        return;
+      }
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(
+        JSON.stringify({
+          model: body.model,
+          response: JSON.stringify({ content: "export function add(a, b) { return a + b; }\n" }),
+          done: true,
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  ollamaServers.push(server);
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("Ollama fixture did not bind");
+  return { endpoint: `http://127.0.0.1:${address.port}`, invoked };
+}
+
+function config(
+  databasePath: string,
+  endpoint: string,
+  model = "devstral-small-2:24b",
+): RuntimeConfig {
   return createRuntimeConfig({
     port: 0,
     databasePath,
     sessions: [{ token: OPERATOR_TOKEN, actorId: "operator", roles: ["operator"] }],
     shutdownTimeoutMs: 500,
     executionProfile: "supervised_local",
-    supervisedLocal: { ollamaEndpoint: endpoint, model: "devstral-small-2:24b" },
+    supervisedLocal: { ollamaEndpoint: endpoint, model },
   });
 }
 
@@ -71,8 +118,9 @@ async function boot(
   databasePath: string,
   endpoint: string,
   overrides?: CompositionOverrides,
+  model?: string,
 ): Promise<{ readonly runtime: RunningRuntime; readonly base: string }> {
-  const runtime = await startRuntime(config(databasePath, endpoint), overrides);
+  const runtime = await startRuntime(config(databasePath, endpoint, model), overrides);
   runtimes.push(runtime);
   return { runtime, base: `http://127.0.0.1:${runtime.address.port}` };
 }
@@ -181,6 +229,26 @@ function countRecord(databasePath: string, type: string): number {
 }
 
 describe("supervised_local system-build execution", () => {
+  it("escalates from a retryable preferred-model failure and records the selected model", async () => {
+    const ollama = await fakeRoutingOllama();
+    const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-routing-fallback-"));
+    const { base } = await boot(
+      join(dataRoot, "state.db"),
+      ollama.endpoint,
+      undefined,
+      "preferred-code",
+    );
+    const ids = await setup(base, "routing");
+    const outcome = await execute(base, ids.jobId, "routing-execute");
+    expect(outcome.status, JSON.stringify(outcome.body)).toBe(200);
+    expect(outcome.body.result).toMatchObject({
+      job: { status: "completed" },
+      candidate: { configuration: { modelId: "fallback-code" } },
+      verification: { status: "passed" },
+    });
+    expect(ollama.invoked).toEqual(["preferred-code", "fallback-code"]);
+  });
+
   it("uses real supervised components and delivers only from independent passing evidence", async () => {
     const ollama = await fakeOllama("export function add(a, b) { return a + b; }\n");
     const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-stage4-positive-"));

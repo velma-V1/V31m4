@@ -361,6 +361,7 @@ export function buildComposition(
   const runtimeInstanceId = randomUUID();
   let kernel: ProductionKernelPort;
   let modelId: ModelId;
+  let modelCatalog: ModelGatewayPort;
   let modelFactory: (projectId: ProjectId) => ModelGatewayPort;
   let verifierId: string;
   let verifierFactory: (projectId: ProjectId, jobId: string) => VerifierPort;
@@ -385,6 +386,7 @@ export function buildComposition(
     const local = createLocalExecutionComposition(config, artifacts, database.unitOfWork);
     kernel = local.kernel;
     modelId = local.modelId;
+    modelCatalog = local.models;
     modelFactory = (projectId) => local.model(projectId);
     verifierId = local.verifierId;
     verifierFactory = (projectId, jobId) => local.verifier(projectId, jobId);
@@ -396,6 +398,11 @@ export function buildComposition(
   } else {
     kernel = new ReferenceProductionKernel();
     modelId = "reference-model" as ModelId;
+    modelCatalog = new ReferenceModelGateway(
+      artifacts,
+      database.unitOfWork,
+      "runtime-model-catalog" as ProjectId,
+    );
     modelFactory = (projectId) =>
       new ReferenceModelGateway(artifacts, database.unitOfWork, projectId);
     verifierId = "reference-verifier";
@@ -409,6 +416,7 @@ export function buildComposition(
     jobs,
     candidates,
     evidence: evidenceRepo,
+    models: modelCatalog,
   });
 
   registerJobCommands({

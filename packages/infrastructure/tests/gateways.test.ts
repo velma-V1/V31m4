@@ -74,6 +74,45 @@ const modelResult = {
 };
 
 describe("SupervisedModelGateway", () => {
+  it("discovers provider-neutral profiles and binds installed models to the supervised adapter", async () => {
+    const discovery = new FakeInvoker("ollama-local-supervised", {
+      result: {
+        models: [
+          {
+            modelId: "discovered-code:latest",
+            adapterId: "ollama-local-supervised",
+            displayName: "discovered-code:latest",
+            status: "available",
+            local: true,
+            measuredCapabilities: [],
+            supportedModalities: ["text"],
+          },
+        ],
+      },
+    });
+    const gateway = new SupervisedModelGateway([], new Map(), 120_000, { primary: discovery });
+    await expect(gateway.list({ limit: 10 }, context)).resolves.toMatchObject({
+      items: [{ modelId: "discovered-code:latest" }],
+      total: 1,
+    });
+    discovery.behavior.result = {
+      ...modelResult,
+      modelId: "discovered-code:latest",
+    };
+    await gateway.invoke(
+      {
+        ...modelRequest(),
+        modelId: "discovered-code:latest" as never,
+        configuration: {
+          ...modelRequest().configuration,
+          modelId: "discovered-code:latest" as never,
+        },
+      },
+      context,
+    );
+    expect(discovery.calls.map((call) => call.method)).toEqual(["model.list", "model.invoke"]);
+  });
+
   it("uses only the wall-clock time remaining before the operation deadline", () => {
     const started = Date.parse("2026-08-11T12:00:00.000Z");
     const deadlineContext = {

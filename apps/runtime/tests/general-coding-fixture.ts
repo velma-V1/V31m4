@@ -23,7 +23,12 @@ export async function cleanupGeneralFixtures(): Promise<void> {
 
 export async function fakeOllama(content: string | readonly string[]): Promise<string> {
   const responses = typeof content === "string" ? [content] : [...content];
-  const server = createServer((_request, reply) => {
+  const server = createServer((request, reply) => {
+    if (request.url === "/api/tags") {
+      reply.writeHead(200, { "content-type": "application/json", connection: "close" });
+      reply.end(JSON.stringify({ models: [{ name: "devstral-small-2:24b" }] }));
+      return;
+    }
     const response = responses.length > 1 ? responses.shift() : responses[0];
     if (response === undefined) throw new Error("Ollama fixture exhausted its responses.");
     reply.writeHead(200, { "content-type": "application/json", connection: "close" });

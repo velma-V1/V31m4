@@ -24,8 +24,8 @@
 | Item | Status | Commit | Pushed head |
 |---|---|---|---|
 | 1 General Real Coding Production | VERIFIED_COMPLETE | `feat: generalize supervised coding production` | `108c5571217ce2656bfdcd04ef651d232bb8b01d` |
-| 2 Autonomous Verified Repair | VERIFIED_COMPLETE | `feat: add verified autonomous repair rounds` | pending publication |
-| 3 Measured Model Routing | NOT_STARTED | — | — |
+| 2 Autonomous Verified Repair | VERIFIED_COMPLETE | `feat: add verified autonomous repair rounds` | `60202d40b064254b5d802c1e065cd89f993bd20d` |
+| 3 Measured Model Routing | VERIFIED_COMPLETE | `feat: add measured model routing` | pending publication |
 | 4 General Tool Execution Plane | NOT_STARTED | — | — |
 | 5 Controlled Self-Improvement | NOT_STARTED | — | — |
 | 6 Model Expansion Laboratory | NOT_STARTED | — | — |
@@ -85,19 +85,19 @@
 **Existing owners:** `ModelGatewayPort`, `ModelProfile`, `SupervisedModelGateway`, `CapabilityRepositoryPort`, secret leases, and model adapter process.
 
 **Files:**
-- Create: `packages/infrastructure/src/gateways/measured-model-router.ts`
+- Create: `packages/application/src/services/model-router.ts`
 - Create: `adapters/local-supervised/openai-compatible-model-adapter.mjs`
 - Modify: `apps/runtime/src/supervised/local-execution-composition.ts`
 - Modify: `adapters/local-supervised/model-adapter.mjs`
-- Test: `packages/infrastructure/tests/measured-model-router.test.ts`
-- Test: `apps/runtime/tests/model-discovery-routing.test.ts`
+- Test: `packages/application/tests/services/model-router.test.ts`
+- Test: `apps/runtime/tests/model-routing-real.test.ts`
 
 **Interfaces:** Produce a `ModelGatewayPort` decorator whose selection inputs are task requirements, verified measurements, health, context, and budget; return the exact chosen `modelId` in normal invocation provenance.
 
-- [ ] Write RED discovery/routing/escalation/budget/provenance tests with two complete provider-neutral profiles and a loopback remote fixture.
-- [ ] Implement dynamic `/api/tags` discovery and measured routing without provider types above infrastructure.
-- [ ] Run real local discovery; use two installed models if available, otherwise classify real multi-model proof environment-limited while retaining hermetic two-profile coverage.
-- [ ] Record `docs/reviews/model-routing-proof.md`, gate, commit `feat: add measured model routing`, push, and update status/head.
+- [x] Write RED discovery/routing/escalation/budget/provenance tests with two complete provider-neutral profiles and a loopback remote fixture.
+- [x] Implement dynamic `/api/tags` discovery and measured routing without provider types above infrastructure.
+- [x] Run real local discovery and real inference with installed `qwen3:8b` plus `qwen2.5-coder:14b`.
+- [x] Record `docs/reviews/model-routing-proof.md`, update truth maps, and prepare the phase gate; publication head is recorded after push.
 
 ### Task 4: General Tool Execution Plane
 

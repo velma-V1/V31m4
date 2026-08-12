@@ -21,8 +21,25 @@ runRpcHost({
     active.get(invocationId)?.abort();
     return null;
   },
+  "model.list": discoverModels,
   "model.invoke": invokeModel,
 });
+
+async function discoverModels() {
+  const installed = await discoverInstalledModels();
+  return {
+    models: installed.map((entry) => ({
+      modelId: entry.modelId,
+      adapterId: "ollama-local-supervised",
+      displayName: entry.modelId,
+      status: "available",
+      local: true,
+      ...(entry.contextLimit === undefined ? {} : { contextLimit: entry.contextLimit }),
+      measuredCapabilities: [],
+      supportedModalities: entry.modalities,
+    })),
+  };
+}
 
 async function invokeModel(raw) {
   const params = requirePlainObject(raw, "model.invoke params");
@@ -30,7 +47,10 @@ async function invokeModel(raw) {
   const jobId = requireCanonicalId(params.jobId, "jobId");
   const modelId = requireCanonicalId(params.modelId, "modelId");
   const promptArtifactId = requireCanonicalId(params.promptArtifactId, "promptArtifactId");
-  if (modelId !== model) throw new Error("Requested model is not the configured installed model.");
+  const installed = await discoverInstalledModels();
+  if (!installed.some((entry) => entry.modelId === modelId)) {
+    throw new Error("Requested model is not installed.");
+  }
   const cached = await readCached(invocationId);
   if (cached !== null) return cached;
 
@@ -49,7 +69,7 @@ async function invokeModel(raw) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model,
+        model: modelId,
         stream: false,
         think: false,
         prompt: modelInstructions(prompt),
@@ -67,7 +87,7 @@ async function invokeModel(raw) {
     const envelope = JSON.parse(text);
     if (
       envelope?.done !== true ||
-      envelope?.model !== model ||
+      envelope?.model !== modelId ||
       typeof envelope?.response !== "string"
     ) {
       throw new Error("Ollama response envelope is malformed.");
@@ -90,7 +110,7 @@ async function invokeModel(raw) {
       metadata: {
         adapterId: "ollama-local-supervised",
         realInference: true,
-        model,
+        model: modelId,
         outputFile: `${invocationId}.txt`,
         jobId,
       },
@@ -105,6 +125,66 @@ async function invokeModel(raw) {
   } finally {
     active.delete(invocationId);
   }
+}
+
+async function discoverInstalledModels() {
+  const response = await fetch(new URL("/api/tags", endpoint), { method: "GET" });
+  if (!response.ok) throw retryable(`Ollama discovery returned HTTP ${response.status}.`);
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_RESPONSE_BYTES) throw new Error("Ollama discovery response exceeds limit.");
+  const text = await response.text();
+  if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) {
+    throw new Error("Ollama discovery response exceeds limit.");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error("Ollama discovery response is malformed.", { cause: error });
+  }
+  if (parsed === null || typeof parsed !== "object" || !Array.isArray(parsed.models)) {
+    throw new Error("Ollama discovery response is malformed.");
+  }
+  const installed = parsed.models.flatMap((candidate) => {
+    if (candidate === null || typeof candidate !== "object" || typeof candidate.name !== "string") {
+      throw new Error("Ollama discovery response is malformed.");
+    }
+    const modelId = canonicalModelId(candidate.name);
+    if (modelId === null) return [];
+    const contextLimit = candidate.details?.context_length;
+    if (contextLimit !== undefined && (!Number.isSafeInteger(contextLimit) || contextLimit <= 0)) {
+      throw new Error("Ollama discovery response is malformed.");
+    }
+    if (
+      candidate.capabilities !== undefined &&
+      (!Array.isArray(candidate.capabilities) ||
+        !candidate.capabilities.every((capability) => typeof capability === "string"))
+    ) {
+      throw new Error("Ollama discovery response is malformed.");
+    }
+    const capabilities = candidate.capabilities ?? [];
+    return [
+      {
+        modelId,
+        ...(contextLimit === undefined ? {} : { contextLimit }),
+        modalities: Object.freeze(["text", ...(capabilities.includes("vision") ? ["vision"] : [])]),
+      },
+    ];
+  });
+  if (
+    installed.length > 500 ||
+    new Set(installed.map((entry) => entry.modelId)).size !== installed.length
+  ) {
+    throw new Error("Ollama discovery response is malformed.");
+  }
+  return installed;
+}
+
+function canonicalModelId(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
+    return null;
+  }
+  return value;
 }
 
 function modelInstructions(prompt) {

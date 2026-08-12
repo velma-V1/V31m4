@@ -471,6 +471,14 @@ continue that coherent system-build line:
     successful repair, exact exhaustion/no delivery, forbidden-path refusal, completed replay, and
     fresh-runtime reconciliation after an applied repair effect. The opt-in installed-Ollama proof
     passed with `devstral-small-2:24b`. See `docs/reviews/autonomous-repair-proof.md`.
+20. **Item 3: Measured Model Routing (2026-08-12)** — the supervised model gateway now discovers
+    provider-neutral installed profiles from its child adapter, the application layer produces a
+    capability/availability/context/budget route, and `job.execute` performs bounded retryable
+    escalation while candidate provenance records the actual selected model. Authenticated
+    `model.list` exposes the filtered live catalog. A supervised OpenAI-compatible transport is
+    loopback-contract-proven without paid calls. The target-host proof passed real inference with
+    installed `qwen3:8b` and `qwen2.5-coder:14b`. See
+    `docs/reviews/model-routing-proof.md`.
 
 **Verified, not asserted:** every externally reachable command/query above has real HTTP-request
 tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
@@ -488,6 +496,8 @@ Item 1 additionally exercises a real installed model against a multi-file projec
 fixture; no reference component participates, and only independent command evidence gates delivery.
 Item 2 additionally exercises two real installed-model inferences around a real failed verifier
 command; only the second candidate's independent focused/regression evidence permits delivery.
+Item 3 additionally performs live Ollama inventory and real inference with two installed models;
+the runtime fallback proof records the actual second model in immutable candidate provenance.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -540,11 +550,19 @@ passing / 6 intentionally filtered skips** (9.11 seconds); `pnpm check` PASS wit
 across 105 passing + 3 skipped test files (108 total)**. The browser-inclusive gate used the same
 reversible `/tmp` libraries; no system or repository binary was installed.
 
-**Not yet done — next verified incomplete task after Item 2:**
+Item 3 final workspace gate: focused routing/runtime/adapter/application verification **39 passing /
+3 opt-in skips across 10 files**; actual installed-Ollama routing acceptance **1 passing** with
+`qwen3:8b` and `qwen2.5-coder:14b` (32.38 seconds); `pnpm check` PASS with lint at 0 errors
+(9 existing warnings, 1 existing info), typecheck 9/9, and **484 passing / 14 skipped (498 total)
+across 106 passing + 4 skipped test files (110 total)**. Dependency, source-size, and
+explicit-`any` guards passed as part of the complete suite; the browser-inclusive gate used the
+same reversible `/tmp` libraries.
 
-- **Measured model routing** — the real supervised path still selects one explicitly configured
-  model. Item 3 should discover installed local models, persist provider-neutral measured profiles,
-  route by task/evidence/budget, and prove bounded escalation without changing verifier authority.
+**Not yet done — next verified incomplete task after Item 3:**
+
+- **General governed tool execution** — Item 4 must expose closed filesystem/Git/command/browser
+  operations through `ToolGatewayPort`, with contained working directories, policy, bounded process
+  resources, authoritative artifacts/evidence, and restart-safe failure behavior.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
   `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
   adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked

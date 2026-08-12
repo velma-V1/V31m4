@@ -17,7 +17,8 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test",
     "dev": "node scripts/dev.mjs",
     "prove:general-coding": "node scripts/prove-general-coding-real.mjs",
-    "prove:autonomous-repair": "node scripts/prove-autonomous-repair-real.mjs"
+    "prove:autonomous-repair": "node scripts/prove-autonomous-repair-real.mjs",
+    "prove:model-routing": "node scripts/prove-model-routing-real.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.6",

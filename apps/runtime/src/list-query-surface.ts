@@ -5,6 +5,7 @@ import {
   type EvidenceRepositoryPort,
   type JobRepositoryPort,
   type MissionRepositoryPort,
+  type ModelGatewayPort,
   type OperationContext,
   type PortPage,
   type PortPageRequest,
@@ -20,6 +21,8 @@ import {
   listJobsResponseSchema,
   listMissionsRequestSchema,
   listMissionsResponseSchema,
+  listModelsRequestSchema,
+  listModelsResponseSchema,
   type PaginationRequest,
 } from "@v31m4/contracts";
 import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/domain";
@@ -32,6 +35,7 @@ export interface ListQueryDependencies {
   readonly jobs: JobRepositoryPort;
   readonly candidates: CandidateRepositoryPort;
   readonly evidence: EvidenceRepositoryPort;
+  readonly models: ModelGatewayPort;
 }
 
 function pageRequest(pagination: PaginationRequest): PortPageRequest {
@@ -100,6 +104,35 @@ export function registerListQueries(
   service: RuntimeService,
   dependencies: ListQueryDependencies,
 ): void {
+  service.registerQuery("model.list", async (payload, context) => {
+    const request = parseCommandPayload(listModelsRequestSchema, payload);
+    const all = await dependencies.models.list({ limit: 500 }, context);
+    const filtered = all.items.filter(
+      (profile) =>
+        (request.status === undefined || profile.status === request.status) &&
+        (request.local === undefined || profile.local === request.local) &&
+        (request.modality === undefined || profile.supportedModalities.includes(request.modality)),
+    );
+    const start =
+      request.pagination.cursor === undefined
+        ? (request.pagination.offset ?? 0)
+        : Number(request.pagination.cursor);
+    if (!Number.isSafeInteger(start) || start < 0) {
+      throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is invalid.");
+    }
+    const models = filtered.slice(start, start + request.pagination.limit);
+    const next = start + request.pagination.limit;
+    return listModelsResponseSchema.parse({
+      schemaVersion: request.schemaVersion,
+      requestId: request.requestId,
+      models,
+      pagination: {
+        total: filtered.length,
+        ...(next < filtered.length ? { nextCursor: String(next) } : {}),
+      },
+    }) as unknown as ApplicationJsonValue;
+  });
+
   service.registerQuery("mission.list", async (payload, context) => {
     const request = parseCommandPayload(listMissionsRequestSchema, payload);
     await requireProject(dependencies, request.projectId, context);
