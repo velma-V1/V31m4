@@ -150,7 +150,10 @@ independent of optional local services. `supervised_local` binds the existing pr
 ports/gateways to the local supervised children for the retained `stage4.tiny-code` workflow and
 the strict project-owned `software.production.v1` build-packet workflow. The latter prepares a
 contained isolated working copy, accepts only a bounded change manifest, and derives acceptance
-from packet-declared independent Node verification. Both profiles enter the same application use
+from packet-declared independent Node verification. Failed software candidates may enter a bounded
+evidence-driven repair loop: existing issue/repair use cases create immutable lineage, each repair
+effect receives its own durable kernel checkpoint, and distinct focused/regression verifier
+evidence is required before champion selection. Both profiles enter the same application use
 cases and authoritative repositories; the profile does not create a second state authority or
 allow an adapter to reach SQLite.
 

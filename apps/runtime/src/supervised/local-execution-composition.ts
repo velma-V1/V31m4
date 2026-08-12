@@ -33,9 +33,11 @@ export interface LocalExecutionComposition {
     artifactId: string,
     context: OperationContext,
     workflowId: string,
+    allowReplacement?: boolean,
   ): Promise<void>;
   prepareSoftwareJob(projectPath: string, projectId: ProjectId, jobId: string): Promise<void>;
   softwarePrompt(jobId: string, missionTitle: string, missionObjective: string): Promise<string>;
+  softwareRepairRounds(jobId: string): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -136,7 +138,8 @@ export function createLocalExecutionComposition(
       artifactId: string,
       context: OperationContext,
       workflowId: string,
-    ) => bridge.materialize(jobId, artifactId, context, workflowId),
+      allowReplacement = false,
+    ) => bridge.materialize(jobId, artifactId, context, workflowId, allowReplacement),
     async prepareSoftwareJob(
       projectPath: string,
       projectId: ProjectId,
@@ -150,6 +153,7 @@ export function createLocalExecutionComposition(
     },
     softwarePrompt: (jobId: string, missionTitle: string, missionObjective: string) =>
       software.prompt(jobId, missionTitle, missionObjective),
+    softwareRepairRounds: (jobId: string) => software.repairRounds(jobId),
     async close(): Promise<void> {
       await Promise.all([modelProcess.stop(), kernelProcess.stop(), verifierProcess.stop()]);
     },

@@ -31,7 +31,6 @@ import {
   type ModelId,
   type ProjectId,
   SafePath,
-  VerificationPlanId,
   VerificationResult,
 } from "@v31m4/domain";
 import type { SqliteIdempotencyStore, SqliteRuntimeDatabase } from "@v31m4/infrastructure";
@@ -39,6 +38,10 @@ import type { RuntimeService } from "./composition-root.js";
 import { canonicalJson } from "./external-command-executor.js";
 import { asCommandObject, requireCommandId, stableDigest } from "./job-command-helpers.js";
 import { registerJobStartCommand } from "./job-start-command.js";
+import { createJobModelConfiguration, createJobVerificationPlan } from "./job-verification-plan.js";
+import { applyRepairKernelEffect } from "./supervised/repair-kernel-effect.js";
+import { runBoundedRepairRounds } from "./supervised/repair-orchestrator.js";
+import { supervisedEvidenceId } from "./supervised/supervised-verifier.js";
 
 export interface JobCommandDependencies {
   readonly service: RuntimeService;
@@ -66,6 +69,7 @@ export interface JobCommandDependencies {
     artifactId: string,
     context: Parameters<ModelGatewayPort["invoke"]>[1],
     workflowId: string,
+    allowReplacement?: boolean,
   ) => Promise<void>;
   readonly prepareSoftwareJob?: (
     projectPath: string,
@@ -77,7 +81,9 @@ export interface JobCommandDependencies {
     missionTitle: string,
     missionObjective: string,
   ) => Promise<string>;
+  readonly softwareRepairRounds?: (jobId: string) => Promise<number>;
   readonly interruptAfterKernelEffect?: boolean;
+  readonly interruptAfterRepairKernelEffect?: boolean;
 }
 
 /** Registers direct job commands whose external calls cannot run inside the command executor UoW. */
@@ -104,7 +110,9 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     reconcileInterrupted,
     materializeCandidate,
     softwarePrompt,
+    softwareRepairRounds,
     interruptAfterKernelEffect,
+    interruptAfterRepairKernelEffect,
   } = dependencies;
 
   service.registerDirect("job.execute", async (payload, context) => {
@@ -166,6 +174,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     const projectId = job.value.projectId;
     const modelGateway = modelFactory(projectId);
     const verifier = verifierFactory(projectId, jobIdRaw);
+    const configuration = createJobModelConfiguration(modelId);
     async function* textBytes(text: string): AsyncIterable<Uint8Array> {
       yield Buffer.from(text, "utf8");
     }
@@ -215,15 +224,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
           missionId: job.value.missionId,
           projectId,
           promptArtifactId,
-          configurations: [
-            Object.freeze({
-              modelId,
-              strategy: "direct" as const,
-              contextArtifactIds: Object.freeze([]),
-              toolIds: Object.freeze([]),
-              constraints: Object.freeze([]),
-            }),
-          ],
+          configurations: [configuration],
           candidateIds: [candidateId],
           invocationIds: [
             deterministic
@@ -239,8 +240,18 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     if (candidate === undefined) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Solver forge produced no candidate.");
     }
+    const plan = createJobVerificationPlan({
+      job: job.value,
+      mission: mission.value,
+      candidate,
+      verifierId,
+      deterministic,
+    });
+    const existingEvidence = deterministic
+      ? await evidence.getById(supervisedEvidenceId(plan.id, candidate.id) as never, context)
+      : null;
 
-    if (materializeCandidate !== undefined) {
+    if (materializeCandidate !== undefined && existingEvidence === null) {
       const outputArtifactId = candidate.outputArtifactIds[0];
       if (outputArtifactId === undefined) {
         throw new ApplicationError("INTEGRITY_FAILURE", "Candidate has no kernel work product.");
@@ -292,33 +303,6 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       }
     }
 
-    const verificationCheckId =
-      job.value.workflowId === "software.production.v1"
-        ? (mission.value.acceptanceCriteria[0]?.id ?? "software.production.check")
-        : deterministic
-          ? "stage4.tiny-code.tests"
-          : "output-artifact-presence";
-    const plan = VerificationResult.createPlan({
-      id: VerificationPlanId.parse(
-        deterministic ? `plan-${stableDigest(jobIdRaw).slice(0, 32)}` : `plan-${randomUUID()}`,
-      ),
-      missionId: job.value.missionId,
-      candidateId: candidate.id,
-      checks: [
-        {
-          id: verificationCheckId,
-          criterionIds: Object.freeze(mission.value.acceptanceCriteria.map((entry) => entry.id)),
-          verifierId,
-          kind: deterministic ? ("unit_test" as const) : ("static_analysis" as const),
-          mandatory: true,
-          hidden: false,
-          timeoutMs: 30_000,
-        },
-      ],
-    });
-    const existingEvidence = deterministic
-      ? await evidence.getById(`evidence-${candidate.id}` as never, context)
-      : null;
     let verification: CandidateVerificationOutcome | undefined;
     if (existingEvidence !== null) {
       verification = {
@@ -345,6 +329,67 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     }
     if (verification === undefined) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Verification produced no outcome.");
+    }
+    const primaryCheck = plan.checks[0];
+    if (primaryCheck === undefined) {
+      throw new ApplicationError("INTEGRITY_FAILURE", "Verification plan has no check.");
+    }
+    if (
+      verification.result.status !== "passed" &&
+      job.value.workflowId === "software.production.v1" &&
+      materializeCandidate !== undefined &&
+      softwarePrompt !== undefined &&
+      softwareRepairRounds !== undefined
+    ) {
+      const repaired = await runBoundedRepairRounds(
+        {
+          unitOfWork: database.unitOfWork,
+          artifacts,
+          candidates,
+          evidence,
+          models: modelGateway,
+          verifier,
+          workspaces,
+          createBasePrompt: () =>
+            softwarePrompt(jobIdRaw, mission.value.title, mission.value.objective),
+          applyWorkProduct: (repairCandidate, round) =>
+            applyRepairKernelEffect(
+              {
+                unitOfWork: database.unitOfWork,
+                jobs,
+                events: eventBus,
+                kernel,
+                clock,
+                artifacts,
+                materialize: materializeCandidate,
+                runtimeInstanceId,
+                ...(interruptAfterRepairKernelEffect === undefined
+                  ? {}
+                  : { interruptAfterEffect: interruptAfterRepairKernelEffect }),
+              },
+              jobId,
+              repairCandidate,
+              round,
+              context,
+            ),
+        },
+        {
+          projectId,
+          jobId,
+          source: verification,
+          configuration: { ...configuration, strategy: "failure_first" },
+          check: primaryCheck,
+          maxRepairRounds: Math.min(
+            mission.value.resourceBudget.maxRepairRounds,
+            await softwareRepairRounds(jobIdRaw),
+          ),
+          resourceBudget: mission.value.resourceBudget,
+          createdAt: clock.now(),
+        },
+        context,
+      );
+      candidate = repaired.candidate;
+      verification = repaired.verification;
     }
     const passed = verification.result.status === "passed";
     const existingDecision = deterministic

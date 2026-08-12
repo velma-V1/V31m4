@@ -19,7 +19,7 @@ import type { CandidateRepositoryPort } from "../ports/candidate-repository.port
 import type { EvidenceRepositoryPort } from "../ports/evidence-repository.port.js";
 import type { ModelGatewayPort } from "../ports/model-gateway.port.js";
 import type { UnitOfWorkPort } from "../ports/unit-of-work.port.js";
-import type { VerifierPort } from "../ports/verifier.port.js";
+import type { VerificationExecutionResult, VerifierPort } from "../ports/verifier.port.js";
 import type { WorkspaceManagerPort } from "../ports/workspace-manager.port.js";
 import { requireValue } from "./use-case-support.js";
 
@@ -51,6 +51,8 @@ export interface RepairCandidateCommand {
 export interface RepairCandidateOutcome {
   readonly candidate: SolverCandidateType;
   readonly repair: RepairRecordType;
+  readonly focused: VerificationExecutionResult;
+  readonly regression: VerificationExecutionResult;
 }
 
 export async function repairCandidate(
@@ -146,7 +148,7 @@ export async function repairCandidate(
       }
     });
     await dependencies.workspaces.seal(workspace.id, context);
-    return Object.freeze({ candidate, repair });
+    return Object.freeze({ candidate, repair, focused, regression });
   } catch (error) {
     await dependencies.workspaces.discard(workspace.id, context);
     throw error;

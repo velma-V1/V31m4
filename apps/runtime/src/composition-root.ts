@@ -202,6 +202,7 @@ export interface RuntimeComposition {
 export interface CompositionOverrides {
   readonly verifierFactory?: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
   readonly interruptAfterKernelEffect?: boolean;
+  readonly interruptAfterRepairKernelEffect?: boolean;
 }
 
 /**
@@ -369,6 +370,7 @@ export function buildComposition(
         artifactId: string,
         context: OperationContext,
         workflowId: string,
+        allowReplacement?: boolean,
       ) => Promise<void>)
     | undefined;
   let prepareSoftwareJob:
@@ -377,6 +379,7 @@ export function buildComposition(
   let softwarePrompt:
     | ((jobId: string, missionTitle: string, missionObjective: string) => Promise<string>)
     | undefined;
+  let softwareRepairRounds: ((jobId: string) => Promise<number>) | undefined;
   let closeExternal = async (): Promise<void> => {};
   if (config.executionProfile === "supervised_local") {
     const local = createLocalExecutionComposition(config, artifacts, database.unitOfWork);
@@ -388,6 +391,7 @@ export function buildComposition(
     materializeCandidate = local.materializeCandidate;
     prepareSoftwareJob = local.prepareSoftwareJob;
     softwarePrompt = local.softwarePrompt;
+    softwareRepairRounds = local.softwareRepairRounds;
     closeExternal = local.close;
   } else {
     kernel = new ReferenceProductionKernel();
@@ -431,9 +435,13 @@ export function buildComposition(
     ...(materializeCandidate === undefined ? {} : { materializeCandidate }),
     ...(prepareSoftwareJob === undefined ? {} : { prepareSoftwareJob }),
     ...(softwarePrompt === undefined ? {} : { softwarePrompt }),
+    ...(softwareRepairRounds === undefined ? {} : { softwareRepairRounds }),
     ...(overrides.interruptAfterKernelEffect === undefined
       ? {}
       : { interruptAfterKernelEffect: overrides.interruptAfterKernelEffect }),
+    ...(overrides.interruptAfterRepairKernelEffect === undefined
+      ? {}
+      : { interruptAfterRepairKernelEffect: overrides.interruptAfterRepairKernelEffect }),
   });
 
   return Object.freeze({

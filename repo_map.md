@@ -172,6 +172,13 @@ per-tool capability matrix.
   Ollama acceptance passed 1/1 with `devstral-small-2:24b`. Lint has 0 errors (9 existing
   warnings, 1 existing info), typecheck is 9/9, and the reversible browser runtime libraries under
   `/tmp` were used without installing a system or repository binary.
+- **Item 2 autonomous repair:** existing issue/repair/improvement-policy use cases are now composed
+  around the supervised software workflow with distinct focused/regression evidence, bounded
+  budgets, durable repair checkpoints, exact restart reconciliation, and an explicit installed-
+  Ollama acceptance command. Focused verification is 41 passing / 2 opt-in skips across 12 files;
+  the installed-model repair proof passed 1/1; the full repository gate is **476 passing / 13
+  skipped (489 total) across 105 passing + 3 skipped test files (108 total)** with lint 0 errors
+  and typecheck 9/9.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:

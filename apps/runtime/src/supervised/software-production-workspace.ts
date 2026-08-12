@@ -114,7 +114,7 @@ export class SoftwareProductionWorkspace {
     const packet = softwareBuildPacketSchema.parse(
       JSON.parse(await readFile(join(workspace, ".v31m4", "build-packet.json"), "utf8")),
     );
-    const context = await readFile(join(workspace, ".v31m4", "context.txt"), "utf8");
+    const context = await renderAllowedContext(workspace, packet);
     return [
       "V31M4_SOFTWARE_PRODUCTION_MANIFEST_V1",
       `Mission: ${missionTitle}`,
@@ -129,6 +129,40 @@ export class SoftwareProductionWorkspace {
       context,
     ].join("\n\n");
   }
+
+  async repairRounds(jobId: string): Promise<number> {
+    const workspace = containedPath(
+      join(this.supervisedRoot, "kernel-workspaces"),
+      jobId,
+      "Job workspace",
+    );
+    const packet = softwareBuildPacketSchema.parse(
+      JSON.parse(await readFile(join(workspace, ".v31m4", "build-packet.json"), "utf8")),
+    );
+    return packet.resourceBudget.maxRepairRounds;
+  }
+}
+
+async function renderAllowedContext(
+  workspace: string,
+  packet: SoftwareBuildPacket,
+): Promise<string> {
+  const parts: string[] = [];
+  let totalBytes = 0;
+  for (const file of await collectFiles(workspace, packet.resourceBudget.maxFiles + 3)) {
+    if (file === ".v31m4" || file.startsWith(".v31m4/")) continue;
+    if (!packet.allowedPaths.some((scope) => withinScope(scope, file))) continue;
+    const bytes = await readFile(join(workspace, file));
+    totalBytes += bytes.length;
+    if (
+      bytes.length > packet.resourceBudget.maxFileBytes ||
+      totalBytes > packet.resourceBudget.maxTotalBytes
+    ) {
+      throw new ApplicationError("INTEGRITY_FAILURE", "Repair context exceeds packet limits.");
+    }
+    if (isText(bytes)) parts.push(`--- ${file} ---\n${bytes.toString("utf8")}`);
+  }
+  return parts.sort().join("\n");
 }
 
 async function collectFiles(root: string, maxFiles: number): Promise<string[]> {

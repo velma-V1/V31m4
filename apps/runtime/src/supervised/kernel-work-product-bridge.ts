@@ -21,6 +21,7 @@ export class KernelWorkProductBridge {
     artifactId: string,
     context: OperationContext,
     workflowId = "stage4.tiny-code",
+    allowReplacement = false,
   ): Promise<void> {
     const policy = await this.#pathPolicy();
     const directory = await policy.resolve("project", `kernel-workspaces/${jobId}`);
@@ -35,12 +36,16 @@ export class KernelWorkProductBridge {
         throw new ApplicationError("PERMISSION_DENIED", "Kernel candidate target is unsafe.");
       }
       const current = await readBoundedFile(target);
-      if (!current.equals(bytes)) {
+      if (!current.equals(bytes) && !allowReplacement) {
         throw new ApplicationError(
           "CONFLICT",
           "Kernel candidate retry conflicts with staged work.",
         );
       }
+      if (current.equals(bytes)) return;
+      const temporary = join(directory, `candidate.${process.pid}.replacement.tmp`);
+      await writeFile(temporary, bytes, { flag: "wx" });
+      await rename(temporary, target);
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

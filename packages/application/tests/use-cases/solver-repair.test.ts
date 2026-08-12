@@ -155,6 +155,7 @@ describe("solver, verification, issue, and repair use cases", () => {
       context,
     );
     expect(outcome.repair.status).toBe("passed");
+    expect(outcome.focused.evidence[0]?.id).not.toBe(outcome.regression.evidence[0]?.id);
     expect(harness.issues.get("issue-1")?.value.status).toBe("repaired");
     expect(harness.evidenceRecords.size).toBe(2);
   });

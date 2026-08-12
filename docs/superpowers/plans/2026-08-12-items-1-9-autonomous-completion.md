@@ -23,8 +23,8 @@
 
 | Item | Status | Commit | Pushed head |
 |---|---|---|---|
-| 1 General Real Coding Production | VERIFIED_COMPLETE | `feat: generalize supervised coding production` | pending publication |
-| 2 Autonomous Verified Repair | NOT_STARTED | — | — |
+| 1 General Real Coding Production | VERIFIED_COMPLETE | `feat: generalize supervised coding production` | `108c5571217ce2656bfdcd04ef651d232bb8b01d` |
+| 2 Autonomous Verified Repair | VERIFIED_COMPLETE | `feat: add verified autonomous repair rounds` | pending publication |
 | 3 Measured Model Routing | NOT_STARTED | — | — |
 | 4 General Tool Execution Plane | NOT_STARTED | — | — |
 | 5 Controlled Self-Improvement | NOT_STARTED | — | — |
@@ -73,10 +73,10 @@
 
 **Interfaces:** Produce `runBoundedRepairRounds(...)` over existing use cases; every round creates new candidate/repair/evidence records and consumes `ResourceBudget.maxRepairRounds`.
 
-- [ ] Write RED HTTP/SQLite tests for successful second-candidate repair, exhaustion, identical failure, regression break, forbidden path, verifier crash, restart between rounds, and completed retry.
-- [ ] Implement the smallest evidence-to-repair prompt and deterministic round identities; never mutate prior candidate/artifacts.
-- [ ] Prove the controlled success fixture and honest bounded failure with a real verifier.
-- [ ] Record `docs/reviews/autonomous-repair-proof.md`, gate, commit `feat: add verified autonomous repair rounds`, push, and update status/head.
+- [x] Write RED HTTP/SQLite tests for successful second-candidate repair, exhaustion/identical failure, forbidden path, restart between rounds, and completed retry; retain owning process-exit/verifier-failure regressions.
+- [x] Implement the smallest evidence-to-repair prompt and deterministic round identities; never mutate prior candidate/artifacts.
+- [x] Prove the controlled success fixture and honest bounded failure with a real verifier, then pass a two-inference installed-Ollama repair proof.
+- [x] Record `docs/reviews/autonomous-repair-proof.md`, update truth maps, gate, commit `feat: add verified autonomous repair rounds`, push, and record the published head.
 
 ### Task 3: Measured Model Routing
 

@@ -1,191 +1,21 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { afterEach, describe, expect, it } from "vitest";
-import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
-import { createRuntimeConfig } from "../src/runtime-config.js";
+import {
+  bootGeneralRuntime as boot,
+  cleanupGeneralFixtures,
+  generalCommand as command,
+  createGeneralMission as createMission,
+  fakeOllama,
+  generalRuntimes as runtimes,
+  startGeneralJob,
+  GENERAL_TOKEN as TOKEN,
+} from "./general-coding-fixture.js";
 
-const TOKEN = "token-general-production-abcdefghijklmnop";
-const runtimes: RunningRuntime[] = [];
-const servers: Server[] = [];
-
-afterEach(async () => {
-  await Promise.all(runtimes.splice(0).map((runtime) => runtime.shutdown()));
-  const remainingServers = servers.splice(0);
-  for (const server of remainingServers) server.closeAllConnections();
-  await Promise.all(
-    remainingServers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
-  );
-});
-
-async function fakeOllama(content: string): Promise<string> {
-  const server = createServer((_request, reply) => {
-    reply.writeHead(200, { "content-type": "application/json", connection: "close" });
-    reply.end(
-      JSON.stringify({
-        model: "devstral-small-2:24b",
-        response: content,
-        done: true,
-        prompt_eval_count: 30,
-        eval_count: 20,
-      }),
-    );
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  servers.push(server);
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("Ollama fixture failed");
-  return `http://127.0.0.1:${address.port}`;
-}
-
-async function boot(dataRoot: string, endpoint: string) {
-  const runtime = await startRuntime(
-    createRuntimeConfig({
-      port: 0,
-      databasePath: join(dataRoot, "state.db"),
-      sessions: [{ token: TOKEN, actorId: "operator", roles: ["operator"] }],
-      shutdownTimeoutMs: 500,
-      executionProfile: "supervised_local",
-      supervisedLocal: { ollamaEndpoint: endpoint, model: "devstral-small-2:24b" },
-    }),
-  );
-  runtimes.push(runtime);
-  return `http://127.0.0.1:${runtime.address.port}`;
-}
-
-function command(base: string, type: string, key: string, body: unknown) {
-  return fetch(`${base}/commands/${type}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${TOKEN}`,
-      "content-type": "application/json",
-      "idempotency-key": key,
-    },
-    body: JSON.stringify(body),
-  });
-}
-
-async function createMission(base: string, dataRoot: string) {
-  const source = join(dataRoot, "projects/general-project");
-  await Promise.all([
-    mkdir(join(source, "src"), { recursive: true }),
-    mkdir(join(source, "test"), { recursive: true }),
-    mkdir(join(source, ".v31m4"), { recursive: true }),
-  ]);
-  writeFileSync(join(source, "src/greeting.mjs"), 'export const greeting = "broken";\n');
-  writeFileSync(
-    join(source, "src/format.mjs"),
-    "export const formatGreeting = (value) => value.trim();\n",
-  );
-  writeFileSync(
-    join(source, "test/greeting.test.mjs"),
-    [
-      'import { strict as assert } from "node:assert";',
-      'import { greeting } from "../src/greeting.mjs";',
-      'assert.equal(greeting, "hello world");',
-    ].join("\n"),
-  );
-  writeFileSync(join(source, "README.md"), "unrelated content must remain unchanged\n");
-  writeFileSync(join(source, "package.json"), '{"name":"general-fixture","type":"module"}\n');
-  const projectResponse = await command(base, "project.create", "general-project", {
-    schemaVersion: CONTRACT_SCHEMA_VERSION,
-    requestId: "general-project-request",
-    name: "General Project",
-    rootPath: "general-project",
-  });
-  const projectId = ((await projectResponse.json()) as { result: { project: { id: string } } })
-    .result.project.id;
-  writeFileSync(
-    join(source, ".v31m4/build-packet.json"),
-    JSON.stringify({
-      schemaVersion: "1.0.0",
-      projectId,
-      objective: "Repair the greeting implementation.",
-      requiredOutputs: [{ path: "src/greeting.mjs", mediaType: "text/javascript" }],
-      forbiddenChanges: ["README.md"],
-      allowedPaths: ["src"],
-      allowedOperations: ["read", "update"],
-      commands: [
-        {
-          id: "node-test",
-          executable: "node",
-          args: ["test/greeting.test.mjs"],
-          cwd: ".",
-          timeoutMs: 10_000,
-        },
-      ],
-      mandatoryCommandIds: ["node-test"],
-      resourceBudget: {
-        maxFiles: 20,
-        maxFileBytes: 16_384,
-        maxTotalBytes: 131_072,
-        maxRepairRounds: 1,
-      },
-    }),
-  );
-  const missionResponse = await command(base, "mission.submit", "general-mission", {
-    schemaVersion: CONTRACT_SCHEMA_VERSION,
-    requestId: "general-mission-request",
-    projectId,
-    title: "Repair greeting",
-    objective: "Make greeting equal hello world without changing unrelated files.",
-    requiredOutputs: [{ id: "greeting", kind: "code", description: "Updated greeting module." }],
-    requirements: [
-      {
-        id: "greeting",
-        statement: "Greeting is hello world.",
-        priority: "required",
-        source: "user",
-      },
-    ],
-    constraints: [],
-    acceptanceCriteria: [
-      {
-        id: "node-test",
-        statement: "Independent greeting test passes.",
-        verificationMethod: "Run the declared Node check.",
-        mandatory: true,
-      },
-    ],
-    forbiddenChanges: [],
-    evidenceRequirements: [{ criterionId: "node-test", requiredEvidenceKinds: ["unit_test"] }],
-    resourceBudget: {
-      maxWallClockMs: 30_000,
-      maxModelInvocations: 2,
-      maxToolInvocations: 2,
-      maxRepairRounds: 1,
-      maxConcurrentWorkers: 1,
-    },
-  });
-  const missionBody = (await missionResponse.json()) as {
-    result?: { mission: { id: string } };
-    error?: unknown;
-  };
-  expect(missionResponse.status, JSON.stringify(missionBody)).toBe(200);
-  const missionId = missionBody.result?.mission.id;
-  if (missionId === undefined) throw new Error("Mission response omitted its result.");
-  return { source, missionId };
-}
-
-async function startGeneralJob(base: string, missionId: string, key: string) {
-  const response = await command(base, "job.start", key, {
-    schemaVersion: CONTRACT_SCHEMA_VERSION,
-    requestId: `${key}-request`,
-    missionId,
-    workflowId: "software.production.v1",
-  });
-  const body = (await response.json()) as {
-    result?: { job: { id: string } };
-    error?: { code: string; message: string };
-  };
-  expect(response.status, JSON.stringify(body)).toBe(200);
-  const jobId = body.result?.job.id;
-  if (jobId === undefined) throw new Error("Job response omitted its result.");
-  return jobId;
-}
+afterEach(cleanupGeneralFixtures);
 
 describe("general supervised coding production", () => {
   it("executes a real multi-file mission while preserving unrelated source", async () => {
@@ -242,7 +72,7 @@ describe("general supervised coding production", () => {
     });
     const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-general-scope-"));
     const base = await boot(dataRoot, await fakeOllama(manifest));
-    const setup = await createMission(base, dataRoot);
+    const setup = await createMission(base, dataRoot, 0);
     const jobId = await startGeneralJob(base, setup.missionId, "scope-job");
     const response = await command(base, "job.execute", "scope-execute", { jobId });
     expect(response.status).toBe(502);
@@ -263,7 +93,7 @@ describe("general supervised coding production", () => {
     });
     const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-general-verifier-"));
     const base = await boot(dataRoot, await fakeOllama(manifest));
-    const setup = await createMission(base, dataRoot);
+    const setup = await createMission(base, dataRoot, 0);
     const jobId = await startGeneralJob(base, setup.missionId, "failed-job");
     const response = await command(base, "job.execute", "failed-execute", { jobId });
     const body = (await response.json()) as { result?: unknown; error?: unknown };
@@ -274,6 +104,141 @@ describe("general supervised coding production", () => {
       decision: { decision: "no_verified_solution" },
       receipt: null,
     });
+  });
+
+  it("turns failed evidence into one immutable verified repair candidate", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-general-repair-"));
+    const endpoint = await fakeOllama([
+      JSON.stringify({
+        changes: [
+          {
+            path: "src/greeting.mjs",
+            operation: "update",
+            content: 'export const greeting = "still broken";\n',
+          },
+        ],
+      }),
+      JSON.stringify({
+        changes: [
+          {
+            path: "src/greeting.mjs",
+            operation: "update",
+            content: 'export const greeting = "hello world";\n',
+          },
+        ],
+      }),
+    ]);
+    const base = await boot(dataRoot, endpoint);
+    const setup = await createMission(base, dataRoot);
+    const jobId = await startGeneralJob(base, setup.missionId, "repair-job");
+
+    const response = await command(base, "job.execute", "repair-execute", { jobId });
+    const body = (await response.json()) as {
+      result?: {
+        job: { status: string };
+        candidate: { id: string; parentCandidateIds: readonly string[] };
+        verification: { status: string };
+        receipt: unknown;
+      };
+      error?: unknown;
+    };
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body.result).toMatchObject({
+      job: { status: "completed" },
+      candidate: { parentCandidateIds: [expect.stringMatching(/^candidate-/u)] },
+      verification: { status: "passed" },
+    });
+    expect(body.result?.receipt).not.toBeNull();
+
+    const candidates = await fetch(`${base}/queries/candidate.list`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        schemaVersion: CONTRACT_SCHEMA_VERSION,
+        requestId: "repair-candidates",
+        projectId: setup.projectId,
+        missionId: setup.missionId,
+        pagination: { limit: 10 },
+      }),
+    });
+    expect(candidates.status).toBe(200);
+    expect(await candidates.json()).toMatchObject({
+      result: {
+        candidates: [
+          { original: true, parentCandidateIds: [] },
+          { original: false, parentCandidateIds: [expect.stringMatching(/^candidate-/u)] },
+        ],
+        pagination: { total: 2 },
+      },
+    });
+
+    const identity = createHash("sha256").update(`${jobId}:repair:1`).digest("hex").slice(0, 32);
+    const issue = await fetch(`${base}/records/issue/issue-${identity}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(issue.status).toBe(200);
+    expect(await issue.json()).toMatchObject({ record: { value: { status: "repaired" } } });
+    const repair = await fetch(`${base}/records/repair/repair-${identity}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(repair.status).toBe(200);
+    expect(await repair.json()).toMatchObject({
+      record: {
+        value: {
+          status: "passed",
+          sourceCandidateId: expect.stringMatching(/^candidate-/u),
+          repairedCandidateId: `candidate-repair-${identity}`,
+        },
+      },
+    });
+
+    const retry = await command(base, "job.execute", "repair-execute", { jobId });
+    expect(retry.status).toBe(200);
+    const firstRuntime = runtimes.shift();
+    await firstRuntime?.shutdown();
+    const restartedBase = await boot(dataRoot, endpoint);
+    const recovered = await fetch(`${restartedBase}/records/repair/repair-${identity}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toMatchObject({ record: { value: { status: "passed" } } });
+
+    const workspace = join(dataRoot, `supervised/kernel-workspaces/${jobId}`);
+    expect(readFileSync(join(workspace, "src/greeting.mjs"), "utf8")).toContain("hello world");
+  });
+
+  it("stops with no verified solution when the declared repair budget is exhausted", async () => {
+    const broken = JSON.stringify({
+      changes: [
+        {
+          path: "src/greeting.mjs",
+          operation: "update",
+          content: 'export const greeting = "still broken";\n',
+        },
+      ],
+    });
+    const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-repair-exhausted-"));
+    const base = await boot(dataRoot, await fakeOllama([broken, broken]));
+    const setup = await createMission(base, dataRoot, 1);
+    const jobId = await startGeneralJob(base, setup.missionId, "exhausted-job");
+    const response = await command(base, "job.execute", "exhausted-execute", { jobId });
+    const body = (await response.json()) as { result?: unknown; error?: unknown };
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body.result).toMatchObject({
+      job: { status: "failed" },
+      candidate: { original: false },
+      verification: { status: "failed" },
+      decision: { decision: "no_verified_solution" },
+      receipt: null,
+    });
+    const identity = createHash("sha256").update(`${jobId}:repair:1`).digest("hex").slice(0, 32);
+    const repair = await fetch(`${base}/records/repair/repair-${identity}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(await repair.json()).toMatchObject({ record: { value: { status: "failed" } } });
   });
 
   it.runIf(process.env["V31M4_RUN_REAL_GENERAL_PROOF"] === "1")(
@@ -297,5 +262,34 @@ describe("general supervised coding production", () => {
       });
     },
     180_000,
+  );
+
+  it.runIf(process.env["V31M4_RUN_REAL_REPAIR_PROOF"] === "1")(
+    "repairs a failed real-model candidate from independent verifier evidence",
+    async () => {
+      const dataRoot = mkdtempSync(join(tmpdir(), "v31m4-repair-real-"));
+      const base = await boot(
+        dataRoot,
+        process.env["V31M4_OLLAMA_ENDPOINT"] ?? "http://127.0.0.1:11434",
+      );
+      const setup = await createMission(
+        base,
+        dataRoot,
+        1,
+        "salutations from the verified velma fixture",
+        false,
+      );
+      const jobId = await startGeneralJob(base, setup.missionId, "real-repair-job");
+      const response = await command(base, "job.execute", "real-repair-execute", { jobId });
+      const body = (await response.json()) as { result?: unknown; error?: unknown };
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      expect(body.result).toMatchObject({
+        job: { status: "completed" },
+        candidate: { original: false, parentCandidateIds: [expect.stringMatching(/^candidate-/u)] },
+        verification: { status: "passed" },
+        decision: { decision: "champion" },
+      });
+    },
+    240_000,
   );
 });

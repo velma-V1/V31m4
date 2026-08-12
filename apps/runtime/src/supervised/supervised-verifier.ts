@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -13,6 +14,14 @@ import type { ProjectId, SolverCandidate, VerificationPlan } from "@v31m4/domain
 import { ArtifactId, EvidenceId, SafePath, ToolId, VerificationResult } from "@v31m4/domain";
 
 const TOOL_ID = ToolId.parse("stage4-deterministic-verifier");
+
+function verificationIdentity(planId: string, candidateId: string): string {
+  return createHash("sha256").update(`${planId}:${candidateId}`).digest("hex").slice(0, 32);
+}
+
+export function supervisedEvidenceId(planId: string, candidateId: string): string {
+  return `evidence-${verificationIdentity(planId, candidateId)}`;
+}
 
 /** Independent verifier bridge: tool exit status becomes immutable authoritative evidence. */
 export class SupervisedVerifier implements VerifierPort {
@@ -42,7 +51,8 @@ export class SupervisedVerifier implements VerifierPort {
     ) {
       throw new ApplicationError("INVALID_APPLICATION_INPUT", "Unsupported verification plan.");
     }
-    const invocationId = `invocation-verify-${candidate.id}`;
+    const identity = verificationIdentity(plan.id, candidate.id);
+    const invocationId = `invocation-verify-${identity}`;
     const execution = await this.tools.invoke(
       {
         invocationId,
@@ -95,7 +105,7 @@ export class SupervisedVerifier implements VerifierPort {
             projectId: this.projectId,
             jobId: this.jobId as never,
             kind: "test_report",
-            logicalPath: SafePath.parse(`job-${this.jobId}/verification-${candidate.id}.json`),
+            logicalPath: SafePath.parse(`job-${this.jobId}/verification-${identity}.json`),
             mediaType: "application/json",
             parentArtifactIds: candidate.outputArtifactIds,
             bytes: bytes(),
@@ -106,7 +116,7 @@ export class SupervisedVerifier implements VerifierPort {
       });
     }
     const passed = execution.status === "completed" && execution.exitCode === 0;
-    const evidenceId = EvidenceId.parse(`evidence-${candidate.id}`);
+    const evidenceId = EvidenceId.parse(supervisedEvidenceId(plan.id, candidate.id));
     const evidence = Object.freeze({
       id: evidenceId,
       projectId: this.projectId,
@@ -125,7 +135,7 @@ export class SupervisedVerifier implements VerifierPort {
       immutable: true as const,
     });
     const result = VerificationResult.calculate({
-      id: `verification-${candidate.id}`,
+      id: `verification-${identity}`,
       plan,
       completedChecks: [{ checkId: check.id, status: evidence.status, evidenceIds: [evidence.id] }],
     });

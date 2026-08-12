@@ -463,6 +463,14 @@ continue that coherent system-build line:
     readback, unrelated/source-repository preservation, and Stage 4 compatibility. The opt-in
     target-host proof passed with installed Ollama 0.32.7 `devstral-small-2:24b`. See
     `docs/reviews/general-coding-production-proof.md`.
+19. **Item 2: Autonomous Verified Repair (2026-08-12)** — failed general-software verification
+    now composes the existing issue, improvement-policy, reconstructed-candidate, repair,
+    checkpoint, and verifier authorities into a bounded loop. Every round preserves parent
+    lineage, consumes declared mission/build-packet budgets, applies through the supervised kernel,
+    and persists distinct focused/regression evidence. Real HTTP + SQLite regressions prove
+    successful repair, exact exhaustion/no delivery, forbidden-path refusal, completed replay, and
+    fresh-runtime reconciliation after an applied repair effect. The opt-in installed-Ollama proof
+    passed with `devstral-small-2:24b`. See `docs/reviews/autonomous-repair-proof.md`.
 
 **Verified, not asserted:** every externally reachable command/query above has real HTTP-request
 tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
@@ -478,6 +486,8 @@ Stage 4 additionally exercises actual Ollama inference and distinct supervised k
 processes; no reference component participates in that explicit profile.
 Item 1 additionally exercises a real installed model against a multi-file project-owned software
 fixture; no reference component participates, and only independent command evidence gates delivery.
+Item 2 additionally exercises two real installed-model inferences around a real failed verifier
+command; only the second candidate's independent focused/regression evidence permits delivery.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -522,12 +532,19 @@ across 104 passing + 3 skipped test files (107 total)**. The successful browser-
 used the same reversible libraries under `/tmp` through `LD_LIBRARY_PATH`; no system or repository
 binary was installed.
 
-**Not yet done — next verified incomplete task after Item 1:**
+Item 2 final workspace gate: focused repair/runtime/application/process/architecture verification
+**41 passing / 2 opt-in skips across 12 files**; actual installed-Ollama repair acceptance **1
+passing / 6 intentionally filtered skips** (43.02 seconds); Item 1 installed-model regression **1
+passing / 6 intentionally filtered skips** (9.11 seconds); `pnpm check` PASS with lint at 0 errors
+(9 existing warnings, 1 existing info), typecheck 9/9, and **476 passing / 13 skipped (489 total)
+across 105 passing + 3 skipped test files (108 total)**. The browser-inclusive gate used the same
+reversible `/tmp` libraries; no system or repository binary was installed.
 
-- **Autonomous verified repair rounds** — failed independent verification is durable and blocks
-  delivery, but it does not yet create evidence-backed issue/repair lineage and bounded follow-up
-  candidates. Item 2 should compose the existing `recordIssues`, `repairCandidate`, verification,
-  candidate lineage, and resource-budget machinery around the now-general supervised workflow.
+**Not yet done — next verified incomplete task after Item 2:**
+
+- **Measured model routing** — the real supervised path still selects one explicitly configured
+  model. Item 3 should discover installed local models, persist provider-neutral measured profiles,
+  route by task/evidence/budget, and prove bounded escalation without changing verifier authority.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
   `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
   adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked
