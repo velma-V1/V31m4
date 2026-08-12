@@ -11,4 +11,5 @@ export * from "./plugins.schemas.js";
 export * from "./practice.schemas.js";
 export * from "./projects.schemas.js";
 export * from "./runtime-events.schemas.js";
+export * from "./software-production.schemas.js";
 export * from "./tools.schemas.js";

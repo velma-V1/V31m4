@@ -454,6 +454,15 @@ continue that coherent system-build line:
     candidate, checkpoint, evidence record, decision, receipt, and kernel apply. The negative path
     applies incorrect code, records failed verifier evidence, selects no champion, and creates no
     delivery. See `docs/reviews/stage-4-real-supervised-execution-proof.md`.
+18. **Item 1: General Real Coding Production (2026-08-12)** — the same `supervised_local`
+    model/kernel/verifier path now accepts a strict project-owned `.v31m4/build-packet.json` for
+    `software.production.v1`, prepares a bounded symlink-free isolated copy, supplies only
+    allowed-path context, accepts a closed multi-file change manifest, applies the complete change
+    set atomically, and runs the packet's mandatory independent Node check. Real HTTP + SQLite
+    regressions prove out-of-scope refusal, verifier-gated no-delivery, idempotent replay, restart
+    readback, unrelated/source-repository preservation, and Stage 4 compatibility. The opt-in
+    target-host proof passed with installed Ollama 0.32.7 `devstral-small-2:24b`. See
+    `docs/reviews/general-coding-production-proof.md`.
 
 **Verified, not asserted:** every externally reachable command/query above has real HTTP-request
 tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
@@ -467,6 +476,8 @@ Stage 3 additionally exercises approval creation/decision/consumption and the pr
 effect through that same real boundary, including rollback and restart.
 Stage 4 additionally exercises actual Ollama inference and distinct supervised kernel/verifier
 processes; no reference component participates in that explicit profile.
+Item 1 additionally exercises a real installed model against a multi-file project-owned software
+fixture; no reference component participates, and only independent command evidence gates delivery.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -503,12 +514,20 @@ skipped files (103 total)**. The additional default skip is the explicitly opt-i
 test, which was run separately and passed. Source-size/dependency/explicit-`any` guards pass;
 `job-command-surface.ts` is 498 lines.
 
-**Not yet done — next verified incomplete task after Stage 4:**
+Item 1 final workspace gate: focused contract/runtime/adapter/architecture verification **28
+passing / 1 opt-in skip across 8 files**; actual installed-Ollama general-production acceptance
+**1 passing / 3 intentionally filtered skips**; `pnpm check` PASS with lint at 0 errors (9
+existing warnings, 1 existing info), typecheck 9/9, and **472 passing / 12 skipped (484 total)
+across 104 passing + 3 skipped test files (107 total)**. The successful browser-inclusive gate
+used the same reversible libraries under `/tmp` through `LD_LIBRARY_PATH`; no system or repository
+binary was installed.
 
-- **General real coding-production execution** — Stage 4's `stage4.tiny-code` workflow is a proven
-  real vertical slice, not yet a general project-owned build-packet executor. The next system-build
-  task should generalize the same supervised model/kernel/verifier/evidence path to bounded
-  approved workspace operations and repair rounds without creating a second execution framework.
+**Not yet done — next verified incomplete task after Item 1:**
+
+- **Autonomous verified repair rounds** — failed independent verification is durable and blocks
+  delivery, but it does not yet create evidence-backed issue/repair lineage and bounded follow-up
+  candidates. Item 2 should compose the existing `recordIssues`, `repairCandidate`, verification,
+  candidate lineage, and resource-budget machinery around the now-general supervised workflow.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
   `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
   adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked

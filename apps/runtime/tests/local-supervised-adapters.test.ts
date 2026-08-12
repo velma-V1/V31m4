@@ -181,6 +181,63 @@ describe("local supervised adapter processes", () => {
     }
   });
 
+  it("uses a strict change-manifest response schema for software production", async () => {
+    const root = await temporaryRoot();
+    const manifest = {
+      changes: [
+        {
+          path: "src/greeting.mjs",
+          operation: "update",
+          content: 'export const greeting = "hello world";\n',
+        },
+      ],
+    };
+    const ollama = await fakeOllama({
+      model: "devstral-small-2:24b",
+      response: JSON.stringify(manifest),
+      done: true,
+    });
+    await mkdir(join(root, "model-inputs"), { recursive: true });
+    await writeFile(
+      join(root, "model-inputs/artifact-software-prompt.txt"),
+      "V31M4_SOFTWARE_PRODUCTION_MANIFEST_V1\nUpdate src/greeting.mjs.",
+      "utf8",
+    );
+    const model = adapter("ollama-model", "model-adapter.mjs", {
+      V31M4_STAGE4_ROOT: root,
+      V31M4_OLLAMA_ENDPOINT: ollama.endpoint,
+      V31M4_OLLAMA_MODEL: "devstral-small-2:24b",
+    });
+    try {
+      await model.invoke(
+        "model.invoke",
+        {
+          invocationId: "invocation-software-1",
+          jobId: "job-software-1",
+          modelId: "devstral-small-2:24b",
+          promptArtifactId: "artifact-software-prompt",
+          configuration: {
+            modelId: "devstral-small-2:24b",
+            strategy: "direct",
+            contextArtifactIds: [],
+            toolIds: [],
+            constraints: [],
+          },
+          resourceBudget: budget,
+        },
+        { timeoutMs: 2_000 },
+      );
+      expect(ollama.requests[0]).toMatchObject({
+        format: { type: "object", required: ["changes"] },
+      });
+      expect(
+        JSON.parse(await readFile(join(root, "model-outputs/invocation-software-1.txt"), "utf8")),
+      ).toEqual(manifest);
+    } finally {
+      await model.stop();
+    }
+  });
+
   it("applies a checkpointed candidate once and verifies it with a real child command", async () => {
     const root = await temporaryRoot();
     const kernel = adapter("local-kernel", "kernel-adapter.mjs", { V31M4_STAGE4_ROOT: root });
@@ -313,6 +370,121 @@ describe("local supervised adapter processes", () => {
       ).toContain("not implemented");
     } finally {
       await kernel.stop();
+    }
+  });
+
+  it("applies a bounded multi-file manifest and runs packet-declared verification", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "kernel-workspaces/job-general-1");
+    await mkdir(join(workspace, ".v31m4"), { recursive: true });
+    await mkdir(join(workspace, "src"), { recursive: true });
+    await mkdir(join(workspace, "test"), { recursive: true });
+    await writeFile(join(workspace, "src/greeting.mjs"), 'export const greeting = "broken";\n');
+    await writeFile(
+      join(workspace, "test/greeting.test.mjs"),
+      [
+        'import { strict as assert } from "node:assert";',
+        'import { greeting } from "../src/greeting.mjs";',
+        'assert.equal(greeting, "hello world");',
+      ].join("\n"),
+    );
+    await writeFile(
+      join(workspace, ".v31m4/build-packet.json"),
+      JSON.stringify({
+        schemaVersion: "1.0.0",
+        projectId: "project-general-1",
+        objective: "Repair greeting.",
+        requiredOutputs: [{ path: "src/greeting.mjs", mediaType: "text/javascript" }],
+        forbiddenChanges: ["README.md"],
+        allowedPaths: ["src"],
+        allowedOperations: ["read", "update"],
+        commands: [
+          {
+            id: "test",
+            executable: "node",
+            args: ["test/greeting.test.mjs"],
+            cwd: ".",
+            timeoutMs: 10_000,
+          },
+        ],
+        mandatoryCommandIds: ["test"],
+        resourceBudget: {
+          maxFiles: 20,
+          maxFileBytes: 8_192,
+          maxTotalBytes: 65_536,
+          maxRepairRounds: 1,
+        },
+      }),
+    );
+    const kernel = adapter("general-kernel", "kernel-adapter.mjs", {
+      V31M4_STAGE4_ROOT: root,
+    });
+    const verifier = adapter("general-verifier", "verifier-adapter.mjs", {
+      V31M4_STAGE4_ROOT: root,
+    });
+    try {
+      await kernel.invoke(
+        "kernel.start_job",
+        {
+          invocationId: "invocation-general-start",
+          jobId: "job-general-1",
+          projectId: "project-general-1",
+          missionId: "mission-general-1",
+          workflowId: "software.production.v1",
+          input: {},
+          resourceBudget: budget,
+        },
+        { timeoutMs: 2_000 },
+      );
+      await writeFile(
+        join(workspace, "candidate.json"),
+        JSON.stringify({
+          changes: [
+            {
+              path: "src/greeting.mjs",
+              operation: "update",
+              content: 'export const greeting = "hello world";\n',
+            },
+          ],
+        }),
+      );
+      const checkpointId = await kernel.invoke(
+        "kernel.checkpoint_job",
+        {
+          invocationId: "invocation-general-checkpoint",
+          jobId: "job-general-1",
+          stage: "candidate_staged",
+        },
+        { timeoutMs: 2_000 },
+      );
+      await kernel.invoke(
+        "kernel.resume_job",
+        { invocationId: "invocation-general-resume", jobId: "job-general-1", checkpointId },
+        { timeoutMs: 2_000 },
+      );
+      const verified = (await verifier.invoke(
+        "tool.invoke",
+        {
+          invocationId: "invocation-general-verify",
+          jobId: "job-general-1",
+          toolId: "stage4-deterministic-verifier",
+          operation: "verify_candidate",
+          inputArtifactIds: [],
+          parameters: { candidateId: "candidate-general-1", checkId: "test" },
+          expectedOutputs: ["verification_report"],
+          resourceBudget: budget,
+        },
+        { timeoutMs: 12_000 },
+      )) as Record<string, unknown>;
+      expect(verified).toMatchObject({ status: "completed", exitCode: 0 });
+      expect(await readFile(join(workspace, "src/greeting.mjs"), "utf8")).toContain("hello world");
+      expect(
+        JSON.parse(
+          await readFile(join(root, "verifier-reports/invocation-general-verify.json"), "utf8"),
+        ),
+      ).toMatchObject({ checkId: "test", exitCode: 0 });
+    } finally {
+      await Promise.all([kernel.stop(), verifier.stop()]);
     }
   });
 });

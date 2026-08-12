@@ -20,5 +20,6 @@ describe("@v31m4/contracts public API", () => {
     expect(typeof contracts.avatarStateSchema.parse).toBe("function");
     expect(typeof contracts.runtimeEventSchema.parse).toBe("function");
     expect(typeof contracts.adapterRpcMessageSchema.parse).toBe("function");
+    expect(typeof contracts.softwareBuildPacketSchema.parse).toBe("function");
   });
 });

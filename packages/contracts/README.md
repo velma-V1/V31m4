@@ -16,6 +16,10 @@ This package is the versioned validation boundary between V31M4 processes, appli
 
 External manifests and portable records are also represented in `/schemas`. Overlapping TypeScript and JSON manifest contracts are protected by parity tests.
 
+`software-production.schemas.ts` owns the strict `1.0.0` project build packet used by the optional
+general supervised coding workflow. It accepts only capabilities the current production boundary
+implements; broader tool commands are added only with their governed execution implementation.
+
 ## Versioning
 
 Read `/docs/contract-versioning.md` before changing an accepted or rejected payload shape.

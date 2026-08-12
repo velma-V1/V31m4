@@ -364,7 +364,18 @@ export function buildComposition(
   let verifierId: string;
   let verifierFactory: (projectId: ProjectId, jobId: string) => VerifierPort;
   let materializeCandidate:
-    | ((jobId: string, artifactId: string, context: OperationContext) => Promise<void>)
+    | ((
+        jobId: string,
+        artifactId: string,
+        context: OperationContext,
+        workflowId: string,
+      ) => Promise<void>)
+    | undefined;
+  let prepareSoftwareJob:
+    | ((projectPath: string, projectId: ProjectId, jobId: string) => Promise<void>)
+    | undefined;
+  let softwarePrompt:
+    | ((jobId: string, missionTitle: string, missionObjective: string) => Promise<string>)
     | undefined;
   let closeExternal = async (): Promise<void> => {};
   if (config.executionProfile === "supervised_local") {
@@ -375,6 +386,8 @@ export function buildComposition(
     verifierId = local.verifierId;
     verifierFactory = (projectId, jobId) => local.verifier(projectId, jobId);
     materializeCandidate = local.materializeCandidate;
+    prepareSoftwareJob = local.prepareSoftwareJob;
+    softwarePrompt = local.softwarePrompt;
     closeExternal = local.close;
   } else {
     kernel = new ReferenceProductionKernel();
@@ -398,6 +411,7 @@ export function buildComposition(
     service,
     database,
     missions,
+    projects,
     jobs,
     eventBus,
     idempotency,
@@ -415,6 +429,8 @@ export function buildComposition(
     runtimeInstanceId,
     reconcileInterrupted: config.executionProfile === "supervised_local",
     ...(materializeCandidate === undefined ? {} : { materializeCandidate }),
+    ...(prepareSoftwareJob === undefined ? {} : { prepareSoftwareJob }),
+    ...(softwarePrompt === undefined ? {} : { softwarePrompt }),
     ...(overrides.interruptAfterKernelEffect === undefined
       ? {}
       : { interruptAfterKernelEffect: overrides.interruptAfterKernelEffect }),

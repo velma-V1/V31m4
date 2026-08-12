@@ -11,21 +11,19 @@ import {
   deliverResult,
   type EventBusPort,
   type EvidenceRepositoryPort,
-  isApplicationError,
   type JobRepositoryPort,
   type MissionRepositoryPort,
   type ModelGatewayPort,
   type ProductionKernelPort,
+  type ProjectRepositoryPort,
   runSolverForge,
   selectChampionUseCase,
-  startJob,
   type VerifierPort,
   type Versioned,
   verifyCandidates,
   type WorkspaceManagerPort,
   WriteConditions,
 } from "@v31m4/application";
-import { startJobRequestSchema, startJobResponseSchema } from "@v31m4/contracts";
 import {
   ArtifactId,
   Job,
@@ -40,12 +38,13 @@ import type { SqliteIdempotencyStore, SqliteRuntimeDatabase } from "@v31m4/infra
 import type { RuntimeService } from "./composition-root.js";
 import { canonicalJson } from "./external-command-executor.js";
 import { asCommandObject, requireCommandId, stableDigest } from "./job-command-helpers.js";
-import { parseCommandPayload } from "./use-case-infrastructure.js";
+import { registerJobStartCommand } from "./job-start-command.js";
 
 export interface JobCommandDependencies {
   readonly service: RuntimeService;
   readonly database: SqliteRuntimeDatabase;
   readonly missions: MissionRepositoryPort;
+  readonly projects: ProjectRepositoryPort;
   readonly jobs: JobRepositoryPort;
   readonly eventBus: EventBusPort;
   readonly idempotency: SqliteIdempotencyStore;
@@ -66,12 +65,24 @@ export interface JobCommandDependencies {
     jobId: string,
     artifactId: string,
     context: Parameters<ModelGatewayPort["invoke"]>[1],
+    workflowId: string,
   ) => Promise<void>;
+  readonly prepareSoftwareJob?: (
+    projectPath: string,
+    projectId: ProjectId,
+    jobId: string,
+  ) => Promise<void>;
+  readonly softwarePrompt?: (
+    jobId: string,
+    missionTitle: string,
+    missionObjective: string,
+  ) => Promise<string>;
   readonly interruptAfterKernelEffect?: boolean;
 }
 
 /** Registers direct job commands whose external calls cannot run inside the command executor UoW. */
 export function registerJobCommands(dependencies: JobCommandDependencies): void {
+  registerJobStartCommand(dependencies);
   const {
     service,
     database,
@@ -80,7 +91,6 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     eventBus,
     idempotency,
     kernel,
-    audit,
     clock,
     artifacts,
     candidates,
@@ -93,82 +103,9 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
     runtimeInstanceId,
     reconcileInterrupted,
     materializeCandidate,
+    softwarePrompt,
     interruptAfterKernelEffect,
   } = dependencies;
-
-  service.registerDirect("job.start", async (payload, context) => {
-    const payloadHash = createHash("sha256").update(canonicalJson(payload)).digest("hex");
-    const cached = await idempotency.lookup(
-      context.actor.id,
-      context.idempotencyKey,
-      "job.start",
-      payloadHash,
-    );
-    if (cached?.status === "completed") return cached.result as ApplicationJsonValue;
-
-    const request = parseCommandPayload(startJobRequestSchema, payload);
-    const jobId = `job-${createHash("sha256")
-      .update(`${context.actor.id}:${context.idempotencyKey}`)
-      .digest("hex")
-      .slice(0, 32)}`;
-    const mission = await missions.getById(request.missionId, context);
-    if (mission === null) {
-      throw new ApplicationError("NOT_FOUND", "Mission does not exist.", {
-        details: { missionId: request.missionId },
-      });
-    }
-    const toResponse = (job: Job): ApplicationJsonValue =>
-      startJobResponseSchema.parse({
-        schemaVersion: request.schemaVersion,
-        requestId: request.requestId,
-        job,
-      }) as unknown as ApplicationJsonValue;
-
-    let response: ApplicationJsonValue;
-    try {
-      const saved = await startJob(
-        { unitOfWork: database.unitOfWork, jobs, events: eventBus, kernel, audit, clock },
-        {
-          jobId,
-          projectId: mission.value.projectId,
-          missionId: request.missionId,
-          workflowId: request.workflowId,
-          input: {},
-          resourceBudget: mission.value.resourceBudget,
-          createdEventId: `event-${randomUUID()}`,
-          queuedEventId: `event-${randomUUID()}`,
-          startedEventId: `event-${randomUUID()}`,
-          failureEventId: `event-${randomUUID()}`,
-          auditId: `audit-${randomUUID()}`,
-        },
-        context,
-      );
-      response = toResponse(saved.value);
-    } catch (error) {
-      if (isApplicationError(error) && error.code === "CONFLICT") {
-        const current = await jobs.getById(JobId.parse(jobId), context);
-        if (
-          current !== null &&
-          current.value.missionId === request.missionId &&
-          current.value.workflowId === request.workflowId
-        ) {
-          response = toResponse(current.value);
-        } else {
-          throw error;
-        }
-      } else {
-        throw error;
-      }
-    }
-    await idempotency.complete(
-      context.actor.id,
-      context.idempotencyKey,
-      "job.start",
-      payloadHash,
-      response,
-    );
-    return response;
-  });
 
   service.registerDirect("job.execute", async (payload, context) => {
     const payloadHash = createHash("sha256").update(canonicalJson(payload)).digest("hex");
@@ -238,6 +175,16 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       : `artifact-${randomUUID()}`;
     const promptArtifactId = ArtifactId.parse(promptArtifactIdValue);
     if ((await artifacts.get(promptArtifactId, context)) === null) {
+      const prompt =
+        job.value.workflowId === "software.production.v1"
+          ? await softwarePrompt?.(jobIdRaw, mission.value.title, mission.value.objective)
+          : `${mission.value.title}\n${mission.value.objective}`;
+      if (prompt === undefined) {
+        throw new ApplicationError(
+          "DEPENDENCY_UNAVAILABLE",
+          "Software production prompt materialization is unavailable.",
+        );
+      }
       await database.unitOfWork.execute(context, async (transaction) => {
         const artifact = await artifacts.write(
           {
@@ -247,7 +194,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
             logicalPath: SafePath.parse(`job-${jobIdRaw}/prompt.txt`),
             mediaType: "text/plain",
             parentArtifactIds: [],
-            bytes: textBytes(`${mission.value.title}\n${mission.value.objective}`),
+            bytes: textBytes(prompt),
           },
           context,
           transaction,
@@ -298,7 +245,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       if (outputArtifactId === undefined) {
         throw new ApplicationError("INTEGRITY_FAILURE", "Candidate has no kernel work product.");
       }
-      await materializeCandidate(jobIdRaw, outputArtifactId, context);
+      await materializeCandidate(jobIdRaw, outputArtifactId, context, job.value.workflowId);
       let checkpointId = job.value.latestCheckpointId;
       if (checkpointId === undefined) {
         const artifact = await artifacts.get(outputArtifactId, context);
@@ -345,6 +292,12 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       }
     }
 
+    const verificationCheckId =
+      job.value.workflowId === "software.production.v1"
+        ? (mission.value.acceptanceCriteria[0]?.id ?? "software.production.check")
+        : deterministic
+          ? "stage4.tiny-code.tests"
+          : "output-artifact-presence";
     const plan = VerificationResult.createPlan({
       id: VerificationPlanId.parse(
         deterministic ? `plan-${stableDigest(jobIdRaw).slice(0, 32)}` : `plan-${randomUUID()}`,
@@ -353,7 +306,7 @@ export function registerJobCommands(dependencies: JobCommandDependencies): void 
       candidateId: candidate.id,
       checks: [
         {
-          id: deterministic ? "stage4.tiny-code.tests" : "output-artifact-presence",
+          id: verificationCheckId,
           criterionIds: Object.freeze(mission.value.acceptanceCriteria.map((entry) => entry.id)),
           verifierId,
           kind: deterministic ? ("unit_test" as const) : ("static_analysis" as const),

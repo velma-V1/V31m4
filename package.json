@@ -15,7 +15,8 @@
     "typecheck": "turbo run typecheck",
     "test": "vitest run",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "prove:general-coding": "node scripts/prove-general-coding-real.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.6",

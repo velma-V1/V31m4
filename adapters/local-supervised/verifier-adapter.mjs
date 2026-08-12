@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { requireCanonicalId, requirePlainObject, runRpcHost } from "./rpc-host.mjs";
 
@@ -35,12 +35,13 @@ async function verifyCandidate(raw) {
     30_000,
     Math.max(1, Number(params.resourceBudget?.maxWallClockMs ?? 30_000)),
   );
-  const execution = await runVerification(workspace, invocationId, timeoutMs);
+  const command = await verificationCommand(workspace, params.parameters);
+  const execution = await runVerification(invocationId, timeoutMs, command);
   const reportFile = `${invocationId}.json`;
   const report = {
     verifierId: "stage4-node-verifier",
     verifierVersion: "1.0.0",
-    checkId: "stage4.tiny-code.tests",
+    checkId: command.checkId,
     invocationId,
     jobId,
     exitCode: execution.exitCode,
@@ -69,18 +70,14 @@ async function verifyCandidate(raw) {
   };
 }
 
-async function runVerification(workspace, invocationId, timeoutMs) {
+async function runVerification(invocationId, timeoutMs, command) {
   return new Promise((resolveResult, reject) => {
-    const child = spawn(
-      process.execPath,
-      ["--permission", `--allow-fs-read=${workspace}`, "verify.mjs"],
-      {
-        cwd: workspace,
-        env: { PATH: process.env.PATH ?? "" },
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
+    const child = spawn(command.executable, command.args, {
+      cwd: command.cwd,
+      env: { PATH: process.env.PATH ?? "" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
     active.set(invocationId, child);
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
@@ -107,6 +104,57 @@ async function runVerification(workspace, invocationId, timeoutMs) {
       });
     });
   });
+}
+
+async function verificationCommand(workspace, rawParameters) {
+  const packetPath = join(workspace, ".v31m4/build-packet.json");
+  try {
+    const stat = await lstat(packetPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) {
+      throw new Error("Software build packet is invalid.");
+    }
+    const packet = JSON.parse(await readFile(packetPath, "utf8"));
+    const checkId = requireCanonicalId(rawParameters?.checkId, "checkId");
+    if (
+      !Array.isArray(packet.mandatoryCommandIds) ||
+      !packet.mandatoryCommandIds.includes(checkId)
+    ) {
+      throw new Error("Verification check is not mandatory in the build packet.");
+    }
+    const declared = packet.commands?.find((entry) => entry?.id === checkId);
+    if (
+      declared?.executable !== "node" ||
+      !Array.isArray(declared.args) ||
+      !declared.args.every((argument) => typeof argument === "string") ||
+      typeof declared.cwd !== "string"
+    ) {
+      throw new Error("Verification command is not supported or malformed.");
+    }
+    const cwd = containedPath(workspace, declared.cwd);
+    return {
+      checkId,
+      executable: process.execPath,
+      args: ["--permission", `--allow-fs-read=${workspace}`, ...declared.args],
+      cwd,
+    };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return {
+      checkId: "stage4.tiny-code.tests",
+      executable: process.execPath,
+      args: ["--permission", `--allow-fs-read=${workspace}`, "verify.mjs"],
+      cwd: workspace,
+    };
+  }
+}
+
+function containedPath(workspace, relativePath) {
+  const root = resolve(workspace);
+  const target = resolve(root, relativePath);
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error("Verification working directory escapes workspace.");
+  }
+  return target;
 }
 
 function boundedConcat(current, chunk) {

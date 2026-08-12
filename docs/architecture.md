@@ -147,9 +147,12 @@ relationship-scoped and filter before pagination.
 
 Execution composition is explicit. `hermetic_reference` is the default and keeps core startup
 independent of optional local services. `supervised_local` binds the existing provider-neutral
-ports/gateways to the Stage 4 local children for the allowlisted `stage4.tiny-code` workflow. Both
-profiles enter the same application use cases and authoritative repositories; the profile does not
-create a second state authority or allow an adapter to reach SQLite.
+ports/gateways to the local supervised children for the retained `stage4.tiny-code` workflow and
+the strict project-owned `software.production.v1` build-packet workflow. The latter prepares a
+contained isolated working copy, accepts only a bounded change manifest, and derives acceptance
+from packet-declared independent Node verification. Both profiles enter the same application use
+cases and authoritative repositories; the profile does not create a second state authority or
+allow an adapter to reach SQLite.
 
 ## Verification authority
 

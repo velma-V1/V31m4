@@ -16,11 +16,18 @@ export class KernelWorkProductBridge {
     private readonly root: string,
   ) {}
 
-  async materialize(jobId: string, artifactId: string, context: OperationContext): Promise<void> {
+  async materialize(
+    jobId: string,
+    artifactId: string,
+    context: OperationContext,
+    workflowId = "stage4.tiny-code",
+  ): Promise<void> {
     const policy = await this.#pathPolicy();
     const directory = await policy.resolve("project", `kernel-workspaces/${jobId}`);
     await mkdir(directory, { recursive: true });
-    const target = await policy.resolve("project", `kernel-workspaces/${jobId}/candidate.mjs`);
+    const candidateName =
+      workflowId === "software.production.v1" ? "candidate.json" : "candidate.mjs";
+    const target = await policy.resolve("project", `kernel-workspaces/${jobId}/${candidateName}`);
     const bytes = await readBounded(this.artifacts, ArtifactId.parse(artifactId), context);
     try {
       const existing = await lstat(target);

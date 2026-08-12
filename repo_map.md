@@ -107,6 +107,7 @@ per-tool capability matrix.
 |---|---|
 | Default `hermetic_reference` kernel/model/verifier | Reference — retained for deterministic core boot and tests; no external service required |
 | Explicit `supervised_local` `stage4.tiny-code` path | VERIFIED REAL — installed Ollama 0.32.7 `devstral-small-2:24b` inference, three supervised child processes, contained checkpointed kernel apply, independent Node command verifier, immutable evidence, champion/delivery gate, and exactly-once restart reconciliation |
+| Explicit `supervised_local` `software.production.v1` path | VERIFIED REAL — strict project-owned build packet, bounded multi-file context/change manifest, isolated atomic kernel edits, packet-declared independent Node check, immutable evidence/delivery, idempotent replay, restart readback, and installed `devstral-small-2:24b` target-host proof |
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
 | `mission.list` / `job.list` / `candidate.list` / `evidence.list` query surface | VERIFIED — authenticated strict `POST /queries/:type`, existing Layer 4 repositories, relationship validation, filtered pagination, valid empty/error/auth behavior, and persisted restart-stable results |
@@ -165,6 +166,12 @@ per-tool capability matrix.
   Ollama 0.32.7 `devstral-small-2:24b`. Focused Stage 4/owning-layer verification is 52/52 across
   11 files; post-reconciliation runtime verification is 19/19 across 4 files. `pnpm check`,
   dependency/source-size/explicit-`any` guards, and the independent real target-host proof pass.
+- **Item 1 current full workspace regression (re-run 2026-08-12):** **472 passing cases / 12
+  skipped (484 total) across 104 passing + 3 skipped test files (107 total)**. Focused general
+  production verification is 28 passing / 1 opt-in skip across 8 files; the separate installed
+  Ollama acceptance passed 1/1 with `devstral-small-2:24b`. Lint has 0 errors (9 existing
+  warnings, 1 existing info), typecheck is 9/9, and the reversible browser runtime libraries under
+  `/tmp` were used without installing a system or repository binary.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:

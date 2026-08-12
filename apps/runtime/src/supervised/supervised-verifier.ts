@@ -50,7 +50,7 @@ export class SupervisedVerifier implements VerifierPort {
         toolId: TOOL_ID,
         operation: "verify_candidate",
         inputArtifactIds: candidate.outputArtifactIds,
-        parameters: { candidateId: candidate.id },
+        parameters: { candidateId: candidate.id, checkId: check.id },
         expectedOutputs: ["verification_report"],
         resourceBudget: {
           maxWallClockMs: check.timeoutMs,
@@ -71,7 +71,7 @@ export class SupervisedVerifier implements VerifierPort {
     if (
       report["verifierId"] !== "stage4-node-verifier" ||
       report["verifierVersion"] !== "1.0.0" ||
-      report["checkId"] !== "stage4.tiny-code.tests" ||
+      report["checkId"] !== check.id ||
       report["exitCode"] !== execution.exitCode
     ) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Verifier report is malformed.");

@@ -19,6 +19,7 @@ import {
 import type { RuntimeConfig } from "../runtime-config.js";
 import { KernelWorkProductBridge } from "./kernel-work-product-bridge.js";
 import { ModelArtifactGateway } from "./model-artifact-gateway.js";
+import { SoftwareProductionWorkspace } from "./software-production-workspace.js";
 import { SupervisedVerifier } from "./supervised-verifier.js";
 
 export interface LocalExecutionComposition {
@@ -27,7 +28,14 @@ export interface LocalExecutionComposition {
   readonly kernel: ProductionKernelPort;
   model(projectId: ProjectId): ModelGatewayPort;
   verifier(projectId: ProjectId, jobId: string): VerifierPort;
-  materializeCandidate(jobId: string, artifactId: string, context: OperationContext): Promise<void>;
+  materializeCandidate(
+    jobId: string,
+    artifactId: string,
+    context: OperationContext,
+    workflowId: string,
+  ): Promise<void>;
+  prepareSoftwareJob(projectPath: string, projectId: ProjectId, jobId: string): Promise<void>;
+  softwarePrompt(jobId: string, missionTitle: string, missionObjective: string): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -111,6 +119,10 @@ export function createLocalExecutionComposition(
     new Map([[verifierToolId, { primary: verifierProcess }]]),
   );
   const bridge = new KernelWorkProductBridge(artifacts, root);
+  const software = new SoftwareProductionWorkspace(
+    join(dirname(config.databasePath), "projects"),
+    root,
+  );
   return Object.freeze({
     modelId,
     verifierId: "stage4-node-verifier",
@@ -119,8 +131,25 @@ export function createLocalExecutionComposition(
       new ModelArtifactGateway(modelGateway, artifacts, unitOfWork, projectId, root),
     verifier: (projectId: ProjectId, jobId: string) =>
       new SupervisedVerifier(toolGateway, artifacts, unitOfWork, projectId, jobId, root),
-    materializeCandidate: (jobId: string, artifactId: string, context: OperationContext) =>
-      bridge.materialize(jobId, artifactId, context),
+    materializeCandidate: (
+      jobId: string,
+      artifactId: string,
+      context: OperationContext,
+      workflowId: string,
+    ) => bridge.materialize(jobId, artifactId, context, workflowId),
+    async prepareSoftwareJob(
+      projectPath: string,
+      projectId: ProjectId,
+      jobId: string,
+    ): Promise<void> {
+      const packet = await software.load(projectPath);
+      if (packet.projectId !== projectId) {
+        throw new Error("Software build packet belongs to a different project.");
+      }
+      await software.prepare(projectPath, jobId, packet);
+    },
+    softwarePrompt: (jobId: string, missionTitle: string, missionObjective: string) =>
+      software.prompt(jobId, missionTitle, missionObjective),
     async close(): Promise<void> {
       await Promise.all([modelProcess.stop(), kernelProcess.stop(), verifierProcess.stop()]);
     },

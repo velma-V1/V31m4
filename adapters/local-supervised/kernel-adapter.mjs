@@ -2,6 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { requireCanonicalId, requirePlainObject, runRpcHost } from "./rpc-host.mjs";
+import {
+  applyChangeManifest,
+  loadSoftwarePacket,
+  parseChangeManifest,
+} from "./software-production-workflow.mjs";
 
 const MAX_CANDIDATE_BYTES = 64 * 1024;
 const root = resolve(requiredEnvironment("V31M4_STAGE4_ROOT"));
@@ -23,7 +28,7 @@ async function startJob(raw) {
   const projectId = requireCanonicalId(params.projectId, "projectId");
   const missionId = requireCanonicalId(params.missionId, "missionId");
   requireCanonicalId(params.invocationId, "invocationId");
-  if (params.workflowId !== "stage4.tiny-code")
+  if (!new Set(["stage4.tiny-code", "software.production.v1"]).has(params.workflowId))
     throw new Error("Kernel workflow is not allowlisted.");
   const workspace = await ensureWorkspace(jobId);
   const current = await readState(workspace);
@@ -35,21 +40,25 @@ async function startJob(raw) {
   }
   const acceptedAt = new Date().toISOString();
   const operationId = `kernel-operation-${randomUUID()}`;
-  await atomicWrite(
-    join(workspace, "solution.mjs"),
-    'export function add() { throw new Error("not implemented"); }\n',
-  );
-  await atomicWrite(
-    join(workspace, "verify.mjs"),
-    [
-      'import { strict as assert } from "node:assert";',
-      'import { add } from "./solution.mjs";',
-      "assert.equal(add(2, 3), 5);",
-      "assert.equal(add(-2, 3), 1);",
-      'process.stdout.write("stage4 tiny-code verification passed\\n");',
-      "",
-    ].join("\n"),
-  );
+  if (params.workflowId === "stage4.tiny-code") {
+    await atomicWrite(
+      join(workspace, "solution.mjs"),
+      'export function add() { throw new Error("not implemented"); }\n',
+    );
+    await atomicWrite(
+      join(workspace, "verify.mjs"),
+      [
+        'import { strict as assert } from "node:assert";',
+        'import { add } from "./solution.mjs";',
+        "assert.equal(add(2, 3), 5);",
+        "assert.equal(add(-2, 3), 1);",
+        'process.stdout.write("stage4 tiny-code verification passed\\n");',
+        "",
+      ].join("\n"),
+    );
+  } else {
+    await loadSoftwarePacket(workspace, projectId);
+  }
   const state = {
     jobId,
     projectId,
@@ -58,7 +67,7 @@ async function startJob(raw) {
     operationId,
     acceptedAt,
     status: "running",
-    stage: "fixture_ready",
+    stage: params.workflowId === "stage4.tiny-code" ? "fixture_ready" : "context_prepared",
     progress: 0.25,
     applyCount: 0,
   };
@@ -73,8 +82,15 @@ async function checkpointJob(raw) {
   requireCanonicalId(params.invocationId, "invocationId");
   const workspace = await existingWorkspace(jobId);
   const state = requiredState(await readState(workspace));
-  const candidatePath = join(workspace, "candidate.mjs");
+  const candidatePath = join(
+    workspace,
+    state.workflowId === "software.production.v1" ? "candidate.json" : "candidate.mjs",
+  );
   const candidate = await readRegularBounded(candidatePath);
+  if (state.workflowId === "software.production.v1") {
+    const packet = await loadSoftwarePacket(workspace, state.projectId);
+    parseChangeManifest(candidate, packet);
+  }
   const candidateHash = digest(candidate);
   const checkpointId = `checkpoint-${digest(`${jobId}:${candidateHash}`).slice(0, 32)}`;
   const checkpoint = {
@@ -118,7 +134,10 @@ async function resumeJob(raw) {
   if (checkpoint.jobId !== jobId || checkpoint.checkpointId !== checkpointId) {
     throw new Error("Kernel checkpoint belongs to a different job.");
   }
-  const candidatePath = join(workspace, "candidate.mjs");
+  const candidatePath = join(
+    workspace,
+    state.workflowId === "software.production.v1" ? "candidate.json" : "candidate.mjs",
+  );
   const candidate = await readRegularBounded(candidatePath);
   const candidateHash = digest(candidate);
   if (checkpoint.candidateHash !== candidateHash || state.checkpointId !== checkpointId) {
@@ -136,6 +155,20 @@ async function resumeJob(raw) {
         progress: 0.75,
       });
     }
+    return receipt(state.operationId, state.acceptedAt, jobId);
+  }
+  if (state.workflowId === "software.production.v1") {
+    const packet = await loadSoftwarePacket(workspace, state.projectId);
+    const changes = parseChangeManifest(candidate, packet);
+    await applyChangeManifest(workspace, changes);
+    await writeState(workspace, {
+      ...state,
+      status: "completed",
+      stage: "candidate_applied",
+      progress: 0.75,
+      appliedHash: candidateHash,
+      applyCount: state.applyCount + 1,
+    });
     return receipt(state.operationId, state.acceptedAt, jobId);
   }
   await rejectSymlink(join(workspace, "solution.mjs"));

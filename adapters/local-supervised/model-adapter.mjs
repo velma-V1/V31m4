@@ -40,6 +40,7 @@ async function invokeModel(raw) {
     throw new Error("Prompt materialization is invalid or oversized.");
   }
   const prompt = await readFile(promptPath, "utf8");
+  const softwareProduction = prompt.includes("V31M4_SOFTWARE_PRODUCTION_MANIFEST_V1");
   const controller = new AbortController();
   active.set(invocationId, controller);
   const started = performance.now();
@@ -51,16 +52,8 @@ async function invokeModel(raw) {
         model,
         stream: false,
         think: false,
-        prompt: [
-          "Return only JSON matching the supplied schema.",
-          "The content must be a complete JavaScript ES module with no Markdown fences.",
-          prompt,
-        ].join("\n\n"),
-        format: {
-          type: "object",
-          required: ["content"],
-          properties: { content: { type: "string" } },
-        },
+        prompt: modelInstructions(prompt),
+        format: responseSchema(softwareProduction),
         options: { temperature: 0 },
       }),
       signal: controller.signal,
@@ -79,22 +72,9 @@ async function invokeModel(raw) {
     ) {
       throw new Error("Ollama response envelope is malformed.");
     }
-    const structured = JSON.parse(envelope.response);
-    if (
-      structured === null ||
-      typeof structured !== "object" ||
-      Array.isArray(structured) ||
-      Object.keys(structured).length !== 1 ||
-      typeof structured.content !== "string" ||
-      structured.content.trim().length === 0 ||
-      Buffer.byteLength(structured.content) > MAX_OUTPUT_BYTES ||
-      structured.content.includes("```") ||
-      structured.content.includes("\0")
-    ) {
-      throw new Error("Ollama structured output is malformed.");
-    }
+    const output = parseStructuredOutput(JSON.parse(envelope.response), softwareProduction);
     const outputPath = contained(outputs, `${invocationId}.txt`);
-    await atomicWrite(outputPath, structured.content);
+    await atomicWrite(outputPath, output);
     const artifactId = `artifact-model-${digest(invocationId).slice(0, 32)}`;
     const result = {
       invocationId,
@@ -125,6 +105,74 @@ async function invokeModel(raw) {
   } finally {
     active.delete(invocationId);
   }
+}
+
+function modelInstructions(prompt) {
+  const outputInstruction = prompt.includes("V31M4_SOFTWARE_PRODUCTION_MANIFEST_V1")
+    ? "The content must be the requested JSON change manifest with no Markdown fences."
+    : "The content must be a complete JavaScript ES module with no Markdown fences.";
+  return ["Return only JSON matching the supplied schema.", outputInstruction, prompt].join("\n\n");
+}
+
+function responseSchema(softwareProduction) {
+  if (!softwareProduction) {
+    return {
+      type: "object",
+      required: ["content"],
+      properties: { content: { type: "string" } },
+    };
+  }
+  return {
+    type: "object",
+    required: ["changes"],
+    properties: {
+      changes: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["path", "operation"],
+          properties: {
+            path: { type: "string" },
+            operation: { type: "string", enum: ["create", "update", "delete"] },
+            content: { type: "string" },
+          },
+        },
+      },
+    },
+  };
+}
+
+function parseStructuredOutput(structured, softwareProduction) {
+  if (softwareProduction) {
+    const output = JSON.stringify(structured);
+    if (
+      structured === null ||
+      typeof structured !== "object" ||
+      Array.isArray(structured) ||
+      Object.keys(structured).length !== 1 ||
+      !Array.isArray(structured.changes) ||
+      structured.changes.length === 0 ||
+      Buffer.byteLength(output) > MAX_OUTPUT_BYTES ||
+      output.includes("\0")
+    ) {
+      throw new Error("Ollama change manifest is malformed.");
+    }
+    return output;
+  }
+  if (
+    structured === null ||
+    typeof structured !== "object" ||
+    Array.isArray(structured) ||
+    Object.keys(structured).length !== 1 ||
+    typeof structured.content !== "string" ||
+    structured.content.trim().length === 0 ||
+    Buffer.byteLength(structured.content) > MAX_OUTPUT_BYTES ||
+    structured.content.includes("```") ||
+    structured.content.includes("\0")
+  ) {
+    throw new Error("Ollama structured output is malformed.");
+  }
+  return structured.content;
 }
 
 async function readCached(invocationId) {
