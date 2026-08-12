@@ -1,10 +1,12 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type ApprovalRequest, createOperationContext, WriteConditions } from "@v31m4/application";
 import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
 import { createRuntimeConfig, type RuntimeConfig } from "../src/runtime-config.js";
+import { SqliteApprovalStore } from "../src/use-case-infrastructure.js";
 
 const OPERATOR_TOKEN = "token-operator-abcdefghijkl";
 const VIEWER_TOKEN = "token-viewer-abcdefghijklmn";
@@ -324,6 +326,76 @@ describe("durable approval flow", () => {
         .map((row) => JSON.parse(row.body) as { action: string; resourceId?: string })
         .filter((record) => record.action === "approval.consume" && record.resourceId === secondId);
       expect(secondConsume).toEqual([]);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("rejects every represented mismatch through real HTTP and SQLite", async () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "v31m4-approval-mismatch-")), "state.db");
+    const runtime = await startRuntime(configuration(databasePath));
+    const store = new SqliteApprovalStore(runtime.composition.database);
+    const now = Date.now();
+    const seedContext = createOperationContext({
+      requestId: "request:seed-mismatches",
+      idempotencyKey: "idempotency:seed-mismatches",
+      actor: { id: "operator", kind: "user", roles: ["operator"] },
+      startedAt: new Date(now).toISOString(),
+    });
+    const cases: readonly [string, Partial<ApprovalRequest>][] = [
+      ["wrong-action", { action: "plugin.activate" }],
+      ["wrong-resource-type", { resourceType: "project" }],
+      ["wrong-resource-id", { resourceId: "plugin:other" }],
+      ["wrong-requester", { requestedBy: { id: "other", kind: "user", roles: ["operator"] } }],
+      ["wrong-scope", { requiredScopes: ["plugin:read"] }],
+      ["wrong-context", { context: { version: "2.0.0", network: false } }],
+      [
+        "expired",
+        {
+          requestedAt: new Date(now - 3_600_000).toISOString(),
+          decidedAt: new Date(now - 1_800_000).toISOString(),
+          expiresAt: new Date(now - 1_000).toISOString(),
+        },
+      ],
+    ];
+    try {
+      for (const [label, override] of cases) {
+        const pluginId = `plugin.mismatch-${label}`;
+        const approvalId = `approval:mismatch:${label}`;
+        const value: ApprovalRequest = {
+          id: approvalId,
+          action: "plugin.register",
+          resourceType: "plugin",
+          resourceId: pluginId,
+          requestedBy: seedContext.actor,
+          requiredScopes: ["plugin:register"],
+          context: { version: "1.0.0", network: false },
+          status: "granted",
+          requestedAt: new Date(now - 60_000).toISOString(),
+          expiresAt: new Date(now + 3_600_000).toISOString(),
+          decidedBy: seedContext.actor,
+          decidedAt: new Date(now - 30_000).toISOString(),
+          decisionReason: "Seeded for mismatch proof.",
+          ...override,
+        };
+        await runtime.composition.database.unitOfWork.execute(seedContext, (transaction) =>
+          store.save(value, WriteConditions.mustNotExist(), seedContext, transaction),
+        );
+        const response = await command(runtime, "plugin.register", `mismatch-${label}`, {
+          ...metadata(`request:mismatch:${label}`),
+          manifest: manifest(pluginId),
+          approvalId,
+        });
+        expect({ status: response.status, body: await response.json() }, label).toMatchObject({
+          status: 403,
+          body: { error: { code: "APPROVAL_REQUIRED" } },
+        });
+        const plugin = await fetch(
+          `http://127.0.0.1:${runtime.address.port}/records/plugin/${pluginId}`,
+          { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } },
+        );
+        expect(plugin.status, label).toBe(404);
+      }
     } finally {
       await runtime.shutdown();
     }

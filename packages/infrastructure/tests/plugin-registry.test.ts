@@ -29,6 +29,15 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 }
 
 describe("SqlitePluginRegistry", () => {
+  it("rejects malformed pagination cursors", async () => {
+    const db = database();
+    const registry = new SqlitePluginRegistry(db);
+    await expect(registry.list({ limit: 1, cursor: "1junk" })).rejects.toMatchObject({
+      code: "INVALID_APPLICATION_INPUT",
+    });
+    db.close();
+  });
+
   it("registers a plugin once and rejects a colliding id", async () => {
     const db = database();
     const registry = new SqlitePluginRegistry(db);

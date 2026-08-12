@@ -9,6 +9,7 @@ import {
   type PortPageRequest,
 } from "@v31m4/application";
 import type { ModelId, ModelProfile } from "@v31m4/domain";
+import { parsePaginationCursor } from "../pagination-cursor.js";
 import { type AdapterBinding, invokeAdapter, selectInvoker } from "./adapter-invoker.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -34,7 +35,7 @@ export class SupervisedModelGateway implements ModelGatewayPort {
   }
 
   async list(request: PortPageRequest): Promise<PortPage<ModelProfile>> {
-    const start = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
+    const start = parsePaginationCursor(request.cursor);
     const items = this.#profiles.slice(start, start + request.limit);
     const next = start + request.limit;
     return Object.freeze({

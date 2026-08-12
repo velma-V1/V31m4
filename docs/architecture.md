@@ -89,14 +89,20 @@ and avatar unlock engine.
 
 ## Application use-case authority
 
-Layer 6 coordinates the 21 production use cases through Layer 4 ports and Layer 5
-services. Authoritative mutations occur inside units of work and publish their domain
+Layer 6 coordinates the 21 canonical production use cases plus two focused approval-lifecycle use
+cases through Layer 4 ports and Layer 5 services. Authoritative mutations occur inside units of work and publish their domain
 events through the transactional event boundary. Mutable records use current revisions;
 immutable records remain append-only. External model, tool, verifier, workspace, and
 kernel calls never run inside an authoritative transaction. Job operations use explicit
 prepare, invoke, and finalize-or-fail phases. Authoritative collection decisions consume
 all pages and fail on repeated cursors. Exact-expiry approvals are expired, and idle
 practice persists the opaque workspace identity used for cleanup.
+
+Approval governance remains selective rather than being added indiscriminately to unrelated use
+cases. A protected action first creates a durable request through `requestApproval`; an authorized
+actor grants or denies it through `decideApproval`; and the existing authorization path validates
+current policy, action, resource, requester, context, scope, status, and expiry before consuming it.
+Consumption, the protected authoritative effect, and approval/audit records share one transaction.
 
 ## Persistence and artifact authority
 
@@ -127,6 +133,11 @@ local session authentication, typed command/query/event routes, idempotent exter
 execution, durable committed-event replay, resumable event streaming, startup recovery, and
 checkpoint-safe shutdown. The implemented event transport is SSE over `node:http`; replay and
 resume semantics remain transport-agnostic.
+
+The runtime exposes only typed mutation commands. A generic record-write transport is forbidden:
+it would bypass application invariants and could manufacture governance state. Generic authenticated
+record reads remain a non-mutating observation path; authoritative collection queries are
+relationship-scoped and filter before pagination.
 
 ## Verification authority
 

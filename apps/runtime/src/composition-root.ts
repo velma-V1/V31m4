@@ -1,8 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import {
   ApplicationError,
-  type ApplicationJsonObject,
   type ApplicationJsonValue,
   type ApprovalStorePort,
   type ArtifactStorePort,
@@ -10,46 +9,25 @@ import {
   type CandidateRepositoryPort,
   type ClockPort,
   createProject,
-  deliverResult,
   type EventBusPort,
   type EvidenceRepositoryPort,
-  isApplicationError,
-  isApplicationJsonValue,
   type JobRepositoryPort,
   type MissionRepositoryPort,
   type OperationContext,
   type ProductionKernelPort,
   type ProjectRepositoryPort,
-  runSolverForge,
-  selectChampionUseCase,
-  startJob,
   submitMission,
   type UnitOfWorkTransaction,
   type VerifierPort,
-  type Versioned,
-  verifyCandidates,
   type WorkspaceManagerPort,
-  type WriteCondition,
-  WriteConditions,
 } from "@v31m4/application";
 import {
   createProjectRequestSchema,
   createProjectResponseSchema,
-  startJobRequestSchema,
-  startJobResponseSchema,
   submitMissionRequestSchema,
   submitMissionResponseSchema,
 } from "@v31m4/contracts";
-import {
-  ArtifactId,
-  createDomainEvent,
-  Job,
-  JobId,
-  type ModelId,
-  type ProjectId,
-  SafePath,
-  VerificationPlanId,
-} from "@v31m4/domain";
+import { createDomainEvent, type ProjectId } from "@v31m4/domain";
 import {
   ContentAddressedArtifactStore,
   EventReplayStore,
@@ -64,10 +42,10 @@ import {
 import { LocalSessionAuthenticator } from "./api/auth.js";
 import { registerApprovalSurface } from "./approval-surface.js";
 import { EventStreamCoordinator } from "./event-stream.js";
-import { canonicalJson, ExternalCommandExecutor } from "./external-command-executor.js";
+import { ExternalCommandExecutor } from "./external-command-executor.js";
+import { registerJobCommands } from "./job-command-surface.js";
 import {
   LocalWorkspaceManager,
-  ReferenceModelGateway,
   ReferenceVerifier,
   SqliteCandidateRepository,
   SqliteEvidenceRepository,
@@ -87,8 +65,6 @@ import {
   SystemClock,
 } from "./use-case-infrastructure.js";
 
-const REFERENCE_MODEL_ID = "reference-model" as ModelId;
-
 const NAME_TOKEN_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
@@ -98,23 +74,6 @@ export type CommandHandler = (
   context: OperationContext,
   transaction: UnitOfWorkTransaction,
 ) => Promise<ApplicationJsonValue>;
-
-function asObject(value: ApplicationJsonValue): ApplicationJsonObject {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", "Command payload must be an object.");
-  }
-  return value as ApplicationJsonObject;
-}
-
-function requireString(object: ApplicationJsonObject, key: string, pattern: RegExp): string {
-  const value = object[key];
-  if (typeof value !== "string" || !pattern.test(value)) {
-    throw new ApplicationError("INVALID_APPLICATION_INPUT", `Command field '${key}' is invalid.`, {
-      details: { field: key },
-    });
-  }
-  return value;
-}
 
 /**
  * A command handler that manages its own transaction boundaries and may perform external effects
@@ -263,46 +222,6 @@ export function buildComposition(
   const authenticator = new LocalSessionAuthenticator(config.sessions);
   const service = new RuntimeService(executor, records);
 
-  // Built-in record write: authoritative CAS write plus a durable event, both in one transaction,
-  // with the live fan-out registered only after commit so subscribers never see uncommitted state.
-  service.register("record.put", async (payload, context, transaction) => {
-    const object = asObject(payload);
-    const recordType = requireString(object, "recordType", NAME_TOKEN_PATTERN);
-    const recordId = requireString(object, "recordId", ID_PATTERN);
-    const body = object["body"];
-    if (!isApplicationJsonValue(body)) {
-      throw new ApplicationError("INVALID_APPLICATION_INPUT", "Record body must be safe JSON.");
-    }
-    const expectedRevision =
-      object["expectedRevision"] === undefined ? undefined : String(object["expectedRevision"]);
-
-    const current = await records.get<ApplicationJsonValue>(recordType, recordId);
-    let condition: WriteCondition;
-    if (expectedRevision === undefined) {
-      condition = WriteConditions.mustNotExist();
-    } else {
-      if (current === null || current.revision !== expectedRevision) {
-        throw new ApplicationError("VERSION_CONFLICT", "Record revision does not match expected.", {
-          details: { expected: expectedRevision, found: current?.revision ?? null },
-        });
-      }
-      condition = WriteConditions.matchRevision(expectedRevision);
-    }
-    const saved = await records.save(recordType, recordId, body, condition, transaction);
-    const event = createDomainEvent({
-      id: `event-${randomUUID()}`,
-      type: current === null ? "record.created" : "record.updated",
-      aggregateType: recordType,
-      aggregateId: recordId,
-      occurredAt: context.startedAt,
-      payload: { revision: Number(saved.revision) },
-      metadata: {},
-    });
-    const sequence = await outbox.append(event, transaction);
-    transaction.afterCommit(() => coordinator.publish({ sequence, event }));
-    return { recordType, recordId, revision: saved.revision, sequence };
-  });
-
   // Real Layer 6 use-case wiring: the operator's local session (role "operator") may create
   // projects; every other actor/action is fail-closed denied by RuleBasedPolicyEngine's default.
   const clock: ClockPort = new SystemClock();
@@ -449,357 +368,21 @@ export function buildComposition(
     evidence: evidenceRepo,
   });
 
-  // job.start is a DirectCommandHandler, not a CommandHandler: startJob opens its own create+queue
-  // transaction, then calls the (here, reference) production kernel outside any transaction - Layer
-  // 7 forbids external execution while a SQLite transaction is active, so it cannot run inside
-  // ExternalCommandExecutor's single enclosing transaction. Idempotency is therefore enforced
-  // explicitly, in the same two layers ExternalCommandExecutor uses internally:
-  //   1. idempotency.lookup() is the authority for actor+key identity: a repeat of the same key
-  //      with a different command payload (e.g. a different missionId/workflowId) throws CONFLICT
-  //      here, before any job is looked up or created, closing the bug where a reused key with a
-  //      different payload used to silently return whichever job the key happened to hash to.
-  //   2. The deterministic jobId + Job.create's mustNotExist() write condition remain as the
-  //      concurrency backstop for two genuinely identical concurrent retries racing each other
-  //      before either has recorded a completed idempotency row; the catch below only treats the
-  //      resulting CONFLICT as an idempotent match if the existing job's mission/workflow actually
-  //      match this request, rather than returning it unconditionally.
-  service.registerDirect("job.start", async (payload, context) => {
-    const payloadHash = createHash("sha256").update(canonicalJson(payload)).digest("hex");
-    const cached = await idempotency.lookup(
-      context.actor.id,
-      context.idempotencyKey,
-      "job.start",
-      payloadHash,
-    );
-    if (cached?.status === "completed") return cached.result as ApplicationJsonValue;
-
-    const request = parseCommandPayload(startJobRequestSchema, payload);
-    const jobId = `job-${createHash("sha256")
-      .update(`${context.actor.id}:${context.idempotencyKey}`)
-      .digest("hex")
-      .slice(0, 32)}`;
-    const mission = await missions.getById(request.missionId, context);
-    if (mission === null) {
-      throw new ApplicationError("NOT_FOUND", "Mission does not exist.", {
-        details: { missionId: request.missionId },
-      });
-    }
-
-    const toResponse = (job: Job): ApplicationJsonValue =>
-      startJobResponseSchema.parse({
-        schemaVersion: request.schemaVersion,
-        requestId: request.requestId,
-        job,
-      }) as unknown as ApplicationJsonValue;
-
-    let response: ApplicationJsonValue;
-    try {
-      const saved = await startJob(
-        {
-          unitOfWork: database.unitOfWork,
-          jobs,
-          events: eventBus,
-          kernel,
-          audit,
-          clock,
-        },
-        {
-          jobId,
-          projectId: mission.value.projectId,
-          missionId: request.missionId,
-          workflowId: request.workflowId,
-          input: {},
-          resourceBudget: mission.value.resourceBudget,
-          createdEventId: `event-${randomUUID()}`,
-          queuedEventId: `event-${randomUUID()}`,
-          startedEventId: `event-${randomUUID()}`,
-          failureEventId: `event-${randomUUID()}`,
-          auditId: `audit-${randomUUID()}`,
-        },
-        context,
-      );
-      response = toResponse(saved.value);
-    } catch (error) {
-      if (isApplicationError(error) && error.code === "CONFLICT") {
-        const current = await jobs.getById(JobId.parse(jobId), context);
-        if (
-          current !== null &&
-          current.value.missionId === request.missionId &&
-          current.value.workflowId === request.workflowId
-        ) {
-          response = toResponse(current.value);
-        } else {
-          throw error;
-        }
-      } else {
-        throw error;
-      }
-    }
-    await idempotency.complete(
-      context.actor.id,
-      context.idempotencyKey,
-      "job.start",
-      payloadHash,
-      response,
-    );
-    return response;
-  });
-
-  // job.execute drives one real solver -> verify -> select-champion -> (deliver) pass through the
-  // real, unmodified Layer 6 use cases, using ReferenceModelGateway/ReferenceVerifier since no real
-  // model or verifier is installed on this machine - see job-execution-infrastructure.ts. It is a
-  // DirectCommandHandler for the same reason job.start is: models.invoke/verifier.execute are called
-  // outside any transaction by the use cases themselves (runSolverForge, verifyCandidates), so this
-  // cannot be wrapped in ExternalCommandExecutor's single enclosing transaction either.
-  //
-  // Idempotency has two layers:
-  //   1. idempotency.lookup() gives true replay semantics: a repeat of the same actor+key+payload
-  //      after this job has already completed or failed returns the original recorded result
-  //      instead of failing closed on the job's terminal status.
-  //   2. Before any external effect (kernel/model/verifier/candidate/evidence work) runs, an atomic
-  //      claim transaction reads the job and, in the same transaction, requires currentStage is not
-  //      already "executing" and moves it there via Job.updateProgress() under
-  //      WriteConditions.matchRevision(). SQLite serializes concurrent transactions on the single
-  //      connection, so two concurrent job.execute calls for the same job cannot both observe
-  //      currentStage !== "executing" and proceed: the second either fails matchRevision or, having
-  //      read after the first's commit, sees currentStage === "executing" and is rejected with
-  //      CONFLICT before doing any external work. If the process crashes or throws after claiming
-  //      but before the completing transaction runs (which is the only place the claim is ever
-  //      cleared), the job is left claimed: a retry is rejected rather than silently re-executing or
-  //      silently succeeding on stale state - fail-closed by construction, not by a recovery flag.
-  service.registerDirect("job.execute", async (payload, context) => {
-    const payloadHash = createHash("sha256").update(canonicalJson(payload)).digest("hex");
-    const cached = await idempotency.lookup(
-      context.actor.id,
-      context.idempotencyKey,
-      "job.execute",
-      payloadHash,
-    );
-    if (cached?.status === "completed") return cached.result as ApplicationJsonValue;
-
-    const object = asObject(payload);
-    const jobIdRaw = requireString(object, "jobId", ID_PATTERN);
-    const jobIdBranded = JobId.parse(jobIdRaw);
-
-    const claimed = await database.unitOfWork.execute(context, async (transaction) => {
-      const current = await jobs.getById(jobIdBranded, context, transaction);
-      if (current === null) {
-        throw new ApplicationError("NOT_FOUND", "Job does not exist.", {
-          details: { jobId: jobIdRaw },
-        });
-      }
-      if (current.value.status !== "running") {
-        throw new ApplicationError("CONFLICT", "Job must be running to execute.", {
-          details: { status: current.value.status },
-        });
-      }
-      if (current.value.currentStage === "executing") {
-        throw new ApplicationError("CONFLICT", "Job execution is already in progress.", {
-          details: { jobId: jobIdRaw },
-        });
-      }
-      const claim = Job.updateProgress(current.value, {
-        eventId: `event-${randomUUID()}`,
-        occurredAt: clock.now(),
-        progress: current.value.progress,
-        stage: "executing",
-      });
-      const saved = await jobs.save(
-        claim.job,
-        WriteConditions.matchRevision(current.revision),
-        context,
-        transaction,
-      );
-      await eventBus.publish([claim.event], context, transaction);
-      return saved;
-    });
-    const job = claimed;
-
-    const mission = await missions.getById(job.value.missionId, context);
-    if (mission === null) {
-      throw new ApplicationError("NOT_FOUND", "Mission does not exist.", {
-        details: { missionId: job.value.missionId },
-      });
-    }
-
-    const projectId = job.value.projectId;
-    const modelGateway = new ReferenceModelGateway(artifacts, database.unitOfWork, projectId);
-    const verifier = verifierFactory(artifacts, projectId);
-
-    async function* textBytes(text: string): AsyncIterable<Uint8Array> {
-      yield Buffer.from(text, "utf8");
-    }
-
-    const promptArtifactId = await database.unitOfWork.execute(context, async (transaction) => {
-      const artifact = await artifacts.write(
-        {
-          id: ArtifactId.parse(`artifact-${randomUUID()}`),
-          projectId,
-          kind: "document",
-          logicalPath: SafePath.parse(`job-${jobIdRaw}/prompt.txt`),
-          mediaType: "text/plain",
-          parentArtifactIds: [],
-          bytes: textBytes(`${mission.value.title}\n${mission.value.objective}`),
-        },
-        context,
-        transaction,
-      );
-      return artifact.value.id;
-    });
-
-    const candidateId = `candidate-${randomUUID()}`;
-    const configuration = Object.freeze({
-      modelId: REFERENCE_MODEL_ID,
-      strategy: "direct" as const,
-      contextArtifactIds: Object.freeze([]),
-      toolIds: Object.freeze([]),
-      constraints: Object.freeze([]),
-    });
-    const producedCandidates = await runSolverForge(
-      { unitOfWork: database.unitOfWork, candidates, models: modelGateway, workspaces },
-      {
-        jobId: jobIdBranded,
-        missionId: job.value.missionId,
-        projectId,
-        promptArtifactId,
-        configurations: [configuration],
-        candidateIds: [candidateId],
-        invocationIds: [`invocation-${randomUUID()}`],
-        createdAt: clock.now(),
-        resourceBudget: mission.value.resourceBudget,
-      },
-      context,
-    );
-    const candidate = producedCandidates[0];
-    if (candidate === undefined) {
-      throw new ApplicationError("INTEGRITY_FAILURE", "Solver forge produced no candidate.");
-    }
-
-    const plan = Object.freeze({
-      id: VerificationPlanId.parse(`plan-${randomUUID()}`),
-      missionId: job.value.missionId,
-      candidateId: candidate.id,
-      checks: Object.freeze([
-        Object.freeze({
-          id: "output-artifact-presence",
-          criterionIds: Object.freeze(mission.value.acceptanceCriteria.map((entry) => entry.id)),
-          verifierId: "reference-verifier",
-          kind: "static_analysis" as const,
-          mandatory: true,
-          hidden: false,
-          timeoutMs: 30_000,
-        }),
-      ]),
-    });
-    const [verifyOutcome] = await verifyCandidates(
-      { unitOfWork: database.unitOfWork, evidence: evidenceRepo, verifier },
-      [{ plan, candidate }],
-      context,
-    );
-    if (verifyOutcome === undefined) {
-      throw new ApplicationError("INTEGRITY_FAILURE", "Verification produced no outcome.");
-    }
-
-    const passed = verifyOutcome.result.status === "passed";
-    const decisionSaved = await selectChampionUseCase(
-      { unitOfWork: database.unitOfWork, candidates },
-      {
-        decisionId: `decision-${randomUUID()}`,
-        missionId: job.value.missionId,
-        decidedAt: clock.now(),
-        candidates: [
-          {
-            candidateId: candidate.id,
-            verification: verifyOutcome.result,
-            metrics: Object.freeze({
-              correctness: passed ? 1 : 0,
-              coverage: passed ? 1 : 0,
-              security: 1,
-              performance: 1,
-              complexity: 0,
-              evidenceStrength: passed ? 1 : 0,
-            }),
-            unresolvedCriticalRisks: Object.freeze([]),
-            evidenceIds: verifyOutcome.evidence.map((entry) => entry.id),
-          },
-        ],
-      },
-      context,
-    );
-
-    const receipt =
-      decisionSaved.value.decision === "champion"
-        ? await deliverResult(
-            { unitOfWork: database.unitOfWork, candidates, clock },
-            {
-              receiptId: `receipt-${randomUUID()}`,
-              decision: decisionSaved.value,
-              deliveredArtifactIds: candidate.outputArtifactIds,
-              requirementsCovered: mission.value.requirements.length,
-              requirementsTotal: mission.value.requirements.length,
-              mandatoryChecksPassed: verifyOutcome.result.mandatoryChecksPassed,
-              mandatoryChecksTotal: verifyOutcome.result.mandatoryChecksTotal,
-              unresolvedRiskIds: [],
-              evidenceIds: verifyOutcome.evidence.map((entry) => entry.id),
-            },
-            context,
-          )
-        : null;
-
-    const response = await database.unitOfWork.execute(context, async (transaction) => {
-      const current = await jobs.getById(jobIdBranded, context, transaction);
-      if (current === null) {
-        throw new ApplicationError("INTEGRITY_FAILURE", "Job disappeared during execution.");
-      }
-      let finalJob: Versioned<Job>;
-      if (receipt !== null) {
-        const completed = Job.complete(current.value, {
-          eventId: `event-${randomUUID()}`,
-          occurredAt: clock.now(),
-        });
-        finalJob = await jobs.save(
-          completed.job,
-          WriteConditions.matchRevision(current.revision),
-          context,
-          transaction,
-        );
-        await eventBus.publish([completed.event], context, transaction);
-      } else {
-        const failed = Job.fail(current.value, {
-          eventId: `event-${randomUUID()}`,
-          occurredAt: clock.now(),
-          failureReason: "No verified champion candidate.",
-        });
-        finalJob = await jobs.save(
-          failed.job,
-          WriteConditions.matchRevision(current.revision),
-          context,
-          transaction,
-        );
-        await eventBus.publish([failed.event], context, transaction);
-      }
-
-      const result = {
-        job: finalJob.value,
-        candidate,
-        verification: verifyOutcome.result,
-        decision: decisionSaved.value,
-        receipt: receipt?.value ?? null,
-      } as unknown as ApplicationJsonValue;
-      // Written inside this same transaction so the job's terminal state and the durable
-      // idempotency record that lets a later replay of this exact command return this exact
-      // result commit together, atomically.
-      await idempotency.complete(
-        context.actor.id,
-        context.idempotencyKey,
-        "job.execute",
-        payloadHash,
-        result,
-      );
-      return result;
-    });
-
-    return response;
+  registerJobCommands({
+    service,
+    database,
+    missions,
+    jobs,
+    eventBus,
+    idempotency,
+    kernel,
+    audit,
+    clock,
+    artifacts,
+    candidates,
+    evidence: evidenceRepo,
+    workspaces,
+    verifierFactory,
   });
 
   return Object.freeze({

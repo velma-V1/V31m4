@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRuntimeConfig } from "../src/runtime-config.js";
+import { createRuntimeConfig, loadRuntimeConfig } from "../src/runtime-config.js";
 
 const validSession = { token: "token-abcdefghijklmnop", actorId: "operator", roles: ["operator"] };
 
@@ -44,5 +44,19 @@ describe("createRuntimeConfig", () => {
     expect(() =>
       createRuntimeConfig({ port: 0, databasePath: "/tmp/state.db", sessions: [] }),
     ).toThrow(/session/i);
+  });
+
+  it("rejects partially numeric environment values instead of coercing them", () => {
+    const required = {
+      V31M4_AUTH_TOKEN: validSession.token,
+      V31M4_DATABASE: "/tmp/state.db",
+    };
+    for (const malformed of [
+      { V31M4_PORT: "8787junk" },
+      { V31M4_EVENT_QUEUE_LIMIT: "12items" },
+      { V31M4_REPLAY_BATCH_SIZE: "01" },
+    ]) {
+      expect(() => loadRuntimeConfig({ ...required, ...malformed })).toThrow(/integer/i);
+    }
   });
 });

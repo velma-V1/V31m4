@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
 import { createRuntimeConfig } from "../src/runtime-config.js";
@@ -28,10 +29,19 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 }
 
 function command(base: string, extra: Record<string, string>, body: string): Promise<Response> {
-  return fetch(`${base}/commands/record.put`, {
+  return fetch(`${base}/commands/project.create`, {
     method: "POST",
     headers: headers(extra),
     body,
+  });
+}
+
+function project(name: string, requestId = `request:${name.toLowerCase().replaceAll(" ", "-")}`) {
+  return JSON.stringify({
+    schemaVersion: CONTRACT_SCHEMA_VERSION,
+    requestId,
+    name,
+    rootPath: name.toLowerCase().replaceAll(" ", "-"),
   });
 }
 
@@ -47,7 +57,7 @@ describe("runtime hostile input", () => {
       const response = await command(
         base,
         { "idempotency-key": "c1" },
-        JSON.stringify({ recordType: "project", recordId: "p1", body: { blob: "x".repeat(256) } }),
+        project(`Project ${"x".repeat(256)}`),
       );
       expect(response.status).toBe(429);
       expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
@@ -67,14 +77,14 @@ describe("runtime hostile input", () => {
       const infinite = await command(
         base,
         { "idempotency-key": "c2" },
-        '{"recordType":"project","recordId":"p1","body":{"n":1e999}}',
+        '{"schemaVersion":"1.0.0","requestId":"request:infinite","name":"Project","rootPath":"project","n":1e999}',
       );
       expect(infinite.status).toBe(400);
 
       const pollution = await command(
         base,
         { "idempotency-key": "c3" },
-        '{"recordType":"project","recordId":"p1","body":{"__proto__":{"polluted":true}}}',
+        '{"schemaVersion":"1.0.0","requestId":"request:pollution","name":"Project","rootPath":"project","__proto__":{"polluted":true}}',
       );
       expect(pollution.status).toBe(400);
       expect((Object.prototype as Record<string, unknown>)["polluted"]).toBeUndefined();
@@ -86,21 +96,21 @@ describe("runtime hostile input", () => {
   it("rejects missing and malformed idempotency keys and unrecognized credentials", async () => {
     const { runtime, base } = await startHardeningRuntime();
     try {
-      const missing = await fetch(`${base}/commands/record.put`, {
+      const missing = await fetch(`${base}/commands/project.create`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ recordType: "project", recordId: "p1", body: {} }),
+        body: project("Project"),
       });
       expect(missing.status).toBe(400);
 
       const malformed = await command(
         base,
         { "idempotency-key": "not a canonical key" },
-        JSON.stringify({ recordType: "project", recordId: "p1", body: {} }),
+        project("Project"),
       );
       expect(malformed.status).toBe(400);
 
-      const wrongToken = await fetch(`${base}/commands/record.put`, {
+      const wrongToken = await fetch(`${base}/commands/project.create`, {
         method: "POST",
         headers: { authorization: "Bearer wrong-token-x", "idempotency-key": "c1" },
         body: "{}",
@@ -116,7 +126,7 @@ describe("runtime concurrency and recovery invariants", () => {
   it("collapses concurrent identical commands to a single durable effect", async () => {
     const { runtime, base } = await startHardeningRuntime();
     try {
-      const body = JSON.stringify({ recordType: "project", recordId: "p1", body: { name: "x" } });
+      const body = project("Concurrent Project");
       const responses = await Promise.all(
         Array.from({ length: 6 }, () => command(base, { "idempotency-key": "same-key" }, body)),
       );
@@ -133,56 +143,41 @@ describe("runtime concurrency and recovery invariants", () => {
     }
   });
 
-  it("resolves concurrent conflicting writers to one commit and version conflicts", async () => {
+  it("resolves concurrent conflicting idempotency payloads to one commit", async () => {
     const { runtime, base } = await startHardeningRuntime();
     try {
-      await command(
-        base,
-        { "idempotency-key": "create" },
-        JSON.stringify({ recordType: "project", recordId: "p1", body: { v: 0 } }),
-      );
       const responses = await Promise.all(
         [1, 2, 3].map((value) =>
           command(
             base,
-            { "idempotency-key": `update-${value}` },
-            JSON.stringify({
-              recordType: "project",
-              recordId: "p1",
-              body: { v: value },
-              expectedRevision: "1",
-            }),
+            { "idempotency-key": "conflicting-key" },
+            project(`Conflicting Project ${value}`, `request:conflict:${value}`),
           ),
         ),
       );
       const statuses = responses.map((response) => response.status).sort();
       expect(statuses.filter((status) => status === 200)).toHaveLength(1);
       expect(statuses.filter((status) => status === 409)).toHaveLength(2);
-      // create (seq 1) + exactly one successful update (seq 2).
-      expect(await latestSequence(base)).toBe(2);
+      expect(await latestSequence(base)).toBe(1);
     } finally {
       await runtime.shutdown();
     }
   });
 
-  it("rolls a rejected command back with no partial record or stranded event", async () => {
+  it("rejects malformed typed input with no partial record or stranded event", async () => {
     const { runtime, base } = await startHardeningRuntime();
     try {
-      await command(
+      const rejected = await command(
         base,
-        { "idempotency-key": "create" },
-        JSON.stringify({ recordType: "project", recordId: "p1", body: { v: 1 } }),
+        { "idempotency-key": "rejected" },
+        JSON.stringify({ ...JSON.parse(project("Rejected Project")), unexpected: true }),
       );
-      const conflicting = await command(
-        base,
-        { "idempotency-key": "create-again" },
-        JSON.stringify({ recordType: "project", recordId: "p1", body: { v: 2 } }),
-      );
-      expect(conflicting.status).toBe(409);
-      // The failed create appended no event and left the record at its original revision.
-      expect(await latestSequence(base)).toBe(1);
-      const read = await fetch(`${base}/records/project/p1`, { headers: headers() });
-      expect(((await read.json()) as { record: { revision: string } }).record.revision).toBe("1");
+      expect(rejected.status).toBe(400);
+      expect(await latestSequence(base)).toBe(0);
+      const count = runtime.composition.database.connection
+        .prepare("SELECT COUNT(*) AS count FROM records WHERE record_type = 'project'")
+        .get() as { count: number };
+      expect(count.count).toBe(0);
     } finally {
       await runtime.shutdown();
     }

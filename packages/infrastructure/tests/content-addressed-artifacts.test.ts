@@ -17,6 +17,14 @@ function fixture() {
 }
 
 describe("content-addressed artifacts", () => {
+  it("rejects malformed project-list pagination cursors", async () => {
+    const { db, store } = fixture();
+    await expect(
+      store.listByProject(ProjectId.parse("project-1"), { limit: 1, cursor: "1junk" }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    db.close();
+  });
+
   it("writes atomically, verifies the hash, opens bytes, and deduplicates content", async () => {
     const { db, store } = fixture();
     const first = await db.unitOfWork.execute(context, (transaction) =>

@@ -21,6 +21,7 @@ import {
 } from "@v31m4/domain";
 import { SqliteRecordStore } from "../database/sqlite-record-store.js";
 import type { SqliteRuntimeDatabase } from "../database/sqlite-runtime-database.js";
+import { parsePaginationCursor } from "../pagination-cursor.js";
 
 const RECORD_TYPE = "artifact";
 
@@ -154,10 +155,7 @@ export class ContentAddressedArtifactStore implements ArtifactStorePort {
     _transaction?: UnitOfWorkTransaction,
   ): Promise<PortPage<Versioned<Artifact>>> {
     const matching = this.#allArtifacts().filter((entry) => entry.value.projectId === projectId);
-    const start = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
-    if (!Number.isSafeInteger(start) || start < 0) {
-      throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is malformed.");
-    }
+    const start = parsePaginationCursor(request.cursor);
     const items = matching.slice(start, start + request.limit);
     const next = start + request.limit;
     return Object.freeze({

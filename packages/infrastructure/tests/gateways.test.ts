@@ -65,6 +65,13 @@ const modelResult = {
 };
 
 describe("SupervisedModelGateway", () => {
+  it("rejects malformed pagination cursors", async () => {
+    const gateway = new SupervisedModelGateway([], new Map());
+    await expect(gateway.list({ limit: 1, cursor: "1junk" })).rejects.toMatchObject({
+      code: "INVALID_APPLICATION_INPUT",
+    });
+  });
+
   it("translates an invocation to a model.invoke adapter call", async () => {
     const primary = new FakeInvoker("adapter-1", { result: modelResult });
     const gateway = new SupervisedModelGateway([], new Map([["model-1", { primary }]]));
@@ -108,6 +115,13 @@ describe("SupervisedModelGateway", () => {
 });
 
 describe("SupervisedToolGateway", () => {
+  it("rejects malformed pagination cursors", async () => {
+    const gateway = new SupervisedToolGateway([], new Map());
+    await expect(gateway.list({ limit: 1, cursor: "1junk" })).rejects.toMatchObject({
+      code: "INVALID_APPLICATION_INPUT",
+    });
+  });
+
   function toolRequest(): ToolInvocationRequest {
     return {
       invocationId: "invoke-1",

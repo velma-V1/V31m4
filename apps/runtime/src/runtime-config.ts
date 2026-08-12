@@ -44,6 +44,22 @@ function requireInt(value: number, label: string, min: number, max: number): num
   return value;
 }
 
+function parseEnvironmentInteger(
+  value: string | undefined,
+  fallback: number,
+  label: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) {
+    invalid(`${label} must be a canonical nonnegative integer.`, { label, value });
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    invalid(`${label} must be a safe integer.`, { label, value });
+  }
+  return parsed;
+}
+
 /**
  * Validates and freezes runtime configuration. The runtime is local-first: it binds a loopback
  * host, requires at least one session whose bearer token has real entropy, and rejects out-of-range
@@ -126,10 +142,14 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const batchSize = env["V31M4_REPLAY_BATCH_SIZE"];
   return createRuntimeConfig({
     host: env["V31M4_HOST"] ?? "127.0.0.1",
-    port: Number.parseInt(env["V31M4_PORT"] ?? "8787", 10),
+    port: parseEnvironmentInteger(env["V31M4_PORT"], 8787, "V31M4_PORT"),
     databasePath,
     sessions: [{ token, actorId: env["V31M4_ACTOR_ID"] ?? "operator", roles }],
-    ...(queueLimit === undefined ? {} : { eventQueueLimit: Number.parseInt(queueLimit, 10) }),
-    ...(batchSize === undefined ? {} : { replayBatchSize: Number.parseInt(batchSize, 10) }),
+    ...(queueLimit === undefined
+      ? {}
+      : { eventQueueLimit: parseEnvironmentInteger(queueLimit, 1024, "V31M4_EVENT_QUEUE_LIMIT") }),
+    ...(batchSize === undefined
+      ? {}
+      : { replayBatchSize: parseEnvironmentInteger(batchSize, 512, "V31M4_REPLAY_BATCH_SIZE") }),
   });
 }

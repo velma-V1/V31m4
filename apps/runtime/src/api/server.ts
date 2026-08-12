@@ -17,6 +17,7 @@ import { mapErrorToHttp } from "./error-mapper.js";
 // /health — it is the smallest maintainable local-first UI compatible with this runtime's
 // existing HTTP+SSE surface, not a parallel dashboard architecture.
 const OPERATOR_UI_HTML = readFileSync(join(import.meta.dirname, "../../public/index.html"), "utf8");
+const REPLAY_CURSOR_PATTERN = /^(?:0|[1-9]\d*)$/u;
 
 function respondJson(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
@@ -226,8 +227,8 @@ export function createRuntimeServer(composition: RuntimeComposition): Server {
         (typeof request.headers["last-event-id"] === "string"
           ? request.headers["last-event-id"]
           : "0");
-      const afterSequence = Number.parseInt(rawCursor, 10);
-      if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+      const afterSequence = Number(rawCursor);
+      if (!REPLAY_CURSOR_PATTERN.test(rawCursor) || !Number.isSafeInteger(afterSequence)) {
         throw new ApplicationError(
           "INVALID_APPLICATION_INPUT",
           "afterSequence must be a sequence.",

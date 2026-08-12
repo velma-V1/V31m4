@@ -107,14 +107,17 @@ export class SqliteRuntimeDatabase {
     const transaction = new SqliteTransaction(context.startedAt);
     this.connection.exec("BEGIN IMMEDIATE");
     try {
-      const result = await this.#scope.run(transaction, () => work(transaction));
-      this.connection.exec("COMMIT");
+      let result: Result;
+      try {
+        result = await this.#scope.run(transaction, () => work(transaction));
+        this.connection.exec("COMMIT");
+      } catch (error) {
+        this.connection.exec("ROLLBACK");
+        for (const action of transaction.hooks.rollback) await action();
+        throw error;
+      }
       for (const action of transaction.hooks.commit) await action();
       return result;
-    } catch (error) {
-      this.connection.exec("ROLLBACK");
-      for (const action of transaction.hooks.rollback) await action();
-      throw error;
     } finally {
       release?.();
     }

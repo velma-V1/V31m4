@@ -84,6 +84,37 @@ describe("SQLite unit of work and records", () => {
     db.close();
   });
 
+  it("does not attempt rollback or mask an error after SQLite has committed", async () => {
+    const db = database();
+    const records = new SqliteRecordStore(db);
+    let rollbackHookRan = false;
+    await expect(
+      db.unitOfWork.execute(context, async (transaction) => {
+        await records.save(
+          "project",
+          "project-post-commit",
+          { name: "committed" },
+          WriteConditions.mustNotExist(),
+          transaction,
+        );
+        transaction.afterRollback(() => {
+          rollbackHookRan = true;
+        });
+        transaction.afterCommit(() => {
+          throw new Error("post-commit hook failed");
+        });
+      }),
+    ).rejects.toThrow("post-commit hook failed");
+    expect(rollbackHookRan).toBe(false);
+    expect(await records.get("project", "project-post-commit")).toMatchObject({
+      value: { name: "committed" },
+    });
+    await expect(db.unitOfWork.execute(context, async () => "still usable")).resolves.toBe(
+      "still usable",
+    );
+    db.close();
+  });
+
   it("serializes concurrent writers into one success and one version conflict", async () => {
     const db = database();
     const records = new SqliteRecordStore(db);

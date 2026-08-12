@@ -13,6 +13,7 @@
 | `/packages/domain/src/index.ts` | Domain core | Public domain package API only |
 | `/packages/domain/tests` | Domain verification | Layer 1 regression and Layer 2 behavior verification |
 | `/packages/contracts/src/common.schemas.ts` | Contract core | Versions, branded primitives, safe JSON, pagination, and API errors |
+| `/packages/contracts/src/approvals.schemas.ts` | Contract core | Strict approval record, governed plugin-registration, decision, and approval-list payloads |
 | `/packages/contracts/src/*-schemas.ts` | Contract core | Strict bounded API, event, workflow, and adapter payload schemas |
 | `/packages/contracts/src/index.ts` | Contract core | Public contracts package API only |
 | `/packages/contracts/tests` | Contract verification | Runtime contract, protocol, compatibility, JSON Schema, and parity verification |
@@ -23,7 +24,7 @@
 | `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
 | `/packages/application/src/services` | Application services | Nine deterministic, infrastructure-free decision and planning services (Layer 5) |
 | `/packages/application/src/services/internal` | Application services | Private deterministic helpers; never exported |
-| `/packages/application/src/use-cases` | Application use cases | Twenty-one transactional orchestration entrypoints and private pagination/authorization helpers |
+| `/packages/application/src/use-cases` | Application use cases | Twenty-one canonical production entrypoints, two approval-lifecycle entrypoints, and private pagination/authorization helpers |
 | `/packages/application/src/index.ts` | Application core | Public application package API only (ports, services, use cases) |
 | `/packages/application/tests` | Application verification | Ports, services, use cases, dependency boundaries, failure paths, and source-size checks |
 | `/packages/infrastructure/src/database` | Persistence infrastructure | Layer 7 SQLite authority, migrations, revisions, records, durable idempotency, and unit-of-work implementation |
@@ -41,15 +42,19 @@
 | `/packages/infrastructure/src/policy` | Policy infrastructure | Layer 9 fail-closed rule-based policy engine |
 | `/packages/infrastructure/src/plugins` | Plugin infrastructure | Layer 9 durable plugin registry implementation |
 | `/packages/infrastructure/src/gateways` | Governed execution infrastructure | Layer 9 provider-neutral supervised model/tool/production-kernel gateways |
+| `/packages/infrastructure/src/pagination-cursor.ts` | Infrastructure boundary support | Exact canonical safe-integer parsing shared by infrastructure list adapters |
 | `/packages/infrastructure/tests` | Infrastructure verification | Layers 7–10 persistence/process/gateway/replay integration and failure-path tests |
 | `/apps/runtime` | Authoritative runtime | Layer 10 composition, local auth, typed command/query/event HTTP routes, idempotent external commands, durable replay, resumable SSE, recovery, and shutdown |
-| `/apps/runtime/src/composition-root.ts` | Runtime composition | The one place concrete adapters are assembled and every real command/query handler is wired; owns the P0 direct-command idempotency repair (`SqliteIdempotencyStore` usage, the `job.execute` claim transaction) and the test-only `CompositionOverrides` seam |
+| `/apps/runtime/src/composition-root.ts` | Runtime composition | The one place concrete adapters, policy rules, and command/query surfaces are assembled; owns the test-only `CompositionOverrides` seam and exposes no generic authoritative write command |
+| `/apps/runtime/src/job-command-surface.ts` | Runtime job command composition | Direct `job.start`/`job.execute` registration, explicit durable idempotency, execution claim, reference orchestration, verification/champion/delivery finalization |
+| `/apps/runtime/src/approval-surface.ts` | Runtime governance boundary | Strict `plugin.register`, `approval.decide`, and `approval.list` registration over existing policy/approval/audit/plugin ports |
 | `/apps/runtime/src/list-query-surface.ts` | Runtime query boundary | Strict authenticated `mission.list`, `job.list`, `candidate.list`, and `evidence.list` registration, project/mission/job relationship validation, existing-port dispatch, and typed response shaping |
 | `/apps/runtime/src/record-listing.ts` | Runtime persistence adapter support | Shared relationship-filter-before-pagination implementation so record items, totals, and cursors remain inside the requested authoritative boundary |
 | `/apps/runtime/src/use-case-infrastructure.ts` | Runtime adapters | Layer 4 port adapters backing real use-case commands and project/mission/job queries: SQLite repositories, event bus, `ReferenceProductionKernel`, approval/audit stores, `passthroughUnitOfWork` |
 | `/apps/runtime/src/job-execution-infrastructure.ts` | Runtime adapters | Candidate/evidence SQLite repositories backing execution and list queries, real isolated workspace filesystem (`LocalWorkspaceManager`), and the `ReferenceModelGateway`/`ReferenceVerifier` reference adapters driving `job.execute` |
 | `/apps/runtime/public/index.html` | Operator UI | Minimal real browser UI (session token, health, project/mission/job-start/job-execute panels, SSE-over-fetch live event log); no framework/build step; full workflow, displayed state, authenticated SSE/reconnect, restart recovery, and negative authentication path proven in real Chromium |
-| `/apps/runtime/tests` | Runtime verification | Command/query, P0 idempotency, negative-verification-path, evidence-durable-readback, restart-recovery, relationship-isolated filtered pagination, idle-SSE establishment, and real Playwright Chromium regression against a real HTTP server + real SQLite |
+| `/apps/runtime/tests` | Runtime verification | Typed command/query/governance, approval anti-forgery, idempotency, negative verification, restart recovery, filter-before-pagination, strict cursors/config, SSE, source-size, and real Playwright Chromium regressions against real HTTP + SQLite |
+| `/docs/reviews/stage-3-system-integrity-drift-audit.md` | Architecture governance | Stage 3 evidence, confirmed defect ledger, three independent drift passes, reconciliation, critical path, and trajectory verdict |
 | `/packages/department-host` | Department host | Post-core generic removable-department lifecycle, isolation connector, rollback, manifest/version/permission/dependency checks |
 | `/plugins/video-production` | Video Production | Post-core removable video workflow; reference adapters plus target-host-validated ffmpeg Assembly and ffmpeg+Ollama Vision-QC adapters |
 | `/plugins/game-production` | 3D/Game Production | Post-core removable game workflow; existing Asset/SceneBuild/SceneValidation/Package ports with deterministic reference adapters; real adapters target Summer |
@@ -98,7 +103,7 @@ plugins/game-production  ─────→ packages/department-host + packages/
 | Contract group | Files | Strict responsibility |
 |---|---|---|
 | Common boundary | `common.schemas.ts` | Versioning, canonical primitives, safe recursive JSON, request metadata, pagination, and errors |
-| Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `capabilities.schemas.ts`, `learning.schemas.ts` | Authoritative resource command, query, state, evidence, verification, delivery, promotion, training-packet, and capability-profile payloads |
+| Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `approvals.schemas.ts`, `capabilities.schemas.ts`, `learning.schemas.ts` | Authoritative resource command, query, governance state, evidence, verification, delivery, promotion, training-packet, and capability-profile payloads |
 | Capability endpoints | `models.schemas.ts`, `tools.schemas.ts`, `plugins.schemas.ts`, `practice.schemas.ts`, `avatar.schemas.ts` | Provider-neutral capability discovery, invocation, workflow, practice, and avatar payloads |
 | Event stream | `runtime-events.schemas.ts` | Closed, versioned, aggregate-consistent client event union |
 | Adapter protocol | `adapter-rpc.schemas.ts` | Closed JSON-RPC requests, notifications, results, and errors |
@@ -131,7 +136,7 @@ plugins/game-production  ─────→ packages/department-host + packages/
 
 `packages/application/src/use-cases` owns project/mission planning, durable job lifecycle,
 solver/verification/repair, champion/delivery/training/promotion, practice/avatar, plugin
-registration, and governed model/tool invocation. Exact reconciliation decisions are in
+registration, approval request/decision, and governed model/tool invocation. Exact reconciliation decisions are in
 `docs/reviews/layer-6-reconciliation-matrix.md`.
 
 ## Post-core department ownership

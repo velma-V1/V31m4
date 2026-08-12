@@ -34,7 +34,8 @@ and `avatar-unlock-engine`.
 
 ## Use-case rules (Layer 6)
 
-The 21 use cases under `src/use-cases` use units of work for authoritative mutations,
+The 21 canonical production use cases plus the focused `requestApproval` and `decideApproval`
+governance use cases under `src/use-cases` use units of work for authoritative mutations,
 explicit revisions for mutable writes, append-only immutable stores, complete pagination,
 and typed application errors. External execution follows prepare/commit, invoke, and
 finalize-or-fail/commit phases. Use cases do not import contracts or infrastructure.

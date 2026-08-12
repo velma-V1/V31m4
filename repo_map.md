@@ -62,7 +62,7 @@ packages/
     │       ├── practice-selector.ts
     │       ├── avatar-unlock-engine.ts
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
-    │   └── use-cases/                    # Layer 6: 21 orchestration entrypoints
+    │   └── use-cases/                    # Layer 6: 21 canonical + 2 approval-lifecycle entrypoints
     └── tests/                            # Layer 4–6 verification
 ├── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store
 └── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
@@ -108,6 +108,7 @@ per-tool capability matrix.
 | SQLite persistence, artifact store, workspace filesystem, event outbox, SSE stream, restart recovery | Real |
 | `pnpm dev` boot, `project.create`/`mission.submit`/`job.start`/`job.execute` commands, operator UI panels (project/mission/job-start/job-execute) | Real, HTTP-verified against a real server + real SQLite |
 | `mission.list` / `job.list` / `candidate.list` / `evidence.list` query surface | VERIFIED — authenticated strict `POST /queries/:type`, existing Layer 4 repositories, relationship validation, filtered pagination, valid empty/error/auth behavior, and persisted restart-stable results |
+| `plugin.register` / `approval.decide` / `approval.list` governance surface | VERIFIED — real require-approval policy, durable pending/grant/deny/consume, exact action/resource/requester/context/scope/expiry matching, single use, audit, rollback, idempotent replay, auth and restart stability |
 | Operator UI browser-driven proof | VERIFIED — Playwright Chromium drives the authenticated full workflow, rendered results/events, runtime restart + SSE cursor resume, durable job readback, and a visible unauthenticated-command denial |
 
 ### Verified application-service behavior
@@ -149,6 +150,13 @@ per-tool capability matrix.
   83/83 across 21 files. The integration proof exposed and protects the relationship-filter-before-
   pagination correction for mission/job/candidate/evidence items, totals, offsets, and cursors,
   plus exact rejection of partially numeric pagination cursors.
+- **Stage 3 current full workspace regression (re-run 2026-08-11):** **436 passing cases / 10
+  skipped (446 total) across 97 passing + 2 skipped test files (99 total)**. Stage 3 adds the real
+  durable approval lifecycle and its contract/application/runtime/governance proofs, then the
+  integrity realignment adds permanent regressions for generic approval-state forgery, strict
+  cursor/config parsing, post-commit transaction errors, JSON-RPC listener cleanup, and runtime
+  source-size/explicit-`any` boundaries. Focused Stage 3 verification is 98/98 across 30 files; the
+  post-repair cross-layer integrity selection is 195/195 across 46 files.
 - **Current full post-core workspace regression (re-run and verified at `86c3d1a`, without
   `V31M4_TARGET_HOST`):** **408 passing cases / 10 skipped (418 total) across 89 passing + 2
   skipped test files (91 total)** — the frozen core tests plus the additive post-core packages:
@@ -191,9 +199,9 @@ per-tool capability matrix.
 
 ### Native gate status
 
-All native gates are green across the full post-core workspace (re-run 2026-08-11 for Stage 2):
+All native gates are green across the full post-core workspace (re-run 2026-08-11 for Stage 3):
 `pnpm check` PASS — `pnpm lint` 0 errors (9 pre-existing warnings, 1 pre-existing info), `pnpm
-typecheck` 9/9, and `pnpm test` **413 passing / 10 skipped across 91 passing + 2 skipped test
+typecheck` 9/9, and `pnpm test` **436 passing / 10 skipped across 97 passing + 2 skipped test
 files**. Browser execution used the reversible `/tmp` shared-library setup recorded in
 `docs/current-state.md`; `V31M4_TARGET_HOST` was not set. The frozen L1–10 core
 subset, as audited at `78dc2b7` (historical), was 340 cases / 71 files at 5/5. The repo-wide Biome formatting debt from the
@@ -228,5 +236,8 @@ platform per
 `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`) is not installed on
 the current target machine. Within the system-build program (`apps/runtime`): P0 direct-command
 idempotency repair, P1 negative-verification-path/evidence-durable-readback proof, Stage 1 Browser
-UI Proof, and Stage 2 List/Query Surface are complete. The next incomplete system-build item is the
-approval-flow proof recorded in `docs/current-state.md`; Stage 3 has not started.
+UI Proof, Stage 2 List/Query Surface, and Stage 3 Approval-Flow Proof plus system-integrity/drift
+realignment are complete. The generic `record.put` mutation bypass is removed; only typed mutation
+surfaces remain. The next incomplete system-build item is a real supervised model/verifier/
+production-kernel path, recorded in `docs/current-state.md` and the Stage 3 audit. Stage 4 has not
+started.

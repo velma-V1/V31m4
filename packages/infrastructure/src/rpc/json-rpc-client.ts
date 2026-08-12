@@ -5,6 +5,7 @@ interface PendingCall {
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: Error) => void;
   readonly timer: NodeJS.Timeout;
+  readonly cleanup: () => void;
 }
 
 export class JsonRpcClient {
@@ -27,19 +28,22 @@ export class JsonRpcClient {
     if (signal?.aborted) return Promise.reject(new Error("RPC call cancelled"));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(new Error("RPC call timed out"));
-      }, timeoutMs);
       const cancel = () => {
         const pending = this.#pending.get(id);
         if (!pending) return;
         clearTimeout(pending.timer);
+        pending.cleanup();
         this.#pending.delete(id);
         reject(new Error("RPC call cancelled"));
       };
+      const cleanup = () => signal?.removeEventListener("abort", cancel);
+      const timer = setTimeout(() => {
+        cleanup();
+        this.#pending.delete(id);
+        reject(new Error("RPC call timed out"));
+      }, timeoutMs);
       signal?.addEventListener("abort", cancel, { once: true });
-      this.#pending.set(id, { resolve, reject, timer });
+      this.#pending.set(id, { resolve, reject, timer, cleanup });
       this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   }
@@ -64,6 +68,7 @@ export class JsonRpcClient {
     const pending = this.#pending.get(message["id"]);
     if (!pending) return;
     clearTimeout(pending.timer);
+    pending.cleanup();
     this.#pending.delete(message["id"]);
     if (message["error"] !== undefined) pending.reject(new Error("Adapter RPC error"));
     else pending.resolve(message["result"]);
@@ -72,6 +77,7 @@ export class JsonRpcClient {
   #rejectAll(error: Error): void {
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
+      pending.cleanup();
       pending.reject(error);
     }
     this.#pending.clear();

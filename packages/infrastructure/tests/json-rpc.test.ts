@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import { JsonRpcClient, JsonRpcFramer, RpcProtocolError } from "../src/index.js";
 
@@ -19,8 +20,16 @@ describe("strict JSON-RPC transport", () => {
       "process.stdin.on('data',b=>{for(const l of b.toString().trim().split('\\n')){const r=JSON.parse(l);if(r.method==='echo')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:r.params})+'\\n')}})",
     ]);
     const client = new JsonRpcClient(child);
-    await expect(client.call("echo", { ok: true }, 1_000)).resolves.toEqual({ ok: true });
-    await expect(client.call("never", {}, 10)).rejects.toThrow("timed out");
+    const completedController = new AbortController();
+    await expect(
+      client.call("echo", { ok: true }, 1_000, completedController.signal),
+    ).resolves.toEqual({ ok: true });
+    expect(getEventListeners(completedController.signal, "abort")).toHaveLength(0);
+    const timedOutController = new AbortController();
+    await expect(client.call("never", {}, 10, timedOutController.signal)).rejects.toThrow(
+      "timed out",
+    );
+    expect(getEventListeners(timedOutController.signal, "abort")).toHaveLength(0);
     const controller = new AbortController();
     const cancelled = client.call("never", {}, 1_000, controller.signal);
     controller.abort();

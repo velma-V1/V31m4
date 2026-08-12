@@ -9,6 +9,7 @@ import {
   type ToolInvocationResult,
 } from "@v31m4/application";
 import type { ToolId, ToolProfile } from "@v31m4/domain";
+import { parsePaginationCursor } from "../pagination-cursor.js";
 import { type AdapterBinding, invokeAdapter, selectInvoker } from "./adapter-invoker.js";
 import { remainingTimeout } from "./supervised-model-gateway.js";
 
@@ -33,7 +34,7 @@ export class SupervisedToolGateway implements ToolGatewayPort {
   }
 
   async list(request: PortPageRequest): Promise<PortPage<ToolProfile>> {
-    const start = request.cursor === undefined ? 0 : Number.parseInt(request.cursor, 10);
+    const start = parsePaginationCursor(request.cursor);
     const items = this.#profiles.slice(start, start + request.limit);
     const next = start + request.limit;
     return Object.freeze({

@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CONTRACT_SCHEMA_VERSION } from "@v31m4/contracts";
 import { describe, expect, it } from "vitest";
 import { type RunningRuntime, startRuntime } from "../src/bootstrap.js";
 import { createRuntimeConfig } from "../src/runtime-config.js";
@@ -32,11 +33,11 @@ function auth(extra: Record<string, string> = {}): Record<string, string> {
   return { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", ...extra };
 }
 
-function put(
+function command(
   base: string,
   headers: Record<string, string>,
   body: unknown,
-  type = "record.put",
+  type = "project.create",
 ): Promise<Response> {
   return fetch(`${base}/commands/${type}`, {
     method: "POST",
@@ -45,78 +46,71 @@ function put(
   });
 }
 
+function project(name: string, requestId = `request:${name.toLowerCase().replaceAll(" ", "-")}`) {
+  return {
+    schemaVersion: CONTRACT_SCHEMA_VERSION,
+    requestId,
+    name,
+    rootPath: name.toLowerCase().replaceAll(" ", "-"),
+  };
+}
+
 describe("runtime HTTP surface", () => {
   it("denies unauthenticated commands and unknown routes", async () => {
     const { runtime, base } = await startTestRuntime();
     try {
-      const noAuth = await fetch(`${base}/commands/record.put`, {
+      const noAuth = await fetch(`${base}/commands/project.create`, {
         method: "POST",
         headers: { "idempotency-key": "c1", "content-type": "application/json" },
         body: "{}",
       });
       expect(noAuth.status).toBe(403);
 
-      const unknown = await put(base, { "idempotency-key": "c2" }, {}, "does.not.exist");
+      const unknown = await command(base, { "idempotency-key": "c2" }, {}, "does.not.exist");
       expect(unknown.status).toBe(501);
     } finally {
       await runtime.shutdown();
     }
   });
 
-  it("writes a record idempotently and serves it back", async () => {
+  it("executes a typed command idempotently and serves its authoritative record", async () => {
     const { runtime, base } = await startTestRuntime();
     try {
-      const first = await put(
-        base,
-        { "idempotency-key": "cmd-1" },
-        { recordType: "project", recordId: "project-1", body: { name: "demo" } },
-      );
+      const payload = project("Demo");
+      const first = await command(base, { "idempotency-key": "cmd-1" }, payload);
       expect(first.status).toBe(200);
-      const firstBody = (await first.json()) as { result: { revision: string; sequence: number } };
-      expect(firstBody.result.revision).toBe("1");
-      expect(firstBody.result.sequence).toBe(1);
+      const firstBody = (await first.json()) as {
+        result: { project: { id: string; name: string } };
+      };
+      expect(firstBody.result.project.name).toBe("Demo");
 
       // Identical retry returns the stored result and does not append a second event.
-      const retry = await put(
-        base,
-        { "idempotency-key": "cmd-1" },
-        { recordType: "project", recordId: "project-1", body: { name: "demo" } },
-      );
+      const retry = await command(base, { "idempotency-key": "cmd-1" }, payload);
       expect(await retry.json()).toEqual(firstBody);
+      expect(
+        (await readJson<{ latestSequence: number }>(await fetch(`${base}/health`))).latestSequence,
+      ).toBe(1);
 
-      const read = await fetch(`${base}/records/project/project-1`, { headers: auth() });
+      const read = await fetch(`${base}/records/project/${firstBody.result.project.id}`, {
+        headers: auth(),
+      });
       expect(read.status).toBe(200);
       const record = (await read.json()) as { record: { revision: string; value: unknown } };
-      expect(record.record).toMatchObject({ revision: "1", value: { name: "demo" } });
+      expect(record.record).toMatchObject({ revision: "1", value: { name: "Demo" } });
     } finally {
       await runtime.shutdown();
     }
   });
 
-  it("returns a version conflict on a stale expected revision", async () => {
+  it("rejects reuse of an idempotency key with a conflicting payload", async () => {
     const { runtime, base } = await startTestRuntime();
     try {
-      await put(
-        base,
-        { "idempotency-key": "c1" },
-        { recordType: "project", recordId: "project-9", body: { v: 1 } },
-      );
-      const updated = await put(
-        base,
-        { "idempotency-key": "c2" },
-        { recordType: "project", recordId: "project-9", body: { v: 2 }, expectedRevision: "1" },
-      );
-      expect((await readJson<{ result: { revision: string } }>(updated)).result.revision).toBe("2");
-
-      const stale = await put(
-        base,
-        { "idempotency-key": "c3" },
-        { recordType: "project", recordId: "project-9", body: { v: 3 }, expectedRevision: "1" },
-      );
-      expect(stale.status).toBe(409);
-      expect((await readJson<{ error: { code: string } }>(stale)).error.code).toBe(
-        "VERSION_CONFLICT",
-      );
+      expect(
+        (await command(base, { "idempotency-key": "same-key" }, project("First"))).status,
+      ).toBe(200);
+      const conflict = await command(base, { "idempotency-key": "same-key" }, project("Second"));
+      expect(conflict.status).toBe(409);
+      expect((await readJson<{ error: { code: string } }>(conflict)).error.code).toBe("CONFLICT");
     } finally {
       await runtime.shutdown();
     }
@@ -125,16 +119,8 @@ describe("runtime HTTP surface", () => {
   it("replays committed events over the SSE stream in order", async () => {
     const { runtime, base } = await startTestRuntime();
     try {
-      await put(
-        base,
-        { "idempotency-key": "c1" },
-        { recordType: "project", recordId: "project-a", body: {} },
-      );
-      await put(
-        base,
-        { "idempotency-key": "c2" },
-        { recordType: "project", recordId: "project-b", body: {} },
-      );
+      await command(base, { "idempotency-key": "c1" }, project("Project A"));
+      await command(base, { "idempotency-key": "c2" }, project("Project B"));
 
       const controller = new AbortController();
       const response = await fetch(`${base}/events?afterSequence=0`, {
@@ -187,14 +173,25 @@ describe("runtime HTTP surface", () => {
     }
   });
 
+  it("rejects partially numeric and unsafe SSE replay cursors", async () => {
+    const { runtime, base } = await startTestRuntime();
+    try {
+      for (const cursor of ["1junk", "01", "9007199254740992"]) {
+        const response = await fetch(`${base}/events?afterSequence=${cursor}`, { headers: auth() });
+        expect(response.status, cursor).toBe(400);
+        expect(await response.json(), cursor).toMatchObject({
+          error: { code: "INVALID_APPLICATION_INPUT" },
+        });
+      }
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("releases the subscription when an SSE client disconnects", async () => {
     const { runtime, base } = await startTestRuntime();
     try {
-      await put(
-        base,
-        { "idempotency-key": "c1" },
-        { recordType: "project", recordId: "project-a", body: {} },
-      );
+      await command(base, { "idempotency-key": "c1" }, project("Project A"));
       const controller = new AbortController();
       const response = await fetch(`${base}/events?afterSequence=0`, {
         headers: auth(),
@@ -230,10 +227,10 @@ describe("runtime HTTP surface", () => {
     });
     const first = await startRuntime(config);
     try {
-      await put(
+      await command(
         `http://127.0.0.1:${first.address.port}`,
         { "idempotency-key": "c1" },
-        { recordType: "project", recordId: "project-1", body: {} },
+        project("Project One"),
       );
     } finally {
       await first.shutdown();

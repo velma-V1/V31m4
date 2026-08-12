@@ -102,34 +102,34 @@
 **Interfaces:**
 - Records: exact command/query names, transaction and idempotency semantics, confirmed defects, fresh counts, and Stage 4 remaining work.
 
-- [ ] **Step 1: Run the risk-driven integrity audit**
+- [x] **Step 1: Run the risk-driven integrity audit**
 
   Reproduce material candidates across state machines, transactions, persistence, idempotency,
   authorization, events, evidence, external boundaries, contracts, and dependency direction. Fix
   only confirmed bounded defects, using RED/GREEN regressions. Complete the audit-pagination
   adversary and sweep sibling filtered-pagination implementations.
 
-- [ ] **Step 2: Run three independent drift passes and reconcile them**
+- [x] **Step 2: Run three independent drift passes and reconcile them**
 
   Trace original requirements forward, current subsystems backward, then independently challenge
   whether the current critical path still converges toward autonomous production capability.
   Resolve disagreements with source and executable evidence.
 
-- [ ] **Step 3: Update current truth, ownership, and durable audit evidence**
+- [x] **Step 3: Update current truth, ownership, and durable audit evidence**
 
   Record the two new Layer 6 use cases, runtime approval surface, real SQLite lifecycle, and any demonstrated fixes without changing future-stage claims.
 
-- [ ] **Step 4: Run final gates once**
+- [x] **Step 4: Run final gates once**
 
   Run focused Stage 3 tests, owning-layer regressions, `pnpm check`, and `git diff --check`; record only the observed fresh counts.
 
-- [ ] **Step 5: Commit the integrity/drift result**
+- [x] **Step 5: Commit the integrity/drift result**
 
   Review the complete change from the Stage 2 baseline for authorization bypass, replay,
   action/resource/scope/requester/context mismatch, transaction hazards, duplicate abstractions,
   architecture violations, harmful drift, and Stage 4 scope creep. Commit the second coherent
   result as `fix: reconcile system integrity and architecture drift`.
 
-- [ ] **Step 6: Push and verify synchronization**
+- [x] **Step 6: Push and verify synchronization**
 
   Non-force push `main` to `origin/main`; verify local HEAD, tracking `origin/main`, and live GitHub main are identical, 0 ahead/0 behind, and the worktree is clean. Stop before Stage 4.

@@ -279,22 +279,23 @@ cleanup). Infrastructure and the full Layer 1-8 gate are now green (numbers abov
        until the Summer path is real and validated. Architecture only; no `SummerAdapter` is
        implemented. See
        `docs/superpowers/specs/2026-08-09-game-department-summer-engine-boundary.md`.
-   - **System-assembly program (started 2026-08-09, current through Stage 2 List/Query Surface):**
+   - **System-assembly program (started 2026-08-09, current through Stage 3 Approval-Flow Proof):**
      turned the verified backend into a runnable, operable system: a genuine end-to-end mission
      flow, a real idempotency-defect repair, a real champion-decision-defect repair,
      negative-verification-path proof, evidence-durable-readback proof, a real-browser operator
-     workflow, and authoritative persisted collection queries. Stage 2 is complete; the next
-     verified incomplete task is approval-flow proof. See
+     workflow, authoritative persisted collection queries, and real durable approval governance.
+     Stage 3 and its integrity/drift audit are complete; the next verified incomplete task is a
+     real supervised execution proof. See
      "System build" below for exactly what's done and what remains — do not re-derive this from the
      git log; the section below is the authoritative summary.
 
-## System build (2026-08-09 → 2026-08-11) — vertical slice, correctness hardening, browser proof, and persisted queries
+## System build (2026-08-09 → 2026-08-11) — vertical slice, browser/query/approval proof, and integrity realignment
 
 Turned the verified L1–10 core + post-core departments into a runnable, operable system, reached a
 genuine end-to-end mission flow, then hardened it: a real idempotency defect and a real
 champion-decision defect were found and fixed, both with regression evidence. The first twelve
-commits were independently full-gate-verified and pushed, `09cc9df` → `86c3d1a`; Stage 1 Browser
-UI Proof and Stage 2 List/Query Surface are the next coherent commits:
+commits were independently full-gate-verified and pushed, `09cc9df` → `86c3d1a`; Stages 1–3
+continue that coherent system-build line:
 
 1. **`pnpm dev` is a real, verified boot path.** `scripts/dev.mjs` creates `runtime-data/`
    (gitignored), generates/persists a local dev session token, runs `apps/runtime/src/main.ts` via
@@ -416,14 +417,40 @@ UI Proof and Stage 2 List/Query Surface are the next coherent commits:
     helper now filters before slicing and derives totals/cursors from only the matching collection.
     Second, the prior `Number.parseInt` cursor parser silently accepted a partially numeric value
     such as `1junk`; cursor parsing now requires an exact non-negative decimal safe integer.
+15. **Stage 3: Approval-Flow Proof (2026-08-11)** — strict `1.0.0` approval contracts, the new
+    Layer 6 `requestApproval` and `decideApproval` use cases, and the runtime's
+    `plugin.register`/`approval.decide`/`approval.list` surface make the existing policy, approval,
+    audit, plugin, transaction, and idempotency architecture externally reachable. The unchanged
+    `project.create` allow path remains green. `plugin.register` now requires a durable approval;
+    no plugin effect occurs while pending or denied. A granted approval must match action,
+    resource type/id, requester actor/roles, context, required scopes, status, and inclusive expiry.
+    Consumption, plugin registration, and audits commit atomically; a colliding protected write
+    rolls all of them back. Real HTTP + real SQLite tests prove auth, malformed/not-found errors,
+    grant/deny, every represented mismatch, single use, idempotent completed retry, and pending/
+    granted/denied/consumed restart durability. Approval and audit status/query filters now apply
+    before pagination, so items, totals, and cursors cannot leak another filter's records.
+16. **Stage 3 integrity realignment and three-pass drift audit (2026-08-11)** — a real exploit
+    proved the legacy generic `record.put` command could mint a granted approval outside policy and
+    authorize a protected plugin write. The command is removed; typed application/runtime commands
+    are again the only mutation authority, and a permanent HTTP/SQLite regression proves the bypass
+    remains closed. Bounded RED→GREEN repairs also enforce strict SSE/infrastructure cursors and
+    runtime environment integers, remove JSON-RPC abort-listener retention, preserve the original
+    error after a failing post-commit hook without attempting rollback after commit, and split the
+    789-line composition root below the mandatory 500-line limit with a runtime architecture guard.
+    The independent forward, reverse, and adversarial drift passes reconcile to
+    **ON_TRACK_WITH_APPROVED_DEVIATIONS** after repair. See
+    `docs/reviews/stage-3-system-integrity-drift-audit.md`.
 
-**Verified, not asserted:** every command above has real HTTP-request tests against a real server
-+ real SQLite (happy path, auth/policy denial, malformed payload, idempotent retry, not-found), and
-was *also* smoke-tested through the actual `pnpm dev` process via `curl`, not just the test harness.
+**Verified, not asserted:** every externally reachable command/query above has real HTTP-request
+tests against a real server + real SQLite, including applicable happy path, auth/policy denial,
+malformed payload, idempotent retry, not-found, and restart behavior. The original vertical-slice
+commands were also smoke-tested through the actual `pnpm dev` process via `curl`.
 Stage 1 additionally drives the complete workflow through a real Chromium browser and asserts the
 rendered UI plus SSE/restart behavior rather than inferring browser behavior from HTTP bytes.
 Stage 2 additionally exercises all four list operations over the real authenticated HTTP boundary,
 real repository adapters, and real SQLite before and after a brand-new runtime composition.
+Stage 3 additionally exercises approval creation/decision/consumption and the protected plugin
+effect through that same real boundary, including rollback and restart.
 
 Full workspace gate at `86c3d1a`: `pnpm typecheck` 9/9, `pnpm build` 9/9, `pnpm test` 408 passing /
 10 skipped across 89 passing + 2 skipped files, `pnpm lint` 0 errors (9 warnings, 1 info), `pnpm
@@ -443,18 +470,24 @@ Stage 2 workspace gate re-run on 2026-08-11: focused Stage 2 contract/runtime ve
 9/9, and **413 passing / 10 skipped (423 total) across 91 passing + 2 skipped test files**.
 `git diff --check` is required again immediately before the Stage 2 commit.
 
-**Not yet done — next verified incomplete task after Stage 2:**
+Stage 3 focused verification: approval/contracts/application/runtime plus governance pagination
+**98/98 across 30 files**; post-repair cross-layer integrity selection **195/195 across 46 files**.
+Stage 3 final workspace gate: `pnpm check` PASS with lint at 0 errors (9 existing warnings, 1
+existing info), typecheck 9/9, and **436 passing / 10 skipped (446 total) across 97 passing + 2
+skipped test files (99 total)**. The first unchanged gate attempt reached the browser test but the
+host omitted `libnspr4`; the successful run used the same reversible Stage 1 libraries already
+extracted under `/tmp` through `LD_LIBRARY_PATH`. No system or repository dependency was installed.
+`git diff --check` and final static/diff review are recorded in the Stage 3 audit.
 
-- **Approval flow** — `ApprovalStorePort` is wired (`SqliteApprovalStore`) but never exercised: the
-  one policy rule in place (`operator-project-actions`) always resolves to `allow`, so
-  `authorizeAction`'s `require_approval`/consume path has no real command reaching it yet.
-  `submitMission`/`startJob`/`run-solver-forge`/etc. don't call `authorizeAction` at all (a real
-  Layer 6 design choice, preserved as-is).
-- **Real model/verifier/production-kernel adapters** — `ReferenceModelGateway`, `ReferenceVerifier`,
+**Not yet done — next verified incomplete task after Stage 3:**
+
+- **Real supervised model/verifier/production-kernel execution** — `ReferenceModelGateway`, `ReferenceVerifier`,
   `ReferenceProductionKernel` are deterministic by design (this session's mandate: prove
-  orchestration without inventing new external dependencies). Layer 9 already has
+  orchestration without misrepresenting reference capability). Layer 9 already has
   `SupervisedModelGateway`/`SupervisedProductionKernel` for when a real bound adapter process
-  exists; none does yet.
+  exists; none is composed into the system-build workflow yet. Stage 4 should bind one real model,
+  an independent deterministic verifier, and a real kernel/tool path through existing ports,
+  including interruption/checkpoint reconciliation, rather than add more generic API/UI surface.
 - **Video `ShotGenerationAdapter`** (needs ComfyUI — confirmed installed at
   `/home/xxthatguyxx/ComfyUI`, WSL-native, not yet run/exercised) and **Game's Summer-backed real
   adapters** (needs Summer, not installed) — unrelated to the system-build program above, tracked
