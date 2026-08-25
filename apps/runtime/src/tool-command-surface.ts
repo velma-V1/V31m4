@@ -1,8 +1,4 @@
-import {
-  ApplicationError,
-  type ApplicationJsonValue,
-  type JobRepositoryPort,
-} from "@v31m4/application";
+import { ApplicationError, type JobRepositoryPort } from "@v31m4/application";
 import { invokeToolRequestSchema } from "@v31m4/contracts";
 import type { RuntimeService } from "./composition-root.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
