@@ -10,6 +10,7 @@ import {
   type PortPage,
   type PortPageRequest,
   type ProjectRepositoryPort,
+  type ToolGatewayPort,
   type Versioned,
 } from "@v31m4/application";
 import {
@@ -31,6 +32,7 @@ import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/d
 import { parsePaginationCursor } from "@v31m4/infrastructure";
 import type { RuntimeService } from "./composition-root.js";
 import { collectCompleteModelCatalog } from "./model-catalog.js";
+import { collectCompleteToolCatalog } from "./tool-catalog.js";
 import { registerToolCommands } from "./tool-command-surface.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
 
@@ -41,6 +43,7 @@ export interface ListQueryDependencies {
   readonly candidates: CandidateRepositoryPort;
   readonly evidence: EvidenceRepositoryPort;
   readonly models: ModelGatewayPort;
+  readonly tools?: ToolGatewayPort;
 }
 
 function pageRequest(pagination: PaginationRequest): PortPageRequest {
@@ -111,13 +114,35 @@ export function registerListQueries(
 ): void {
   registerToolCommands(service, { jobs: dependencies.jobs });
 
-  service.registerQuery("tool.list", async (payload) => {
+  service.registerQuery("tool.list", async (payload, context) => {
     const request = parseCommandPayload(listToolsRequestSchema, payload);
+    if (dependencies.tools === undefined) {
+      return listToolsResponseSchema.parse({
+        schemaVersion: request.schemaVersion,
+        requestId: request.requestId,
+        tools: [],
+        pagination: { total: 0 },
+      }) as unknown as ApplicationJsonValue;
+    }
+    const all = await collectCompleteToolCatalog(dependencies.tools, context);
+    const filtered = all.filter(
+      (profile) =>
+        (request.status === undefined || profile.status === request.status) &&
+        (request.automationMethod === undefined ||
+          profile.automationMethod === request.automationMethod) &&
+        (request.operation === undefined || profile.operations.includes(request.operation)),
+    );
+    const start = request.pagination.offset ?? parsePaginationCursor(request.pagination.cursor);
+    const tools = filtered.slice(start, start + request.pagination.limit);
+    const next = start + request.pagination.limit;
     return listToolsResponseSchema.parse({
       schemaVersion: request.schemaVersion,
       requestId: request.requestId,
-      tools: [],
-      pagination: { total: 0 },
+      tools,
+      pagination: {
+        total: filtered.length,
+        ...(next < filtered.length ? { nextCursor: String(next) } : {}),
+      },
     }) as unknown as ApplicationJsonValue;
   });
 
