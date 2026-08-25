@@ -7,7 +7,7 @@ Before changing, adding, moving, renaming, or deleting any repository file, read
 1. Read `docs/repository-specification.md`.
 2. Identify the owning layer and package.
 3. If the change touches contracts, schemas, APIs, events, manifests, workflows, or adapter messages, read `docs/contract-versioning.md`.
-4. If the change touches autonomous task state, Task DAGs, model/tool execution, sandboxing, project intelligence, context assembly, skills, memory, quality-floor execution, independent verification, MCP/A2A interoperability, or self-improvement, read both `docs/superpowers/specs/2026-08-25-autonomy-quality-floor-architecture.md` and `docs/superpowers/plans/2026-08-25-autonomy-quality-floor.md`; execute exactly one plan task/phase at a time and do not cross its hard gate before review.
+4. If the change touches autonomous task state, Task DAGs, model/tool execution, sandboxing, project intelligence, context assembly, skills, memory, quality-floor execution, independent verification, MCP/A2A interoperability, or self-improvement, read both `docs/superpowers/specs/2026-08-25-autonomy-quality-floor-architecture-v2.md` and `docs/superpowers/plans/2026-08-25-autonomy-quality-floor-v2.md`; these supersede the same-date non-v2 autonomy documents. Execute exactly one plan task/phase at a time and do not cross its hard gate before independent review.
 5. Confirm every proposed import is permitted by `docs/dependency-rules.md`.
 6. Reuse existing interfaces instead of creating parallel abstractions.
 7. Write or update tests before production behavior.
@@ -17,12 +17,15 @@ Before changing, adding, moving, renaming, or deleting any repository file, read
 
 ## Autonomy-program rules
 
-- `V31M4-AUTONOMY-001` is an explicitly approved additive architecture expansion. Preserve all existing public v1 semantics; add new authoritative concepts through the normal domain/contract-or-port/use-case/infrastructure/runtime path when genuinely required rather than creating shadow state.
-- The approved spec is the architecture source of truth; the approved plan is the execution source of truth. If live implementation evidence makes a plan interface invalid, stop and record the exact conflict rather than silently redesigning the architecture.
-- Named external projects in the autonomy spec are classified as direct substrates, adapter challengers, interoperability formats, evaluation tools, or research mechanisms. Do not replace V31M4 orchestration/state/policy/evidence with a full external agent framework.
-- Implement the autonomy phases in the dependency order defined by the spec and plan. Do not begin self-improvement or later-phase optimization before earlier hard gates are satisfied.
-- The primary local acceptance model may change; no core type or invariant may depend on Qwen3.8 specifically.
+- `V31M4-AUTONOMY-001 / 1.1.0` is an explicitly approved additive architecture expansion. Preserve runtime API `1.0.0` and adapter protocol `1.0.0`; new autonomy behavior follows the v2 spec/plan, including separately negotiated adapter protocol `1.1.0` where required.
+- The v2 spec is the architecture source of truth and the v2 plan is the execution source of truth. The older same-date non-v2 autonomy spec/plan are historical and must not be used for implementation decisions.
+- If live implementation evidence makes a v2 plan interface invalid, stop and record the exact conflict rather than silently redesigning the architecture or creating a shadow path.
+- Named external projects in the autonomy spec are substrates, challengers, interoperability formats, evaluation tools, or research mechanisms only. Do not replace V31M4 orchestration/state/policy/evidence/memory/acceptance with a full external agent framework.
+- Implement phases in v2 dependency order. Do not begin self-improvement or later optimization before earlier hard gates are satisfied.
+- The primary local acceptance model may change; no domain/application invariant may depend on Qwen3.8 specifically.
+- `WorkspaceManagerPort` remains the worktree/workspace authority; the model must not create worktrees or receive host `.git` authority.
 - The sandbox backend is deliberately unresolved until target-host bake-off. Freeze the V31M4-owned `SandboxPort`, not OpenSandbox/OpenShell/direct-Docker as a permanent implementation.
+- Public runtime API `1.0.0` strict schemas are immutable. Internal Task Capsule/Ledger/skill/memory state does not automatically become a public endpoint.
 
 ## Non-negotiable boundaries
 
