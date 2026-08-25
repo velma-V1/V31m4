@@ -53,24 +53,27 @@ describe("governed tool execution", () => {
     const runtime = await startRuntime(runtimeConfig(databasePath));
 
     try {
-      const response = await fetch(`http://127.0.0.1:${runtime.address.port}/commands/tool.invoke`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${OPERATOR_TOKEN}`,
-          "content-type": "application/json",
-          "idempotency-key": "idem-tool-missing-job",
+      const response = await fetch(
+        `http://127.0.0.1:${runtime.address.port}/commands/tool.invoke`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${OPERATOR_TOKEN}`,
+            "content-type": "application/json",
+            "idempotency-key": "idem-tool-missing-job",
+          },
+          body: JSON.stringify({
+            schemaVersion: CONTRACT_SCHEMA_VERSION,
+            requestId: "request-tool-missing-job",
+            jobId: "job-does-not-exist",
+            toolId: "tool-general",
+            operation: "filesystem.read",
+            inputArtifactIds: [],
+            parameters: { path: "README.md" },
+            expectedOutputs: ["file.contents"],
+          }),
         },
-        body: JSON.stringify({
-          schemaVersion: CONTRACT_SCHEMA_VERSION,
-          requestId: "request-tool-missing-job",
-          jobId: "job-does-not-exist",
-          toolId: "tool-general",
-          operation: "filesystem.read",
-          inputArtifactIds: [],
-          parameters: { path: "README.md" },
-          expectedOutputs: ["file.contents"],
-        }),
-      });
+      );
 
       expect(response.status).toBe(404);
       expect(await response.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
