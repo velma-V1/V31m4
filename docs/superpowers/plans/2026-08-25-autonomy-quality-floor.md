@@ -114,6 +114,7 @@ apps/runtime/tests/autonomy/
   evidence-gating.test.ts
   project-intelligence.test.ts
   skill-runtime.test.ts
+  interoperability.test.ts
   memory-router.test.ts
   quality-floor.test.ts
 
@@ -139,22 +140,19 @@ Do **not** invent migration files: the repository currently has one generic `rec
 
 ## Task 0 — Freeze the Program Baseline
 
-**Files:**
-- Create: `docs/reviews/autonomy-baseline.md`
-- Create: `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`
-- Modify: `docs/current-state.md`
+**Files:** `docs/reviews/autonomy-baseline.md`, `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`, `docs/current-state.md`.
 
 **Produces:** exact pre-autonomy baseline and named acceptance fixtures.
 
-- [ ] Run:
+- [ ] Run and record:
 ```bash
 git rev-parse HEAD
 node --version
 pnpm --version
 pnpm check
 ```
-Record every output in `docs/reviews/autonomy-baseline.md`. Any failure is a blocker until explained.
-- [ ] Create `autonomy-program-invariants.test.ts` with these exact Phase-0 inventory entries:
+Any failure is a blocker until explained.
+- [ ] Create the exact Phase-0 inventory:
 ```ts
 it.todo("no model-direct tool bypass");
 it.todo("task state survives restart without chat history");
@@ -165,8 +163,8 @@ it.todo("deterministic failure cannot be overridden by neural verifier");
 it.todo("quality floor abstains outside calibrated envelope");
 ```
 Each later task replaces its relevant `todo` with executable coverage.
-- [ ] Update `docs/current-state.md` to say `V31M4-AUTONOMY-001` is approved/planned, not implemented.
-- [ ] Verify and commit:
+- [ ] `autonomy-baseline.md` records HEAD, Node/pnpm versions, `pnpm check`, current model/tool profiles, and current limitations. `docs/current-state.md` says approved/planned, not implemented.
+- [ ] Verify/commit:
 ```bash
 pnpm check
 git diff --check
@@ -180,17 +178,7 @@ git commit -m "test: freeze autonomy program baseline"
 
 ## Task 1 — Governed Semantic ACI + `SandboxPort`
 
-**Files:**
-- Create: `packages/application/src/ports/sandbox.port.ts`
-- Modify: `packages/application/src/ports/tool-gateway.port.ts`
-- Modify: `packages/application/src/use-cases/invoke-tool.ts`
-- Create: `packages/infrastructure/src/sandbox/direct-docker-sandbox.ts`
-- Create: `packages/infrastructure/src/sandbox/sandbox-supervisor.ts`
-- Create: `apps/runtime/src/autonomy/semantic-tool-catalog.ts`
-- Create: `packages/application/tests/sandbox-port.test.ts`
-- Modify/Create focused invoke-tool tests under `packages/application/tests/use-cases/`
-- Create: `apps/runtime/tests/autonomy/governed-aci.test.ts`
-- Create: `scripts/prove-autonomy-phase1-real.mjs`
+**Files:** `packages/application/src/ports/sandbox.port.ts`, existing `tool-gateway.port.ts`, existing `invoke-tool.ts`, `packages/infrastructure/src/sandbox/{direct-docker-sandbox,sandbox-supervisor}.ts`, `apps/runtime/src/autonomy/semantic-tool-catalog.ts`, `packages/application/tests/sandbox-port.test.ts`, focused invoke-tool tests, `apps/runtime/tests/autonomy/governed-aci.test.ts`, `scripts/prove-autonomy-phase1-real.mjs`.
 
 **Produces:**
 ```ts
@@ -217,45 +205,26 @@ export interface SandboxPort {
   destroy(sandboxId: string, context: OperationContext): Promise<void>;
 }
 ```
-Agent-facing IDs are exactly: `repo.map_task`, `repo.search`, `repo.symbol`, `repo.references`, `repo.impact`, `repo.history`, `code.inspect`, `code.patch`, `build.check`, `test.targeted`, `test.regression`, `debug.reproduce`, `failure.explain`, `git.status`, `git.diff`, `git.history`, `git.worktree`, `command.run`, `browser.inspect`, `browser.verify`.
+Semantic IDs are exactly `repo.map_task`, `repo.search`, `repo.symbol`, `repo.references`, `repo.impact`, `repo.history`, `code.inspect`, `code.patch`, `build.check`, `test.targeted`, `test.regression`, `debug.reproduce`, `failure.explain`, `git.status`, `git.diff`, `git.history`, `git.worktree`, `command.run`, `browser.inspect`, `browser.verify`.
 
-- [ ] First write failing tests proving effectful semantic tools require job identity, policy authorization, resource budget, sandbox handle, cancellation semantics, and artifact/log provenance; prove no model path reaches shell/browser/sandbox directly.
-- [ ] Run focused failure:
+- [ ] First failing tests prove effectful operations require job identity, policy authorization, resource budget, sandbox handle, cancellation semantics, and provenance; no model path reaches shell/browser/sandbox directly.
+- [ ] Run expected failure:
 ```bash
 pnpm vitest run packages/application/tests/sandbox-port.test.ts packages/application/tests/use-cases apps/runtime/tests/autonomy/governed-aci.test.ts
 ```
-- [ ] Implement `SandboxPort`, semantic catalog, and a minimal hardened direct-Docker/reference adapter. Network is denied by default, no Docker socket is mounted into the agent sandbox, no ambient host secrets are inherited, and resource limits are explicit.
-- [ ] Implement the runtime composition without making Docker required for `hermetic_reference` startup.
-- [ ] Add cancellation, timeout, child/orphan, resource-limit, and unknown-effect tests.
-- [ ] `prove-autonomy-phase1-real.mjs` must call V31M4 create -> execute deterministic command -> inspect -> destroy, never Docker directly.
-- [ ] Replace `no model-direct tool bypass` todo with executable regression.
-- [ ] Verify:
-```bash
-pnpm vitest run packages/application/tests/sandbox-port.test.ts packages/application/tests/use-cases apps/runtime/tests/autonomy/governed-aci.test.ts
-pnpm check
-git diff --check
-git add -A
-git commit -m "feat: add governed semantic tool and sandbox boundary"
-```
+- [ ] Implement port/catalog/minimal direct-Docker/reference adapter: network denied by default, no sandbox Docker socket, no ambient host secrets, explicit resource limits, hermetic profile unchanged.
+- [ ] Add cancellation, timeout, orphan, resource, and unknown-effect tests.
+- [ ] Real proof calls V31M4 create -> execute -> inspect -> destroy, never Docker directly.
+- [ ] Replace `no model-direct tool bypass` todo.
+- [ ] Verify/commit with focused tests, `pnpm check`, `git diff --check`, `git add -A`, commit `feat: add governed semantic tool and sandbox boundary`.
 
-**Hard gate:** typed/policy-gated/evidenced/cancellable/sandboxed effects and no model-direct bypass.
+**Hard gate:** typed/policy-gated/evidenced/cancellable/sandboxed effects and no direct bypass.
 
 ---
 
 ## Task 2 — Task Capsule + Checked State Machine + Task DAG
 
-**Files:**
-- Create: `packages/domain/src/entities/task-capsule.ts`
-- Create: `packages/contracts/src/task-capsules.schemas.ts`
-- Create: `packages/application/src/ports/task-capsule-repository.port.ts`
-- Create: `packages/application/src/services/task-transition-policy.ts`
-- Create: `packages/application/src/use-cases/create-task-capsule.ts`
-- Create: `packages/application/src/use-cases/propose-task-transition.ts`
-- Create: `apps/runtime/src/autonomy/autonomy-state-infrastructure.ts`
-- Create: `apps/runtime/src/autonomy/task-manager.ts`
-- Create: `packages/domain/tests/task-capsule.test.ts`
-- Create: contract/application focused tests following existing test-directory conventions
-- Create: `apps/runtime/tests/autonomy/task-capsule.test.ts`
+**Files:** `task-capsule.ts`, `task-capsules.schemas.ts`, `task-capsule-repository.port.ts`, `task-transition-policy.ts`, `create-task-capsule.ts`, `propose-task-transition.ts`, `apps/runtime/src/autonomy/{autonomy-state-infrastructure,task-manager}.ts`, domain/contract/application/runtime tests.
 
 **Produces:**
 ```ts
@@ -274,38 +243,23 @@ export interface TaskCapsuleRepositoryPort {
   listByJob(jobId: JobId, request: PortPageRequest, context: OperationContext): Promise<PortPage<Versioned<TaskCapsule>>>;
 }
 ```
-`TaskCapsule` contains every required field from Spec §5; DAG edges are acyclic; content fingerprint is deterministic; state transitions are explicit and predicate-checked.
+Entity includes every Spec §5 field, deterministic fingerprint, and acyclic DAG.
 
-- [ ] Write domain failures for mutation, DAG cycle, invalid state transition, stale revision, missing predicate evidence, exhausted transition attempts, and non-deterministic fingerprint.
-- [ ] Write strict contract failures for unknown properties and malformed DAG/state data.
-- [ ] Implement entity/service/use cases first.
-- [ ] Implement `SqliteTaskCapsuleRepository` inside `autonomy-state-infrastructure.ts` using immutable `task_capsule_revision` records plus mutable `task_capsule_head`, atomically in the supplied `UnitOfWorkTransaction`.
-- [ ] Add restart/replay integration: after process restart, reconstruct the same latest state/fingerprint from persisted head+revision records without conversation history.
-- [ ] Replace `task state survives restart without chat history` todo.
-- [ ] Verify:
-```bash
-pnpm vitest run packages/domain/tests/task-capsule.test.ts packages/contracts/tests packages/application/tests apps/runtime/tests/autonomy/task-capsule.test.ts
-pnpm check
-git diff --check
-git add -A
-git commit -m "feat: add durable task capsule state machine"
-```
+- [ ] Write failures for mutation, cycle, invalid transition, stale revision, missing predicate evidence, exhausted attempt bound, fingerprint instability.
+- [ ] Write strict contract failures for unknown/malformed state.
+- [ ] Implement entity/service/use cases.
+- [ ] Implement `SqliteTaskCapsuleRepository` in `autonomy-state-infrastructure.ts`: immutable `task_capsule_revision` records + mutable `task_capsule_head`, atomically via supplied transaction.
+- [ ] Restart/replay test reconstructs identical latest state/fingerprint without chat history.
+- [ ] Replace task-state todo.
+- [ ] Run focused domain/contracts/application/runtime tests, `pnpm check`, docs/maps/evidence, `git add -A`, commit `feat: add durable task capsule state machine`.
 
-**Hard gate:** deterministic replay, checked transitions, bounded attempts, valid DAG, restart recovery, zero chat-history authority.
+**Hard gate:** deterministic replay, checked transitions, bounded attempts, DAG validity, restart recovery, no chat-history authority.
 
 ---
 
 ## Task 3 — Execution Ledger + Ambiguous-Effect Reconciliation
 
-**Files:**
-- Create: `packages/domain/src/entities/execution-ledger-entry.ts`
-- Create: `packages/application/src/ports/execution-ledger-repository.port.ts`
-- Create: `packages/application/src/use-cases/append-execution-ledger.ts`
-- Create: `packages/application/src/use-cases/reconcile-execution-effect.ts`
-- Modify: `apps/runtime/src/autonomy/autonomy-state-infrastructure.ts`
-- Create: `apps/runtime/src/autonomy/effect-reconciler.ts`
-- Create: `packages/domain/tests/execution-ledger.test.ts`
-- Create: `apps/runtime/tests/autonomy/execution-ledger.test.ts`
+**Files:** `execution-ledger-entry.ts`, `execution-ledger-repository.port.ts`, `append-execution-ledger.ts`, `reconcile-execution-effect.ts`, `autonomy-state-infrastructure.ts`, `effect-reconciler.ts`, domain/runtime tests.
 
 **Produces:**
 ```ts
@@ -315,34 +269,21 @@ export interface ExecutionLedgerRepositoryPort {
   listForJob(jobId: JobId, request: PortPageRequest, context: OperationContext): Promise<PortPage<ExecutionLedgerEntry>>;
 }
 ```
-Each immutable entry includes invocation ID, resource locator, pre/post fingerprint when applicable, evidence IDs, validity dependencies, timestamps, and failure signature.
+Each entry includes invocation ID, resource locator, pre/post fingerprint, evidence IDs, validity dependencies, timestamps, failure signature.
 
-- [ ] Write failures for observation invalidation after a file version changes, duplicate-operation detection, test-result invalidation when a dependency changes, unknown post-crash effect, and restart restoration.
-- [ ] Implement ledger domain and use cases without model calls.
-- [ ] Implement `SqliteExecutionLedgerRepository` in `autonomy-state-infrastructure.ts` as immutable `execution_ledger_entry` records.
-- [ ] Integrate tool/sandbox finalization: an interrupted invocation with unknown outcome persists `unknown` and blocks blind retry until `effect-reconciler.ts` establishes applied/not-applied evidence.
-- [ ] Replace `ambiguous effect is reconciled before retry` todo.
-- [ ] Verify and commit:
-```bash
-pnpm vitest run packages/domain/tests/execution-ledger.test.ts packages/application/tests apps/runtime/tests/autonomy/execution-ledger.test.ts
-pnpm check
-git diff --check
-git add -A
-git commit -m "feat: add execution ledger and effect reconciliation"
-```
+- [ ] Write failures for stale observation, duplicate operation, invalidated test result, unknown crash effect, restart restore.
+- [ ] Implement ledger without model calls and persist immutable `execution_ledger_entry` records.
+- [ ] Interrupted effect persists `unknown`; reconciler must establish applied/not-applied evidence before retry.
+- [ ] Replace ambiguous-effect todo.
+- [ ] Run focused tests, `pnpm check`, docs/evidence, `git add -A`, commit `feat: add execution ledger and effect reconciliation`.
 
-**Hard gate:** correct invalidation, redundant-work detection, no blind retry, deterministic restart reconciliation.
+**Hard gate:** correct invalidation, redundant-work detection, no blind retry, deterministic reconciliation.
 
 ---
 
 ## Task 4 — Manager -> Fresh Executor -> Independent Read-Only Auditor
 
-**Files:**
-- Modify: `apps/runtime/src/autonomy/task-manager.ts`
-- Create: `apps/runtime/src/autonomy/task-executor.ts`
-- Create: `apps/runtime/src/autonomy/task-auditor.ts`
-- Modify: `apps/runtime/src/routed-solver.ts`
-- Create: `apps/runtime/tests/autonomy/role-isolation.test.ts`
+**Files:** create `packages/application/src/use-cases/select-next-task.ts`, `audit-task-result.ts`; modify `task-manager.ts`; create `task-executor.ts`, `task-auditor.ts`; modify `routed-solver.ts`; add application use-case tests and `apps/runtime/tests/autonomy/role-isolation.test.ts`.
 
 **Produces:**
 ```ts
@@ -354,26 +295,23 @@ export interface RoleInvocationManifest {
   readonly readOnly: boolean;
 }
 ```
+`selectNextTask` reads authoritative capsule/DAG state and returns one bounded executable node plus required skill/tool/context recipe. `auditTaskResult` consumes acceptance contract, final capsule revision, candidate artifacts/diff, ledger facts, and evidence and returns an audit decision; it cannot mutate candidate state.
 
-- [ ] Write failing tests proving three distinct context manifests, no Executor private-reasoning artifact in Auditor context, Auditor has no effectful tools by default, and Auditor can reject an Executor-complete claim.
-- [ ] Implement sequential roles through the existing provider-neutral model gateway; never require simultaneous 27B copies.
-- [ ] Persist each role's context fingerprint/model/toolset provenance as normal artifacts/evidence.
-- [ ] Add restart tests at manager, executor, and auditor boundaries.
-- [ ] Replace `auditor cannot mutate candidate` todo.
-- [ ] Verify/commit with `pnpm check`, `git diff --check`, `git add -A`, commit message `feat: add isolated manager executor auditor harness`.
+- [ ] Write failing application tests for deterministic next-node selection, dependency/blocker respect, and no completion mutation from planner output.
+- [ ] Write runtime failures for distinct role context manifests, no Executor private-reasoning artifact in Auditor context, read-only auditor toolset, auditor rejection of executor-complete claim.
+- [ ] Implement use cases and sequential role runtime through existing model gateway; never simultaneous 27B residency requirement.
+- [ ] Persist context/model/toolset fingerprints as normal artifacts/evidence.
+- [ ] Restart tests at each role boundary.
+- [ ] Replace auditor todo.
+- [ ] Run focused tests, `pnpm check`, docs/evidence, `git add -A`, commit `feat: add isolated manager executor auditor harness`.
 
-**Hard gate:** fresh role isolation, read-only audit default, independent rejection, restart-safe handoff.
+**Hard gate:** deterministic task selection, fresh role isolation, read-only audit default, independent rejection, restart-safe handoff.
 
 ---
 
 ## Task 5 — Evidence-Conditioned Consequential Actions
 
-**Files:**
-- Create: `packages/application/src/services/evidence-precondition.ts`
-- Modify: `packages/application/src/use-cases/invoke-tool.ts`
-- Modify: `apps/runtime/src/autonomy/semantic-tool-catalog.ts`
-- Create: `packages/application/tests/services/evidence-precondition.test.ts`
-- Create: `apps/runtime/tests/autonomy/evidence-gating.test.ts`
+**Files:** `evidence-precondition.ts`, existing `invoke-tool.ts`, `semantic-tool-catalog.ts`, service/runtime tests.
 
 **Produces:**
 ```ts
@@ -385,26 +323,19 @@ export interface EvidencePreconditionDecision {
 }
 ```
 
-- [ ] Write failures where `code.patch` is denied until the task/risk profile's required definition/impact/test evidence exists; prove read-only inspection can still proceed.
-- [ ] Implement deterministic operation + task-class + risk-class requirement evaluation using existing evidence repositories/linker.
-- [ ] Return typed missing-evidence details; never silently fall back to `command.run` to bypass denial.
-- [ ] Prove MCP/browser/raw-command routes cannot bypass the same effect gate.
-- [ ] Run focused tests, `pnpm check`, update evidence/docs, `git add -A`, commit `feat: gate effects on required evidence`.
+- [ ] Write failure where `code.patch` is denied until task/risk-required definition/impact/test evidence exists; read-only inspection remains allowed.
+- [ ] Implement deterministic operation + task class + risk class evaluation over existing evidence/linker inputs.
+- [ ] Typed denial lists missing evidence; no `command.run` fallback bypass.
+- [ ] Prove MCP/browser/raw command cannot bypass same effect gate.
+- [ ] Focused tests, `pnpm check`, docs/evidence, `git add -A`, commit `feat: gate effects on required evidence`.
 
-**Hard gate:** missing required evidence blocks consequential effects fail-closed with actionable denial metadata.
+**Hard gate:** required evidence blocks consequential effects fail-closed with actionable denial.
 
 ---
 
-## Task 6 — Project Intelligence Ensemble + Context Compiler Integration
+## Task 6 — Project Intelligence Ensemble + Context Compiler
 
-**Files:**
-- Create: `packages/application/src/ports/project-intelligence.port.ts`
-- Create: `packages/application/src/services/project-retrieval-fusion.ts`
-- Create: all `packages/infrastructure/src/project-intelligence/*` files from the ownership map
-- Create: `apps/runtime/src/autonomy/retrieval-context-source.ts`
-- Modify: supervised software-production context assembly only after the ensemble passes its A/B gate
-- Create: `apps/runtime/tests/autonomy/project-intelligence.test.ts`
-- Create: `scripts/prove-project-intelligence-real.mjs`
+**Files:** `project-intelligence.port.ts`, `project-retrieval-fusion.ts`, all `packages/infrastructure/src/project-intelligence/*`, `retrieval-context-source.ts`, supervised software-production context assembly after A/B gate, runtime test, real proof script.
 
 **Produces:**
 ```ts
@@ -420,60 +351,47 @@ export interface ProjectIntelligencePort {
 }
 ```
 
-- [ ] Freeze one deterministic repository-task fixture set covering definition->references, trace->implementation, code->tests, requirement->files, architecture->boundaries, and multi-file tasks where lexical-only retrieval fails.
-- [ ] Pin/add Tree-sitter, SCIP/scip-typescript, and ast-grep one at a time; provider types stay inside infrastructure.
-- [ ] Implement Git facts and FTS5 lexical retrieval.
-- [ ] Implement RepoMap-style graph relevance and deterministic reciprocal-rank-style fusion.
-- [ ] Add optional Qwen3-Embedding-4B semantic retrieval behind the model boundary; system remains functional when unavailable.
-- [ ] A/B lexical, structural, semantic, and fused under matched budgets. Promote no reranker unless fused+reranker beats fused on verified task success or equal quality at materially lower resource cost.
-- [ ] Only after the A/B gate, replace autonomy-profile raw concatenation with ranked candidates into the existing Context Compiler. Mandatory mission material remains non-evictable.
-- [ ] Run `prove-project-intelligence-real.mjs`, `pnpm check`, update maps/evidence, `git add -A`, commit `feat: add measured project intelligence ensemble`.
+- [ ] Freeze deterministic fixture set: definition->references, trace->implementation, code->tests, requirement->files, architecture->boundaries, hidden multi-file lexical failure.
+- [ ] Pin/add Tree-sitter, SCIP/scip-typescript, ast-grep; provider types stay infrastructure-local.
+- [ ] Implement Git facts + FTS5 lexical retrieval.
+- [ ] Implement RepoMap-style graph relevance + deterministic RRF-style fusion.
+- [ ] Add optional Qwen3-Embedding-4B via model boundary; unavailable sidecar cannot break structural/lexical path.
+- [ ] Matched-budget A/B lexical/structural/semantic/fused. No reranker promotion without verified improvement or equal quality at materially lower cost.
+- [ ] Only after gate, autonomy profile replaces raw concatenation with candidates into existing Context Compiler; mandatory context remains non-evictable.
+- [ ] Real proof, `pnpm check`, maps/evidence, `git add -A`, commit `feat: add measured project intelligence ensemble`.
 
-**Hard gate:** fused project intelligence beats individual baselines by the declared matched-resource criterion; Context Compiler remains final packing authority.
+**Hard gate:** fused system beats individual baselines by declared matched-resource criterion; Context Compiler remains final authority.
 
 ---
 
-## Task 7 — Agent Skills Runtime, Retrieval, and Promotion
+## Task 7 — Agent Skills + MCP Interoperability + Governed Promotion
 
-**Files:**
-- Create: `packages/domain/src/entities/skill-profile.ts`
-- Create: `packages/contracts/src/skills.schemas.ts`
-- Create: `packages/application/src/ports/skill-registry.port.ts`
-- Create: `packages/application/src/services/skill-selector.ts`
-- Create: `packages/application/src/use-cases/register-skill.ts`
-- Create: `packages/application/src/use-cases/promote-skill.ts`
-- Create: `packages/infrastructure/src/skills/agent-skills-loader.ts`
-- Modify: `apps/runtime/src/autonomy/autonomy-state-infrastructure.ts`
-- Create: `apps/runtime/src/autonomy/skill-context-source.ts`
-- Create: `apps/runtime/tests/autonomy/skill-runtime.test.ts`
+**Files:** `skill-profile.ts`, `skills.schemas.ts`, `skill-registry.port.ts`, `skill-selector.ts`, `register-skill.ts`, `promote-skill.ts`, `agent-skills-loader.ts`, `mcp-tool-adapter.ts`, `autonomy-state-infrastructure.ts`, `skill-context-source.ts`, `skill-runtime.test.ts`, `interoperability.test.ts`.
 
-**Produces:** skill trust state exactly `CANDIDATE | SHADOW | TRUSTED | REJECTED` plus V31M4 side metadata for task class, preconditions, context recipe, tools/permissions, checks, recovery/stop rules, harness constraints, evaluation evidence, and promotion history.
+**Produces:** trust state exactly `CANDIDATE | SHADOW | TRUSTED | REJECTED`. Side metadata records task class, preconditions, context recipe, tools/permissions, checks, recovery/stop rules, harness constraints, evaluation evidence, promotion history.
 
-- [ ] Write import failures for malformed Agent Skills layout, path escape, unsafe script metadata, and self-declared permissions.
-- [ ] Implement Agent Skills loader without making public `SKILL.md` incompatible.
-- [ ] Implement `SqliteSkillRegistry` in `autonomy-state-infrastructure.ts` using `SqliteRecordStore`; every import/generated skill starts `CANDIDATE`.
-- [ ] Implement selector that cannot return `CANDIDATE` for trusted production execution.
-- [ ] Implement promotion requiring held-out incumbent comparison, no material regression, positive verified delta or materially lower cost, shadow evidence, and governed promotion.
-- [ ] Prove a skill cannot expand ToolGateway permissions.
-- [ ] Add local SkillsBench/SWE-Skills/SkillGen-style fixtures; run `pnpm check`, docs/evidence, `git add -A`, commit `feat: add governed agent skills runtime`.
+MCP boundary is exactly:
+```text
+external MCP server -> V31M4 MCP adapter -> ToolGatewayPort -> policy/evidence/budget/sandbox -> semantic tool
+```
+No raw MCP tool is directly model-visible. A2A is **not** implemented merely for standards coverage; if a concrete external-agent integration later requires A2A, it must be a replaceable adapter using native Task Capsule semantics internally.
 
-**Hard gate:** skill files cannot grant trust/permissions; promotion is evidence-backed.
+- [ ] Write Agent Skills import failures for malformed layout, path escape, unsafe scripts, self-declared permissions.
+- [ ] Implement loader preserving public `SKILL.md` compatibility.
+- [ ] Implement `SqliteSkillRegistry` with `SqliteRecordStore`; all imports/generated skills start `CANDIDATE`.
+- [ ] Selector cannot return candidate skill for trusted production execution.
+- [ ] Promotion requires held-out incumbent comparison, no material regression, positive verified delta or lower cost, shadow evidence, governed promotion.
+- [ ] Pin official MCP TS SDK; implement adapter translating external catalogs/calls to provider-neutral V31M4 tool profiles/results.
+- [ ] Prove MCP server cannot write authoritative V31M4 state, bypass evidence/policy, expand skill permissions, or become hermetic startup dependency.
+- [ ] Local SkillsBench/SWE-Skills/SkillGen-style fixtures, `pnpm check`, docs/evidence, `git add -A`, commit `feat: add governed skills and MCP interoperability`.
+
+**Hard gate:** skill/MCP input cannot grant trust, permissions, or authority; production skill promotion is evidence-backed.
 
 ---
 
 ## Task 8 — Multi-Substrate Memory Router
 
-**Files:**
-- Create: `packages/domain/src/entities/memory-record.ts`
-- Create: `packages/contracts/src/memory.schemas.ts`
-- Create: `packages/application/src/ports/memory-repository.port.ts`
-- Create: `packages/application/src/services/memory-router.ts`
-- Create: `packages/application/src/use-cases/record-memory.ts`
-- Create: `packages/application/src/use-cases/retrieve-memory.ts`
-- Modify: `apps/runtime/src/autonomy/autonomy-state-infrastructure.ts`
-- Create: `packages/infrastructure/src/memory/semantic-memory-index.ts`
-- Create: `apps/runtime/src/autonomy/memory-context-source.ts`
-- Create: `apps/runtime/tests/autonomy/memory-router.test.ts`
+**Files:** `memory-record.ts`, `memory.schemas.ts`, `memory-repository.port.ts`, `memory-router.ts`, `record-memory.ts`, `retrieve-memory.ts`, `autonomy-state-infrastructure.ts`, `semantic-memory-index.ts`, `memory-context-source.ts`, `memory-router.test.ts`.
 
 **Produces:**
 ```ts
@@ -485,30 +403,23 @@ export interface MemoryQueryPlan {
   readonly mayAbstain: true;
 }
 ```
-Every record includes provenance, evidence IDs, scope, creation/verification times, temporal validity, status/confidence, invalidators/expiry, and relationship links.
+Records include provenance, evidence, scope, creation/verification times, temporal validity, status/confidence, invalidators/expiry, relationships.
 
-- [ ] Write failures proving expired/invalidated memory cannot enter context as current fact.
-- [ ] Implement `SqliteMemoryRepository` in `autonomy-state-infrastructure.ts` for authoritative records; exact/FTS retrieval first.
-- [ ] Add semantic/graph/runbook retrieval as optional substrates behind ports, never as truth stores.
-- [ ] Implement deterministic router with abstention and token budget.
-- [ ] Add context-pollution regression: larger irrelevant retrieval cannot displace smaller high-validity memory merely due quantity.
-- [ ] Replace `stale memory is not injected as current fact` todo.
-- [ ] Run factual/temporal/sequential/long-trajectory fixture categories, restart tests, `pnpm check`, docs/evidence, `git add -A`, commit `feat: add routed evidence-backed memory`.
+- [ ] Failing tests: expired/invalidated memory cannot enter context as current fact.
+- [ ] Implement `SqliteMemoryRepository` authoritative records + exact/FTS path first.
+- [ ] Semantic/graph/runbook are optional retrieval substrates, never truth stores.
+- [ ] Deterministic router supports abstention/token budget.
+- [ ] Context-pollution regression: quantity cannot displace validity.
+- [ ] Replace stale-memory todo; run factual/temporal/sequential/long-trajectory fixtures and restart tests.
+- [ ] `pnpm check`, docs/evidence, `git add -A`, commit `feat: add routed evidence-backed memory`.
 
-**Hard gate:** stale memory cannot masquerade as current fact; retrieval may abstain; task-dependent routing is measured.
+**Hard gate:** stale memory cannot masquerade as current truth; retrieval may abstain; routing is measured by task class.
 
 ---
 
 ## Task 9 — Quality Floor Controller + Supplemental Verification
 
-**Files:**
-- Create: `packages/application/src/services/capability-confidence.ts`
-- Create: `packages/application/src/services/quality-floor-controller.ts`
-- Modify existing compute/diversity/capability/champion/improvement services only where composition requires it
-- Create: `apps/runtime/src/autonomy/quality-floor-runtime.ts`
-- Add RETRACE-style/contextual-rubric adapters behind existing verifier/model boundaries
-- Create: `apps/runtime/tests/autonomy/quality-floor.test.ts`
-- Create: `scripts/prove-autonomy-quality-floor-real.mjs`
+**Files:** `capability-confidence.ts`, `quality-floor-controller.ts`, minimal composition changes to existing compute/diversity/capability/champion/improvement services, `quality-floor-runtime.ts`, supplemental RETRACE/rubric adapters behind existing verifier/model boundaries, runtime test, real proof script.
 
 **Produces:**
 ```ts
@@ -525,66 +436,58 @@ export interface CapabilityStratum {
 }
 export function wilsonLowerBound(successes: number, trials: number, z?: number): number;
 ```
-Default one-sided 95% `z = 1.6448536269514722`; calibrated 9/10 eligibility requires lower bound >=0.90 for a sufficiently homogeneous measured stratum.
+Default one-sided 95% `z = 1.6448536269514722`; calibrated 9/10 requires lower bound >=0.90 in a sufficiently homogeneous measured stratum.
 
-- [ ] Write exact Wilson tests for 0/N, N/N, small sample, large sample, invalid inputs.
-- [ ] Write ladder tests: `DIRECT -> CHECKED -> COMPETITIVE -> ADVERSARIAL -> DECOMPOSE -> SPECIALIST_OR_ALTERNATE -> ACQUIRE_CONTEXT -> NO_VERIFIED_SOLUTION`.
-- [ ] Implement controller by composing existing Compute Governor, Diversity Planner, Capability Calculator, Champion Selector, Evidence Linker, and Improvement Policy; do not duplicate their responsibilities.
-- [ ] Add deterministic-failure supremacy regression: no RETRACE/rubric/auditor pass can override compiler/test/security/invariant failure.
-- [ ] Add supplemental RETRACE-style patch/problem reconstruction and contextual rubric evidence classes.
-- [ ] Replace both Phase-0 quality-floor/deterministic-failure todos.
-- [ ] Run `prove-autonomy-quality-floor-real.mjs`, `pnpm check`, docs/evidence, `git add -A`, commit `feat: enforce calibrated autonomy quality floor`.
+- [ ] Exact Wilson tests: 0/N, N/N, small, large, invalid inputs.
+- [ ] Ladder tests: `DIRECT -> CHECKED -> COMPETITIVE -> ADVERSARIAL -> DECOMPOSE -> SPECIALIST_OR_ALTERNATE -> ACQUIRE_CONTEXT -> NO_VERIFIED_SOLUTION`.
+- [ ] Compose existing services rather than duplicate them.
+- [ ] Deterministic-failure supremacy regression: RETRACE/rubric/auditor cannot override compiler/test/security/invariant failure.
+- [ ] Add supplemental RETRACE-style reconstruction and contextual rubric evidence.
+- [ ] Replace quality-floor/deterministic-failure todos.
+- [ ] Real proof, `pnpm check`, docs/evidence, `git add -A`, commit `feat: enforce calibrated autonomy quality floor`.
 
-**Hard gate:** conservative capability eligibility, deterministic escalation/abstention, and zero neural override of deterministic failure.
+**Hard gate:** conservative eligibility, escalation/abstention, zero neural override of deterministic failure.
 
 ---
 
 ## Task 10 — External Evaluation + Sandbox Backend Bake-Off
 
-**Files:**
-- Create: `packages/application/src/ports/benchmark-runner.port.ts`
-- Create challengers: `packages/infrastructure/src/sandbox/opensandbox-adapter.ts`, `openshell-adapter.ts`
-- Create: `scripts/prove-sandbox-backends-real.mjs`
-- Create: `docs/reviews/sandbox-backend-bakeoff.md`
-- Create: `docs/reviews/autonomy-evaluation-campaign.md`
+**Files:** `benchmark-runner.port.ts`, optional `opensandbox-adapter.ts`, optional `openshell-adapter.ts`, real bake-off script, `sandbox-backend-bakeoff.md`, `autonomy-evaluation-campaign.md`.
 
 **Produces:** immutable matched-resource evaluation evidence; one selected sandbox backend behind unchanged `SandboxPort`.
 
-- [ ] Implement OpenSandbox/OpenShell challengers only behind disabled optional composition until measured.
-- [ ] Run identical target-host suite on hardened direct Docker, OpenSandbox, OpenShell when install/support permits: filesystem escape, network egress, process/resource limits, secret leakage, child/orphan behavior, cancellation, backend crash, server restart, effect reconciliation, latency, workload compatibility.
-- [ ] Select a backend only from recorded evidence. If no challenger clearly beats direct Docker on security/reliability without unacceptable overhead, retain direct Docker.
-- [ ] Run available Harbor/Harbor-Index, Terminal-Bench, RigorBench, Agent Retrieval Bench, SWE-style, skills, memory, and V31M4 private recovery/governance suites under matched resources.
-- [ ] No benchmark can write production state; results enter as immutable evaluation artifacts/evidence.
-- [ ] Run `pnpm check`, all promoted target-host proof scripts, update only verified current-state claims, `git add -A`, commit `test: complete autonomy external acceptance campaign`.
+- [ ] Implement challengers only behind disabled optional composition until measured.
+- [ ] Identical target-host suite: filesystem escape, network egress, resource limits, secret leakage, child/orphan, cancellation, backend crash, server restart, effect reconciliation, latency, workload compatibility.
+- [ ] Select backend only from evidence; retain hardened direct Docker if challengers do not clearly improve security/reliability at acceptable cost.
+- [ ] Run available Harbor/Harbor-Index, Terminal-Bench, RigorBench, Agent Retrieval Bench, SWE-style, skills, memory, private recovery/governance suites under matched resources.
+- [ ] Benchmarks cannot write production state; results are immutable evidence/artifacts.
+- [ ] `pnpm check`, promoted target-host proofs, truth-only current-state update, `git add -A`, commit `test: complete autonomy external acceptance campaign`.
 
-**Hard gate:** no critical hidden regression and sandbox backend selected by real target-host evidence, not documentation.
+**Hard gate:** no critical hidden regression and sandbox backend selected by real target-host evidence.
 
 ---
 
 ## Task 11 — Verified Harness/Skill Self-Improvement Laboratory
 
-**Files:**
-- Use the repository's laboratory isolation pattern; do not add self-improvement behavior to the production composition root.
-- Extend existing promotion/capability/evidence ports/use cases where semantics fit.
-- Create: `docs/reviews/autonomy-self-improvement-proof.md`
+**Files:** use existing laboratory isolation pattern; extend existing promotion/capability/evidence ports/use cases where semantics fit; create `docs/reviews/autonomy-self-improvement-proof.md`. Do not add self-improvement behavior to normal production composition.
 
-**Candidate record must include:** component/version, explicit hypothesis, predicted metric change, task-set IDs, held-out result, prior-capability regression result, shadow result, evidence IDs, governed promotion decision.
+**Candidate record:** component/version, hypothesis, predicted metric change, task-set IDs, held-out result, protected-capability regression result, shadow result, evidence IDs, governed promotion decision.
 
-- [ ] First write rejection test: candidate improves a new task but materially regresses a protected prior capability -> promotion denied.
-- [ ] Implement AHE-style observability: every candidate has a falsifiable hypothesis and measured outcome.
-- [ ] Implement GSME-style diverse candidate archive/search while deterministic V31M4 code owns measurements/significance.
-- [ ] Implement RELAI-style protected-capability constraints in the existing promotion path.
-- [ ] Promotion sequence is exactly held-out improvement -> protected-capability pass -> shadow production -> verified production evidence -> governed promotion.
-- [ ] Prove lab code cannot mutate production policy/evidence/capability state except through normal authorized promotion use cases.
-- [ ] Run full hermetic regression plus the external campaign regression subset, update final maps/current-state/evidence, `git add -A`, commit `feat: add verified no-regression self-improvement lab`.
+- [ ] Rejection test: new-task improvement + material protected-capability regression -> denied.
+- [ ] AHE-style observability: falsifiable hypothesis + measured outcome.
+- [ ] GSME-style diverse candidate archive/search; deterministic V31M4 owns measurement/significance.
+- [ ] RELAI-style protected-capability constraints in normal promotion path.
+- [ ] Promotion exactly held-out improvement -> protected-capability pass -> shadow -> verified production evidence -> governed promotion.
+- [ ] Lab cannot mutate production policy/evidence/capability state except authorized promotion use cases.
+- [ ] Full hermetic regression + external campaign regression subset, final maps/current-state/evidence, `git add -A`, commit `feat: add verified no-regression self-improvement lab`.
 
-**Hard gate:** no self-certification and no promotion that materially regresses a protected capability.
+**Hard gate:** no self-certification and no promotion that materially regresses protected capability.
 
 ---
 
 ## Final Clean-Checkout Acceptance
 
-At the exact final commit, create a clean worktree and run:
+At the final commit, use a clean worktree:
 ```bash
 pnpm install --frozen-lockfile
 pnpm lint
@@ -594,19 +497,19 @@ pnpm build
 pnpm check
 git diff --check
 ```
-Then run every opt-in target-host proof that `docs/current-state.md` claims as verified: autonomy Phase 1, project intelligence, sandbox backend, autonomy quality floor, model routing, general coding, and autonomous repair. Record exact versions of Node, pnpm, Ollama/model IDs, Qwen quant, selected sandbox backend, Tree-sitter/SCIP/ast-grep, embedding model if promoted, and MCP SDK if promoted.
+Run every opt-in target-host proof claimed by `docs/current-state.md`: autonomy Phase 1, project intelligence, sandbox backend, autonomy quality floor, model routing, general coding, autonomous repair. Record exact Node, pnpm, Ollama/model IDs, Qwen quant, sandbox backend, Tree-sitter/SCIP/ast-grep, embedding model if promoted, and MCP SDK if promoted.
 
-`V31M4-AUTONOMY-001` is complete only when all Spec §21 conditions have direct evidence. Anything unevidenced remains explicitly incomplete in `docs/current-state.md`.
+`V31M4-AUTONOMY-001` is complete only when every Spec §21 condition has evidence; anything else remains explicitly incomplete.
 
 ## Executor Rules
 
-1. Read `AGENTS.md`, approved spec, this plan, `docs/current-state.md`, dependency rules, repository map, and nearest README before each task.
-2. Verify live HEAD before editing.
-3. Execute implementation in an isolated git worktree.
-4. One task at a time; stop for review at every hard gate.
+1. Before each task read `AGENTS.md`, approved spec, this plan, `docs/current-state.md`, dependency rules, repository map, nearest README.
+2. Verify live HEAD.
+3. Use an isolated git worktree.
+4. One task at a time; stop at every hard gate for review.
 5. TDD before production behavior.
 6. Do not opportunistically implement later tasks.
-7. Do not substitute a different framework/model because integration is easier.
-8. If live code makes an interface here incompatible, stop and record the exact conflict. Reconcile with existing architecture instead of creating a parallel path.
-9. Update `repo_map.md`, `docs/repository-map.md`, and `docs/current-state.md` when ownership/implementation truth changes, plus immutable phase evidence.
-10. End every task with a commit so review/rollback boundaries remain exact.
+7. Do not substitute a different framework/model merely because it is easier.
+8. If live code conflicts with an interface here, stop and record the exact conflict; preserve architecture and reconcile rather than creating a parallel path.
+9. Update `repo_map.md`, `docs/repository-map.md`, `docs/current-state.md` when implementation truth changes, plus immutable phase evidence.
+10. End every task with a commit.
