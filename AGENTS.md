@@ -18,6 +18,7 @@ Before changing, adding, moving, renaming, or deleting any repository file, read
 ## Autonomy-program rules
 
 - `V31M4-AUTONOMY-001 / 1.1.0` is an explicitly approved additive architecture expansion. Preserve runtime API `1.0.0` and adapter protocol `1.0.0`; new autonomy behavior follows the v2 spec/plan, including separately negotiated adapter protocol `1.1.0` where required.
+- Do not change the existing `ADAPTER_PROTOCOL_VERSION = "1.0.0"` constant to `1.1.0` or mutate strict v1.0 RPC unions in place. Introduce side-by-side v1.1 schemas/constants/negotiation while retaining and regression-testing v1.0 exactly.
 - The v2 spec is the architecture source of truth and the v2 plan is the execution source of truth. The older same-date non-v2 autonomy spec/plan are historical and must not be used for implementation decisions.
 - If live implementation evidence makes a v2 plan interface invalid, stop and record the exact conflict rather than silently redesigning the architecture or creating a shadow path.
 - Named external projects in the autonomy spec are substrates, challengers, interoperability formats, evaluation tools, or research mechanisms only. Do not replace V31M4 orchestration/state/policy/evidence/memory/acceptance with a full external agent framework.
@@ -25,6 +26,7 @@ Before changing, adding, moving, renaming, or deleting any repository file, read
 - The primary local acceptance model may change; no domain/application invariant may depend on Qwen3.8 specifically.
 - `WorkspaceManagerPort` remains the worktree/workspace authority; the model must not create worktrees or receive host `.git` authority.
 - The sandbox backend is deliberately unresolved until target-host bake-off. Freeze the V31M4-owned `SandboxPort`, not OpenSandbox/OpenShell/direct-Docker as a permanent implementation.
+- Sandbox `writableWorkspaceOnly` means no additional writable **host** mount. A sandbox may receive bounded ephemeral sandbox-internal scratch/tmp/cache storage and a temporary HOME when required by build/test tools; that scratch is non-authoritative, contains no ambient host secrets, and is destroyed with the sandbox.
 - Public runtime API `1.0.0` strict schemas are immutable. Internal Task Capsule/Ledger/skill/memory state does not automatically become a public endpoint.
 
 ## Non-negotiable boundaries
