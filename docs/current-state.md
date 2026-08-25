@@ -4,12 +4,32 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
 ## Repository state
 
-- Branch: `main`
+- Branch: `autonomy-v1.1.0` (branched from `main`; `main` itself remains at the state described below).
 - Handoff baseline commit before this file was added: `2fe85cd708c6dffd4d05872f3a85926648e6a676`
 - Live HEAD: verify from git at every session start; do not trust a stored SHA as current after subsequent commits.
 - Architecture baseline: `V31M4-SRS-001 / 1.0.0`
 - Hardened ancestor: `5746e5f2571a08dea3cce0493adeac92ae025135`
 - Canonical continuation is based on the hardened Layer 5 line. Older Layer 6 implementations are reference material only.
+
+## Autonomy program state (`V31M4-AUTONOMY-001 / 1.1.0`)
+
+- Canonical architecture: `docs/superpowers/specs/2026-08-25-autonomy-quality-floor-architecture-v2.md`.
+  Canonical plan: `docs/superpowers/plans/2026-08-25-autonomy-quality-floor-v2.md`. Both supersede the
+  same-date non-v2 autonomy spec/plan, which are historical only (see `AGENTS.md`).
+- Preflight audit complete: `docs/reviews/autonomy-preflight-audit.md`.
+- **Task 0 (freeze the pre-autonomy baseline): DONE and verified green.** Evidence:
+  `docs/reviews/autonomy-baseline-v2.md`. Starting HEAD `802f676`, clean worktree, `node v24.18.0`,
+  `pnpm 11.17.0`. The only baseline failure was a missing local Playwright browser binary
+  (environment gap, not a product defect); after `pnpm exec playwright install chromium` (no
+  dependency/lockfile change), `pnpm check` is fully green: lint 0 errors (9 pre-existing warnings, 1
+  pre-existing info), typecheck 9/9, tests 490 passing / 14 skipped (504 total) across 107 passing +
+  4 skipped files (111 total) — matching the last recorded full-gate evidence below exactly. Nine
+  named future invariants were recorded as `it.todo()` only in
+  `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`. No runtime API, adapter protocol,
+  or product behavior was changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
+- **Next action: Task 1** (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation) per
+  the canonical v2 plan — not started. Do not begin Task 1 without re-verifying this baseline first if
+  time has passed or the tree has changed.
 
 ## Verified implemented state
 
