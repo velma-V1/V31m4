@@ -31,6 +31,7 @@ import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/d
 import { parsePaginationCursor } from "@v31m4/infrastructure";
 import type { RuntimeService } from "./composition-root.js";
 import { collectCompleteModelCatalog } from "./model-catalog.js";
+import { registerToolCommands } from "./tool-command-surface.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
 
 export interface ListQueryDependencies {
@@ -108,6 +109,8 @@ export function registerListQueries(
   service: RuntimeService,
   dependencies: ListQueryDependencies,
 ): void {
+  registerToolCommands(service, { jobs: dependencies.jobs });
+
   service.registerQuery("tool.list", async (payload) => {
     const request = parseCommandPayload(listToolsRequestSchema, payload);
     return listToolsResponseSchema.parse({
