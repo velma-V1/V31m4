@@ -21,21 +21,18 @@ describe("governed tool execution", () => {
     );
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${runtime.address.port}/queries/tool.list`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${OPERATOR_TOKEN}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            schemaVersion: CONTRACT_SCHEMA_VERSION,
-            requestId: "request-tool-list",
-            pagination: { limit: 10 },
-          }),
+      const response = await fetch(`http://127.0.0.1:${runtime.address.port}/queries/tool.list`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${OPERATOR_TOKEN}`,
+          "content-type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          schemaVersion: CONTRACT_SCHEMA_VERSION,
+          requestId: "request-tool-list",
+          pagination: { limit: 10 },
+        }),
+      });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
