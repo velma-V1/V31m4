@@ -10,6 +10,7 @@ import {
   type PortPage,
   type PortPageRequest,
   type ProjectRepositoryPort,
+  type ToolGatewayPort,
   type Versioned,
 } from "@v31m4/application";
 import {
@@ -23,12 +24,16 @@ import {
   listMissionsResponseSchema,
   listModelsRequestSchema,
   listModelsResponseSchema,
+  listToolsRequestSchema,
+  listToolsResponseSchema,
   type PaginationRequest,
 } from "@v31m4/contracts";
 import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/domain";
 import { parsePaginationCursor } from "@v31m4/infrastructure";
 import type { RuntimeService } from "./composition-root.js";
 import { collectCompleteModelCatalog } from "./model-catalog.js";
+import { collectCompleteToolCatalog } from "./tool-catalog.js";
+import { registerToolCommands } from "./tool-command-surface.js";
 import { parseCommandPayload } from "./use-case-infrastructure.js";
 
 export interface ListQueryDependencies {
@@ -38,6 +43,7 @@ export interface ListQueryDependencies {
   readonly candidates: CandidateRepositoryPort;
   readonly evidence: EvidenceRepositoryPort;
   readonly models: ModelGatewayPort;
+  readonly tools?: ToolGatewayPort;
 }
 
 function pageRequest(pagination: PaginationRequest): PortPageRequest {
@@ -101,11 +107,45 @@ async function requireJob(
   return job;
 }
 
-/** Registers the four read-only collection queries against existing Layer 4 repository ports. */
+/** Registers authenticated read-only collection queries against existing runtime authority. */
 export function registerListQueries(
   service: RuntimeService,
   dependencies: ListQueryDependencies,
 ): void {
+  registerToolCommands(service, { jobs: dependencies.jobs });
+
+  service.registerQuery("tool.list", async (payload, context) => {
+    const request = parseCommandPayload(listToolsRequestSchema, payload);
+    if (dependencies.tools === undefined) {
+      return listToolsResponseSchema.parse({
+        schemaVersion: request.schemaVersion,
+        requestId: request.requestId,
+        tools: [],
+        pagination: { total: 0 },
+      }) as unknown as ApplicationJsonValue;
+    }
+    const all = await collectCompleteToolCatalog(dependencies.tools, context);
+    const filtered = all.filter(
+      (profile) =>
+        (request.status === undefined || profile.status === request.status) &&
+        (request.automationMethod === undefined ||
+          profile.automationMethod === request.automationMethod) &&
+        (request.operation === undefined || profile.operations.includes(request.operation)),
+    );
+    const start = request.pagination.offset ?? parsePaginationCursor(request.pagination.cursor);
+    const tools = filtered.slice(start, start + request.pagination.limit);
+    const next = start + request.pagination.limit;
+    return listToolsResponseSchema.parse({
+      schemaVersion: request.schemaVersion,
+      requestId: request.requestId,
+      tools,
+      pagination: {
+        total: filtered.length,
+        ...(next < filtered.length ? { nextCursor: String(next) } : {}),
+      },
+    }) as unknown as ApplicationJsonValue;
+  });
+
   service.registerQuery("model.list", async (payload, context) => {
     const request = parseCommandPayload(listModelsRequestSchema, payload);
     const all = await collectCompleteModelCatalog(dependencies.models, context);

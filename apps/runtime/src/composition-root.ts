@@ -18,6 +18,7 @@ import {
   type ProductionKernelPort,
   type ProjectRepositoryPort,
   submitMission,
+  type ToolGatewayPort,
   type UnitOfWorkTransaction,
   type VerifierPort,
   type WorkspaceManagerPort,
@@ -197,13 +198,14 @@ export interface RuntimeComposition {
  * HTTP-facing input, so it cannot be activated by normal runtime operation. `verifierFactory`
  * lets tests inject a deterministic verifier (e.g. one that always fails) in place of the real
  * `ReferenceVerifier` to exercise job.execute's negative-verification path without making
- * `ReferenceVerifier` itself nondeterministic or environment-dependent. `modelGatewayDecorator`
- * supplies adversarial provider pagination without creating a production configuration path or a
- * second model authority.
+ * `ReferenceVerifier` itself nondeterministic or environment-dependent. Gateway overrides let
+ * tests exercise provider-neutral pagination and governed execution without creating production
+ * configuration paths or second authorities.
  */
 export interface CompositionOverrides {
   readonly verifierFactory?: (artifacts: ArtifactStorePort, projectId: ProjectId) => VerifierPort;
   readonly modelGatewayDecorator?: (gateway: ModelGatewayPort) => ModelGatewayPort;
+  readonly toolGateway?: ToolGatewayPort;
   readonly interruptAfterKernelEffect?: boolean;
   readonly interruptAfterRepairKernelEffect?: boolean;
 }
@@ -426,6 +428,7 @@ export function buildComposition(
     candidates,
     evidence: evidenceRepo,
     models: modelCatalog,
+    ...(overrides.toolGateway === undefined ? {} : { tools: overrides.toolGateway }),
   });
 
   registerJobCommands({
