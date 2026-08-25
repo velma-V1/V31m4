@@ -22,11 +22,15 @@ This file is a concise operational handoff for future Claude Code sessions. It r
   `pnpm 11.17.0`. The only baseline failure was a missing local Playwright browser binary
   (environment gap, not a product defect); after `pnpm exec playwright install chromium` (no
   dependency/lockfile change), `pnpm check` is fully green: lint 0 errors (9 pre-existing warnings, 1
-  pre-existing info), typecheck 9/9, tests 490 passing / 14 skipped (504 total) across 107 passing +
-  4 skipped files (111 total) — matching the last recorded full-gate evidence below exactly. Nine
-  named future invariants were recorded as `it.todo()` only in
-  `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`. No runtime API, adapter protocol,
-  or product behavior was changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
+  pre-existing info), typecheck 9/9. Before adding this task's own acceptance-inventory test file,
+  tests were 490 passing / 14 skipped (504 total) across 107 passing + 4 skipped files (111 total),
+  matching the last recorded full-gate evidence below exactly. Nine named future invariants were then
+  recorded as `it.todo()` only in
+  `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`; because that file is entirely
+  `it.todo()`, Vitest counts it as a skipped file and each `it.todo()` as a "todo" test, so the exact
+  final count at the Task 0 commit is **490 passing / 14 skipped / 9 todo (513 total) across 107
+  passing + 5 skipped files (112 total)**. No runtime API, adapter protocol, or product behavior was
+  changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
 - **Next action: Task 1** (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation) per
   the canonical v2 plan — not started. Do not begin Task 1 without re-verifying this baseline first if
   time has passed or the tree has changed.

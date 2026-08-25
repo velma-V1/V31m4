@@ -35,17 +35,17 @@ changed by this task; it is exact evidence plus a named future acceptance invent
   `apps/runtime/tests/operator-ui.browser.test.ts`. Failure:
   `browserType.launch: Executable doesn't exist at
   /home/xxthatguyxx/.cache/ms-playwright/chromium_headless_shell-1234/...`. This is a missing
-  Playwright browser binary in this fresh worktree/container, not a product-code defect — the same
-  class of environment gap `docs/current-state.md` already records for prior sessions (missing
-  Chromium shared libraries), except this container had never downloaded the Playwright browser at
-  all. Result: **489 passing / 14 skipped (504 total) across 106 passing + 1 failed + 4 skipped test
-  files (111 total)**.
+  Playwright browser binary in this WSL2 Linux git worktree (`Linux 6.18.33.2-microsoft-standard-WSL2`),
+  not a product-code defect — the same class of environment gap `docs/current-state.md` already
+  records for prior sessions (missing Chromium shared libraries), except this worktree had never
+  downloaded the Playwright browser at all. Result: **489 passing / 14 skipped (504 total) across 106
+  passing + 1 failed + 4 skipped test files (111 total)**.
 
 ### Classification of the one failure
 
 - **Category:** local test-tool environment setup gap (missing downloaded browser binary), not a
   product defect, not a flake, not an architecture/contract violation.
-- **Reproduction:** `pnpm exec playwright install chromium` had never been run in this container;
+- **Reproduction:** `pnpm exec playwright install chromium` had never been run in this worktree;
   `~/.cache/ms-playwright` lacked the `chromium_headless_shell-1234` executable the installed
   `playwright`/`@playwright/test` version expects.
 - **Resolution:** `pnpm exec playwright install chromium` — downloads the Playwright-managed browser
@@ -57,24 +57,41 @@ changed by this task; it is exact evidence plus a named future acceptance invent
   change, matching the plan's Task 0 requirement to explain every pre-existing failure before
   proceeding, not to silently skip or weaken the test.
 
-### Second run (after `pnpm exec playwright install chromium`)
+### Second run (after `pnpm exec playwright install chromium`, before this task's own file additions)
 
 - `pnpm lint`: unchanged — 351 files, 9 warnings, 1 info, 0 errors.
 - `pnpm typecheck`: unchanged — 9/9 packages pass (all cache hits except runtime, which reran clean).
 - `pnpm test`: **all green** — **490 passing / 14 skipped (504 total) across 107 passing + 4 skipped
   test files (111 total)**. This exactly matches the last recorded full-gate evidence in
   `docs/current-state.md` (Item 3 corrected focused gate: "490 passing / 14 skipped (504 total)
-  across 107 passing + 4 skipped test files (111 total)").
+  across 107 passing + 4 skipped test files (111 total)"). This run proves the browser-binary gap was
+  the only unexplained failure and closes it; it does not yet include this task's own
+  `it.todo()` inventory file, added afterward.
 - `git status --short` after both runs: clean — the Playwright browser download and turbo/vitest
   cache activity touched no tracked file.
+
+### Final run (after adding `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`, immediately before the Task 0 commit)
+
+Adding the nine `it.todo()` acceptance-inventory placeholders (Task 0 Step 2) itself changes the
+Vitest summary: each `it.todo()` counts as a distinct "todo" test, and a test file containing only
+`it.todo()` entries (no running `it`) is counted by Vitest as a **skipped file**, not a passing one.
+The exact final `pnpm test` summary, captured right before commit `36d88fe`, is:
+
+- **490 passing / 14 skipped / 9 todo (513 total tests)**
+- **107 passing + 5 skipped test files (112 total files)**
+
+This — not the 504/111 figures above — is the actual state of the tree at the Task 0 commit, and is
+the correct baseline Task 1 onward must not regress below (490 passing, 0 failing; the 9 todo remain
+todo until their owning implementation task).
 
 ## Baseline verdict
 
 **Zero unexplained baseline failure.** The only observed failure was a local browser-binary
 environment gap, explained and closed by a reversible, non-product, non-dependency-adding action.
 `pnpm check` is green: lint clean (0 errors, 9 pre-existing warnings, 1 pre-existing info), typecheck
-9/9, tests 490 passing / 14 skipped across 107 passing + 4 skipped files. This is the frozen
-pre-implementation baseline Task 1 onward must not regress.
+9/9, tests **490 passing / 14 skipped / 9 todo (513 total) across 107 passing + 5 skipped files (112
+total)** — the exact final count including this task's own acceptance-inventory file (see "Final run"
+above). This is the frozen pre-implementation baseline Task 1 onward must not regress.
 
 ## Current supervised-local model behavior (frozen, informational)
 
