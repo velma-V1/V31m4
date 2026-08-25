@@ -23,6 +23,8 @@ import {
   listMissionsResponseSchema,
   listModelsRequestSchema,
   listModelsResponseSchema,
+  listToolsRequestSchema,
+  listToolsResponseSchema,
   type PaginationRequest,
 } from "@v31m4/contracts";
 import type { Job, JobId, MissionContract, MissionId, ProjectId } from "@v31m4/domain";
@@ -101,11 +103,21 @@ async function requireJob(
   return job;
 }
 
-/** Registers the four read-only collection queries against existing Layer 4 repository ports. */
+/** Registers authenticated read-only collection queries against existing runtime authority. */
 export function registerListQueries(
   service: RuntimeService,
   dependencies: ListQueryDependencies,
 ): void {
+  service.registerQuery("tool.list", async (payload) => {
+    const request = parseCommandPayload(listToolsRequestSchema, payload);
+    return listToolsResponseSchema.parse({
+      schemaVersion: request.schemaVersion,
+      requestId: request.requestId,
+      tools: [],
+      pagination: { total: 0 },
+    }) as unknown as ApplicationJsonValue;
+  });
+
   service.registerQuery("model.list", async (payload, context) => {
     const request = parseCommandPayload(listModelsRequestSchema, payload);
     const all = await collectCompleteModelCatalog(dependencies.models, context);
