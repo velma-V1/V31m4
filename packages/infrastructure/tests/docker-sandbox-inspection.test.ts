@@ -1,3 +1,4 @@
+import { ApplicationError } from "@v31m4/application";
 import { describe, expect, it } from "vitest";
 import {
   assertDockerRuntimeIsolation,
@@ -48,6 +49,51 @@ function observation(overrides: Record<string, unknown> = {}): string {
 }
 
 describe("effective Docker runtime inspection", () => {
+  /**
+   * Engines differ in whether internal tmpfs appear in `.Mounts`: Docker 29 reports them only
+   * under `HostConfig.Tmpfs`, where their options are approved exhaustively. An earlier revision
+   * required a fixed total of three mounts, which made this attestation unsatisfiable on a
+   * conforming engine whose isolation was correct — a false negative that blocked the real
+   * target-host proof. What must hold either way is that exactly one host-visible mount exists.
+   */
+  it("accepts an engine that reports internal tmpfs outside the mount list", () => {
+    const parsed = assertDockerRuntimeIsolation(
+      observation({
+        Mounts: [{ Type: "bind", Source: workspaceRoot, Destination: "/workspace", RW: true }],
+      }),
+      expected,
+    );
+    expect(parsed.mounts.map((mount) => `${mount.type}:${mount.destination}`)).toEqual([
+      "bind:/workspace",
+    ]);
+  });
+
+  it("still refuses a second host bind when tmpfs are reported outside the mount list", () => {
+    for (const extra of [
+      { Type: "bind", Source: "/etc", Destination: "/host-etc", RW: false },
+      { Type: "volume", Source: "cache", Destination: "/cache", RW: true },
+      {
+        Type: "bind",
+        Source: "/var/run/docker.sock",
+        Destination: "/var/run/docker.sock",
+        RW: true,
+      },
+      { Type: "tmpfs", Source: "", Destination: "/unapproved", RW: true },
+    ]) {
+      expect(() =>
+        assertDockerRuntimeIsolation(
+          observation({
+            Mounts: [
+              { Type: "bind", Source: workspaceRoot, Destination: "/workspace", RW: true },
+              extra,
+            ],
+          }),
+          expected,
+        ),
+      ).toThrow(ApplicationError);
+    }
+  });
+
   it("accepts only the owned workspace bind plus approved internal tmpfs mounts", () => {
     const parsed = assertDockerRuntimeIsolation(observation(), expected);
     expect(parsed.containerId).toBe("d".repeat(64));

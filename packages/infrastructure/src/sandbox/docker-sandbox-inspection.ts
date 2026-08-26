@@ -1,4 +1,5 @@
 import { ApplicationError } from "@v31m4/application";
+import { CONTAINER_WORKDIR } from "./docker-sandbox-configuration.js";
 
 const CONTAINER_ID = /^[a-f0-9]{64}$/u;
 const NON_ROOT_USER = /^([0-9]+):([0-9]+)$/u;
@@ -190,29 +191,35 @@ export function assertDockerRuntimeObservation(
   ) {
     throw malformed("Docker effective HOME or TMPDIR is not the approved internal scratch path.");
   }
-  if (observation.mounts.length !== 3) {
+  // What `.Mounts` must contain is exactly one thing: the authoritative workspace bind. Whether an
+  // engine also lists internal tmpfs there is a representation detail that varies by version —
+  // Docker 29 reports them only under `HostConfig.Tmpfs`, which is where their options are
+  // approved above, exhaustively. Requiring a fixed total of three conflated the two and made this
+  // attestation unsatisfiable on a conforming engine whose isolation was in fact correct.
+  //
+  // The rule below is stricter than a count for everything that can expose the host: every
+  // non-tmpfs entry must be the workspace bind, so an extra bind or any volume is refused whatever
+  // the total. A tmpfs entry, if the engine lists one, may only name an approved target.
+  const hostMounts = observation.mounts.filter((mount) => mount.type !== "tmpfs");
+  if (hostMounts.length !== 1) {
     throw malformed("Docker effective mount list contains an unexpected mount.");
   }
-  const workspace = observation.mounts.find((mount) => mount.destination === "/workspace");
+  const workspace = hostMounts[0];
   if (
     workspace?.type !== "bind" ||
+    workspace.destination !== CONTAINER_WORKDIR ||
     workspace.source !== expected.workspaceRoot ||
     !workspace.writable
   ) {
     throw malformed("Docker effective workspace bind does not match the authoritative workspace.");
   }
-  for (const target of APPROVED_TMPFS) {
-    const mount = observation.mounts.find((candidate) => candidate.destination === target);
-    if (mount?.type !== "tmpfs" || mount.source !== "" || !mount.writable) {
-      throw malformed(`Docker effective ${target} mount is not internal writable tmpfs.`);
-    }
-  }
   for (const mount of observation.mounts) {
     if (
       mount.source.includes("docker.sock") ||
       mount.destination.includes("docker.sock") ||
-      (mount.type === "bind" && mount.destination !== "/workspace") ||
-      mount.type === "volume"
+      (mount.type === "bind" && mount.destination !== CONTAINER_WORKDIR) ||
+      mount.type === "volume" ||
+      (mount.type === "tmpfs" && !APPROVED_TMPFS.has(mount.destination))
     ) {
       throw malformed("Docker effective mounts expose an unapproved host or volume path.");
     }

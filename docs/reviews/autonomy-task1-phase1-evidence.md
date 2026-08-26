@@ -1,6 +1,6 @@
 # V31M4 Autonomy Task 1 — Scoped Semantic ACI, `SandboxPort`, Adapter-Protocol-1.1 Foundation
 
-> ## STATUS: INCOMPLETE — independent verification FAILED, defects repaired, target-host proof still BLOCKED
+> ## STATUS: implementation reviewed and repaired; target-host proof CLOSED 2026-08-26 (see the final section). The original blocked status and its evidence are preserved below verbatim.
 >
 > An independent Codex review of the first implementation (commit `fc84f37`) returned **FAIL** with
 > four findings. All four were reproduced, root-caused, and repaired; see
@@ -1083,3 +1083,73 @@ and is not sandbox proof.
 Until it independently observes a real digest-pinned container satisfying every isolation and
 cleanup assertion, **Task 1 remains INCOMPLETE, Task 2 remains forbidden, and no sandbox backend is
 promoted**.
+
+---
+
+## Target-host proof CLOSED — 2026-08-26, real digest-pinned container observed
+
+Everything above this line is the original record and is preserved unchanged, including the
+failed run. What follows is a later, successful execution on the supported host; it supersedes
+the blocked status without erasing how the block was reached.
+
+### What was wrong, and what it was not
+
+The earlier failure was a **defect in the proof configuration, not in production isolation**. The
+proof hardcoded `userSpec: "65534:65534"` in three places while the bind-mounted workspace was
+owned by a different non-root user, so the container genuinely could not write the workspace it
+had been assigned. That is a misconfigured proof. The frozen Task 1 requirement is a *non-root
+numeric UID:GID*; it has never been `65534:65534` specifically.
+
+The correction derives the identity from the assigned workspace itself (`workspaceUserSpec`),
+requires both components to be integers greater than zero, and uses that one value for backend
+construction, the argv assertions, and the live container alike. The host workspace was **not**
+chown'd or chmod'd to make the proof pass, and no isolation property was relaxed.
+
+A second, genuine defect surfaced once identity was correct: `assertDockerRuntimeIsolation`
+required `.Mounts` to contain exactly three entries — the workspace bind plus two tmpfs. Docker
+29.6.2 reports internal tmpfs only under `HostConfig.Tmpfs`, where this code already approves
+them exhaustively, so the attestation was unsatisfiable on a conforming engine whose isolation was
+in fact correct: a fail-closed false negative. It now requires exactly one host-visible mount and
+refuses any additional bind, any volume, and any unapproved tmpfs target whatever the total, which
+is **stricter** than a fixed count for everything that can expose the host. Two regressions cover
+both engine representations.
+
+### Environment
+
+- Docker client 29.6.2, Server **Docker Desktop 4.84.0 (234817)**, engine 29.6.2, containerd 2.2.5
+- Windows 11 + WSL2, Docker Desktop WSL integration enabled for this distribution
+- Image `alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce`,
+  digest re-verified against the registry at proof time
+- Workspace owner `1000:1000`; `userSpec` derived, non-root
+
+### Observed in the real V31M4-created container
+
+| Property | Observation |
+| --- | --- |
+| Non-root identity | `effective container uid: 1000`, matches the derived `userSpec` |
+| Workspace write | permitted, verified on the host filesystem afterwards |
+| Outside-workspace write | refused |
+| Read-only root | `/proc/self/mountinfo` reports `ro,relatime`; failed write kept as supplemental only |
+| `/tmp`, HOME | both tmpfs, neither maps host storage; `HOME=/home/sandbox`, `TMPDIR=/tmp` |
+| Sole host bind | `effectiveMounts=1` — the workspace bind and nothing else |
+| Docker socket | absent |
+| Capabilities | `CapEff=0000000000000000`, `CapBnd=0000000000000000` |
+| No new privileges | `NoNewPrivs=1` |
+| Network | mode `none`; interfaces `[lo]`; external/default routes `0`; live numeric-IP connect refused (supplemental) |
+| Ownership | `docker inspect` against the exact running container; task/job/workspace/sandbox labels all match |
+| Real timeout | wall-clock timeout exercised; container force-removed |
+| Cleanup | `v31m4-sandbox-35356f49b6dc…` removed and absence **independently verified**; no orphan container or process remains |
+
+Result: `direct-Docker container assertions: PASS` — proof file 1 passed, 2 tests passed.
+
+Command:
+
+```bash
+V31M4_AUTONOMY_PHASE1_REAL=1 \
+V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 \
+V31M4_SANDBOX_IMAGE=alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+node scripts/prove-autonomy-phase1-real.mjs
+```
+
+**Task 1's target-host proof is closed.** No sandbox backend is promoted by this result; the
+bake-off decision is separate and unchanged.

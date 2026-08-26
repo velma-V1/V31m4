@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -52,6 +52,22 @@ const sandboxImage = process.env["V31M4_SANDBOX_IMAGE"] ?? "";
 const requireDocker = process.env["V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER"] === "1";
 const DIGEST_PINNED_IMAGE = /^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/u;
 const imageIsPinned = DIGEST_PINNED_IMAGE.test(sandboxImage);
+
+/**
+ * The numeric identity that owns the assigned workspace.
+ *
+ * Both components must be non-zero: a container running as root would satisfy no isolation
+ * property worth proving, and a malformed or missing owner is a failed observation rather than a
+ * reason to fall back to a guess.
+ */
+function workspaceUserSpec(directory: string): string {
+  const owner = statSync(directory);
+  expect(Number.isInteger(owner.uid), `workspace uid must be numeric: ${owner.uid}`).toBe(true);
+  expect(Number.isInteger(owner.gid), `workspace gid must be numeric: ${owner.gid}`).toBe(true);
+  expect(owner.uid, "workspace owner uid must be non-root").toBeGreaterThan(0);
+  expect(owner.gid, "workspace owner gid must be non-root").toBeGreaterThan(0);
+  return `${owner.uid}:${owner.gid}`;
+}
 
 const projectId = ProjectId.parse("project:phase1");
 const jobId = JobId.parse("job:phase1");
@@ -230,24 +246,29 @@ realTest(
           new DirectDockerSandbox({
             image: sandboxImage,
             dockerExecutable,
-            userSpec: "65534:65534",
+            userSpec: workspaceUserSpec(mkdtempSync(join(tmpdir(), "v31m4-phase1-spec-"))),
           }),
       ).toThrow(ApplicationError);
       return;
     }
 
-    const docker = new DirectDockerSandbox({
-      image: sandboxImage,
-      dockerExecutable,
-      userSpec: "65534:65534",
-    });
-    const available = await docker.available();
-    report(`container runtime reachable: ${available}`);
-
+    // The workspace exists before the backend does, because the container identity is derived
+    // from it. An earlier run hardcoded 65534:65534 while the bind-mounted workspace belonged to
+    // a different non-root user, so the container could not write the workspace it was assigned.
+    // That proved a misconfigured proof, not a production isolation defect: the frozen Task 1
+    // requirement is a non-root numeric UID:GID, not that specific pair. The identity is now read
+    // from the assigned workspace itself, so one identity is used by the backend, the argv
+    // assertions, and the live container alike — and the host is never chown'd to suit the proof.
     const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-docker-"));
     const workspaces = new WorkspaceExecutionInterlock(new LocalWorkspaceManager(root));
     const workspace = await workspaces.create(projectId, "tool_execution", context());
     const directory = join(root, workspace.id);
+    const userSpec = workspaceUserSpec(directory);
+    report(`workspace owner identity (derived, non-root): ${userSpec}`);
+
+    const docker = new DirectDockerSandbox({ image: sandboxImage, dockerExecutable, userSpec });
+    const available = await docker.available();
+    report(`container runtime reachable: ${available}`);
     const boundary = createSemanticAuthorizationBoundary({ policy: allowPolicy });
     const authorizeSemanticExecution = boundary.authorize;
     const sandboxes = new SandboxSupervisor({
@@ -306,7 +327,7 @@ realTest(
           throw new Error("argv construction performs no writes");
         },
       },
-      { image: sandboxImage, dockerExecutable, userSpec: "65534:65534" },
+      { image: sandboxImage, dockerExecutable, userSpec },
       ["/bin/sh", "-c", "true"],
     );
     expect(argv.filter((value) => value.startsWith("type=bind"))).toEqual([
