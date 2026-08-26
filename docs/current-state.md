@@ -81,6 +81,31 @@ This file is a concise operational handoff for future Claude Code sessions. It r
        timeout with independent verification that the named container is gone.
     5. *Unknown config keys were accepted.* Docker settings are strictly allowlisted, so a legacy
        `containerWorkdir` (or any other unexpected security-sensitive key) is rejected.
+  - **Round 3 (independent re-review of `8671024`, verdict FAIL_IMPLEMENTATION).** Four further
+    findings plus a residual patch/workspace TOCTOU risk, all reproduced and repaired:
+    1. *Execution trusted a stale workspace handle.* A workspace sealed after `prepare` still
+       reached the backend. Dispatch now takes an execution lease and re-reads
+       `WorkspaceManagerPort`: the workspace must exist, be active, keep its identity and
+       project/purpose/created-at, and still resolve to the prepared canonical root. A new
+       `WorkspaceExecutionInterlock` — a decorator over the one workspace manager, not a second
+       authority — makes seal/discard and in-flight dispatch mutually exclusive, so a lifecycle
+       change during an effect loses deterministically with `CONFLICT`.
+    2. *Abnormal Docker client exits bypassed reconciliation.* Exit 125 (and a null exit) are now
+       `docker_client_abnormal_exit`, and any other non-zero exit is reported as an ordinary
+       failure only after the container's absence proves its lifecycle finished. Anything else is
+       force-removed, verified, and left `unknown` + `degraded`.
+    3. *Only stderr was bounded, and `maxOutputBytes` was unvalidated.* `ProcessSupervisor` gained
+       opt-in combined stdout+stderr accounting (opt-in so JSON-RPC adapter callers that read
+       stdout as a protocol channel are unaffected), and `maxOutputBytes` must be a positive
+       integer no greater than 64 MiB.
+    4. *The target-host proof lacked runtime attestation.* It now reads `/proc/self/status` inside
+       the real container and requires `CapEff`/`CapBnd` fully dropped and `NoNewPrivs == 1`; a
+       missing field is a failed observation, not a skipped check.
+    5. *Residual patch TOCTOU.* Containment now resolves the deepest existing ancestor, so a
+       nonexistent target beneath an escaping symlink parent is rejected. A backend may only write
+       through `applyWorkspaceChange`, which re-checks the fingerprint inside the same call under
+       the execution lease, and the supervisor refuses a `workspace_write` effect to any backend
+       that has not declared write support.
   - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
     (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
     disabled for this distro, and no digest-pinned image has been supplied. A non-empty
@@ -97,9 +122,9 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
     With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
   - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
-  - Current gate after round 2: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **577 passing / 16 skipped / 8 todo (601 total) across 114
-    passing + 5 skipped test files (119 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+  - Current gate after round 3: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **603 passing / 16 skipped / 8 todo (627 total) across 115
+    passing + 5 skipped test files (120 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 1 gate.
 
 - **Next action: finish Task 1** — run the target-host Docker proof above once a container runtime

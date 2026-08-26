@@ -607,3 +607,155 @@ ALL`; `no-new-privileges`; PID/CPU/memory bounds; no Docker socket; ephemeral in
 The mandatory target-host Docker proof. No container runtime is reachable and no digest-pinned image
 is supplied, so the isolation properties remain unobserved. **Task 1 is INCOMPLETE and Task 2 must
 not begin.** No sandbox backend is promoted.
+
+---
+
+# Independent review round 3 — findings and remediation
+
+**Verifier:** independent Codex re-review of `8671024` · **Verdict:** FAIL_IMPLEMENTATION
+**Repair starting HEAD:** `8671024ba25a88c49f0ee5be2395e1992ee8ec1a`, clean worktree.
+
+## Reproduction
+
+Probes against `8671024` printed:
+
+```text
+[probe3 F1] workspace sealed before execute -> dispatched=true, status=completed
+[probe3 F2] docker exit 125 -> status=failed, sandbox=ready
+[probe3 F3] stdout bytes emitted with a 1024-byte limit: 16384000, exit=0, reason=undefined
+[probe3 symlink] accepted {"sub/link/missing.ts":""}
+```
+
+Round 2 bound *authorization* to execution; round 3 found that the **workspace** was still trusted
+from an earlier read, that a Docker CLI exit code was being treated as container evidence, that
+"bounded output" bounded one stream, and that a path beneath an escaping symlink parent counted as
+contained. Finding 4 is a proof-completeness gap, confirmed by inspection.
+
+## Finding 1 (HIGH) — execution did not re-read the authoritative workspace
+
+**Root cause:** `WorkspaceManagerPort.get` was consulted at `prepare`, after which execution
+trusted the captured `WorkspaceHandle`. A workspace sealed, discarded, or replaced in between still
+reached the backend.
+
+**Repair — authoritative workspace at dispatch.** `SandboxSupervisor.execute` now runs in a fixed
+order: verify capability → binding checks → allowed operation → workspace-write gate → **consume
+capability** → `beginExecution` (lease + authoritative re-read) → identity check → canonical-root
+re-resolve → currency preconditions → dispatch. The workspace must exist, be `active`, keep its id,
+and match the prepare-time `projectId`/`purpose`/`rootPath`/`createdAt`; the re-resolved root must
+`realpath`-equal the prepared one. A pre-dispatch refusal does **not** mark the sandbox degraded —
+nothing ran.
+
+**Repair — lifecycle race.** `WorkspaceExecutionInterlock` decorates the one `WorkspaceManagerPort`
+and is installed as *the* workspace manager, so there is no second authority. It keeps two
+synchronously maintained sets: sandboxes currently dispatching, and workspaces currently being
+sealed or discarded. `beginExecution` registers its lease **before its first `await`**, which makes
+"no seal can start after this point" a real guarantee rather than a hopeful one; `seal`/`discard`
+register their marker the same way, closing the mirror-image race. Either side losing is a
+deterministic `CONFLICT`.
+
+**Regressions:** sealed after prepare → no dispatch; discarded after prepare → no dispatch (`NOT_FOUND`);
+authoritative record replaced (same id, new `createdAt`) → no dispatch; resolved root changed → no
+dispatch; seal and discard both refused while an effect is mid-dispatch, then succeeding once it
+finishes; execution refused while a seal is in flight.
+
+## Patch currency and containment hardening
+
+**Containment.** `containedPath` previously fell back to the lexical path when `realpath` failed,
+so a nonexistent target under an escaping symlink parent looked contained — precisely the case a
+future patch backend would use to create a file outside the workspace. It now walks to the deepest
+existing ancestor, canonicalizes that, and re-appends the remaining segments, catching an escaping
+link whether it is the target, its parent, or any ancestor. Ordinary nonexistent paths inside the
+workspace still resolve.
+
+**Compare-and-apply boundary.** `SandboxExecutionSpec` carries `applyWorkspaceChange`, the only
+sanctioned write: it re-checks the plan's declared fingerprint and performs an atomic temp-write +
+rename **inside the same call**, under the supervisor's execution lease. There is no "just write"
+entry point. `SandboxBackend.supportsWorkspaceWrite` must be explicitly declared, and the supervisor
+refuses a `workspace_write` effect to any backend that has not — so a write path cannot appear by
+accident. Task 1 does not implement a patch engine; it fixes the boundary a later one must use.
+
+**Regressions:** nonexistent target, existing file, the link itself, and a deep nested path all
+rejected under an escaping symlink parent; ordinary nonexistent in-workspace path still resolves;
+write effect refused for a non-write-capable backend; compare-and-apply succeeds while current;
+compare-and-apply refuses with `CONFLICT` when the target changes *inside* the backend after the
+supervisor's own check, leaving the racing write intact.
+
+## Finding 2 (HIGH) — abnormal Docker client exits bypassed reconciliation
+
+**Root cause:** a clean close with no supervisor reason was classified `exited`, so `docker`'s own
+failure exit (125) was reported as an ordinary container-command failure and the sandbox returned
+to `ready` without any evidence about the container.
+
+**Repair.** A `SandboxRunOutcome` model distinguishes `completed_successfully`,
+`container_command_failed_confirmed`, `docker_client_abnormal_exit`, `timeout`, `cancellation`,
+`output_limit`, `supervisor_signal`, and `dependency_spawn_failure`. Exit 0 with a clean termination
+is the only unconditional success. Exit 125 or a null exit is never treated as a container result.
+Any other non-zero exit is reported as an ordinary failure **only** after `docker ps --all --quiet
+--filter name=^…$` proves the container is gone; if it survives, or its state cannot be read, the
+outcome is abnormal. Every abnormal outcome force-removes the container, verifies absence, and
+surfaces an indeterminate effect (`unknown` + `degraded`); a cleanup failure propagates so the
+sandbox stays reconcilable.
+
+**Regressions:** exit 125 → `unknown` + `degraded` + `rm --force`; non-zero exit with proven absence
+→ ordinary `failed` with `outcome: container_command_failed_confirmed` and the absence check
+recorded; non-zero exit with a surviving container → `DEPENDENCY_FAILURE` + `degraded`.
+
+## Finding 3 (MEDIUM) — only stderr was bounded; `maxOutputBytes` was unvalidated
+
+**Repair.** `ProcessSupervisor` gained `maxCombinedOutputBytes`, counting stdout **and** stderr
+against one budget and terminating the process group with `terminationReason = "output_limit"`.
+It is opt-in on purpose: attaching a stdout counter puts the stream into flowing mode, which would
+change behavior for the JSON-RPC adapter callers that read stdout as a protocol channel. Only byte
+counts are retained, never the output, so counting cannot be turned into a memory amplifier. The
+sandbox — which owns both streams — opts in. `maxOutputBytes` must now be a number, finite, an
+integer, `> 0`, and `<= MAX_ALLOWED_OUTPUT_BYTES` (64 MiB).
+
+**Regressions:** stdout-only overflow, stderr-only overflow, and combined overflow where neither
+stream alone exceeds the budget all yield `output_limit`; stdout is untouched when no combined
+budget is set; a self-directed exit reports no termination reason while `stop()` reports
+`requested`; stdout flood through the Docker backend reconciles the container and leaves the effect
+`unknown` + `degraded`; `0`, `-1`, `NaN`, `Infinity`, `1.5`, `"unbounded"`, and `64 MiB + 1` are all
+rejected while `1`, `4096`, and exactly 64 MiB are accepted.
+
+## Finding 4 (MEDIUM) — the target-host proof lacked runtime attestation
+
+**Repair.** The proof now reads `/proc/self/status` **inside the real container** and requires
+`CapEff == 0000000000000000`, `CapBnd == 0000000000000000`, and `NoNewPrivs == 1`. Docker argv
+remains supplemental evidence only. Parsing fails closed: a missing field is a failed observation,
+never a silently skipped check. The parser lives in
+`apps/runtime/tests/autonomy/runtime-privilege-attestation.ts` and has its own hermetic regression,
+so the rules that decide whether a real container passes are themselves tested on a host with no
+Docker.
+
+**Regressions:** retained `CapEff` rejected; retained `CapBnd` rejected; `NoNewPrivs != 1` rejected;
+each missing field rejected by name; non-integer `NoNewPrivs` rejected; a fully hardened status
+accepted.
+
+## Architecture note
+
+The sandbox modules exceeded the 500-line source guard again and were split along real seams rather
+than weakening the guard: `workspace-guards.ts` (containment, fingerprints, identity, root, and
+compare-and-apply), `reference-sandbox.ts`, `docker-sandbox-configuration.ts` (settings validation
+and argv), plus the new `workspace-execution-interlock.ts`. Largest sandbox file is now 361 lines.
+
+## Round-3 verification
+
+- Focused Task 1 suites (domain IDs, sandbox port, adapter RPC 1.1, infrastructure sandbox, adapter
+  operations, supervised processes, and every `apps/runtime/tests/autonomy` file): **129 passing /
+  2 skipped / 8 todo (139 total) across 11 passing + 1 skipped test files (12 total)**.
+- `packages/infrastructure/tests/supervised-processes.test.ts`: **9 passing**.
+- `pnpm check`: **exit 0** — lint 373 files, 0 errors (9 pre-existing warnings, 1 pre-existing
+  info), typecheck 9/9, **603 passing / 16 skipped / 8 todo (627 total) across 115 passing + 5
+  skipped test files (120 total)**.
+- `pnpm build`: 9/9. `git diff --check`: clean.
+- Static/reference proof: `node scripts/prove-autonomy-phase1-real.mjs` — 2 passing, exit 0, with
+  the container assertions honestly reported as NOT PROVEN.
+- Gate honesty check: `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 node scripts/prove-autonomy-phase1-real.mjs`
+  exits **1**.
+
+## Remaining blocker (unchanged)
+
+The mandatory target-host Docker proof. No container runtime is reachable and no digest-pinned image
+is supplied, so UID, read-only root, socket absence, egress, workspace-only write, tmpfs scratch,
+real timeout cleanup, and the new capability/no-new-privileges attestation remain unobserved.
+**Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted.

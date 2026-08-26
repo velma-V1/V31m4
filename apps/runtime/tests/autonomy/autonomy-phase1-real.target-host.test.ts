@@ -9,7 +9,6 @@ import {
   type OperationContext,
   type SandboxHandle,
   SandboxIsolationPolicy,
-  type WorkspaceManagerPort,
 } from "@v31m4/application";
 import { JobId, ProjectId, ResourceBudget, TaskId } from "@v31m4/domain";
 import {
@@ -18,11 +17,13 @@ import {
   DirectDockerSandbox,
   ReferenceSandboxBackend,
   SandboxSupervisor,
+  WorkspaceExecutionInterlock,
 } from "@v31m4/infrastructure";
 import { expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
+import { assertHardenedRuntimePrivileges } from "./runtime-privilege-attestation.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1 target-host proof.
@@ -81,7 +82,7 @@ function containerExists(name: string): boolean {
 
 realTest("real workspace, catalog, and sandbox boundary on this host", async () => {
   const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-real-"));
-  const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
+  const workspaces = new WorkspaceExecutionInterlock(new LocalWorkspaceManager(root));
   const workspace = await workspaces.create(projectId, "tool_execution", context());
   const directory = join(root, workspace.id);
   writeFileSync(join(directory, "target.ts"), "export const value = 1;\n", "utf8");
@@ -193,7 +194,7 @@ realTest(
     report(`container runtime reachable: ${available}`);
 
     const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-docker-"));
-    const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
+    const workspaces = new WorkspaceExecutionInterlock(new LocalWorkspaceManager(root));
     const workspace = await workspaces.create(projectId, "tool_execution", context());
     const directory = join(root, workspace.id);
     const boundary = createSemanticAuthorizationBoundary();
@@ -245,6 +246,9 @@ realTest(
         workspaceRoot: directory,
         budget,
         policy,
+        applyWorkspaceChange: async () => {
+          throw new Error("argv construction performs no writes");
+        },
       },
       { image: sandboxImage, dockerExecutable, userSpec: "65534:65534" },
       ["/bin/sh", "-c", "true"],
@@ -341,6 +345,20 @@ realTest(
       context(),
     );
     expect(scratchWritable.status).toBe("completed");
+
+    // Capability drop and no-new-privileges are read from the kernel's own view inside the
+    // running container. Docker argv states intent; /proc/self/status is the evidence.
+    const status = await sandboxes.execute(
+      sandbox,
+      run("cat /proc/self/status", sandbox),
+      context(),
+    );
+    expect(status.status).toBe("completed");
+    const privileges = assertHardenedRuntimePrivileges(String(status.metadata["stdout"]));
+    report(
+      `runtime privileges: CapEff=${privileges.capabilitiesEffective} ` +
+        `CapBnd=${privileges.capabilitiesBounding} NoNewPrivs=${privileges.noNewPrivileges}`,
+    );
 
     // Destruction must actually prove the container is gone.
     await sandboxes.destroy(sandbox.id, context());

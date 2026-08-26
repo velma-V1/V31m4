@@ -8,7 +8,6 @@ import {
   type SandboxHandle,
   SandboxIsolationPolicy,
   type WorkspaceHandle,
-  type WorkspaceManagerPort,
 } from "@v31m4/application";
 import {
   ADAPTER_PROTOCOL_VERSION,
@@ -16,7 +15,11 @@ import {
   negotiateAdapterProtocolVersion,
 } from "@v31m4/contracts";
 import { ContentHash, JobId, ProjectId, ResourceBudget, TaskId } from "@v31m4/domain";
-import { ReferenceSandboxBackend, SandboxSupervisor } from "@v31m4/infrastructure";
+import {
+  ReferenceSandboxBackend,
+  SandboxSupervisor,
+  WorkspaceExecutionInterlock,
+} from "@v31m4/infrastructure";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
@@ -51,7 +54,7 @@ function context(): OperationContext {
 }
 
 let workspacesRoot: string;
-let workspaces: WorkspaceManagerPort;
+let workspaces: WorkspaceExecutionInterlock;
 let workspace: WorkspaceHandle;
 let workspaceDirectory: string;
 let sandboxes: SandboxSupervisor;
@@ -66,7 +69,9 @@ function authorizeSemanticExecution(
 
 beforeEach(async () => {
   workspacesRoot = mkdtempSync(join(tmpdir(), "v31m4-phase1-"));
-  workspaces = new LocalWorkspaceManager(workspacesRoot);
+  // Composition installs the interlock as *the* workspace manager, so lifecycle changes and
+  // in-flight effects are ordered against each other through one object.
+  workspaces = new WorkspaceExecutionInterlock(new LocalWorkspaceManager(workspacesRoot));
   workspace = await workspaces.create(projectId, "tool_execution", context());
   workspaceDirectory = join(workspacesRoot, workspace.id);
   writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 1;\n", "utf8");
@@ -248,7 +253,7 @@ describe("code.patch staleness across a real workspace", () => {
     expect((thrown as ApplicationError).code).toBe("CONFLICT");
   });
 
-  it("never reports an effect the hermetic backend did not actually perform", async () => {
+  it("is never handed a write effect at all, and the real workspace is untouched", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
     const current = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
     const fingerprint = ContentHash.parse(fingerprintOf(current.metadata, "target.ts"));
@@ -268,8 +273,11 @@ describe("code.patch staleness across a real workspace", () => {
       },
       observedTargetFingerprint: fingerprint,
     });
-    const result = await sandboxes.execute(sandbox, plan, context());
-    expect(result.status).toBe("failed");
+    // The reference backend declares no workspace-write support, so the supervisor refuses the
+    // effect before dispatch instead of trusting the backend to decline it.
+    await expect(sandboxes.execute(sandbox, plan, context())).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+    });
     expect(readFileSync(join(workspaceDirectory, "target.ts"), "utf8")).toBe(
       "export const value = 1;\n",
     );
@@ -304,8 +312,38 @@ describe("capabilities are issuer-bound, single-use, and re-checked at dispatch"
   });
 
   it("rejects a patch whose target moved between authorization and dispatch", async () => {
-    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-    const current = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
+    // A write-capable backend, so the pre-dispatch currency check — not the write gate — decides.
+    let writeReached = false;
+    const reads = new ReferenceSandboxBackend();
+    const writeCapable = new SandboxSupervisor({
+      backend: {
+        id: "write-capable",
+        supportsWorkspaceWrite: true,
+        async prepare(spec) {
+          await reads.prepare(spec);
+        },
+        async execute(spec, plan) {
+          if (plan.effectClass !== "read") {
+            writeReached = true;
+            throw new Error("the backend must not be reached for a stale write");
+          }
+          return reads.execute(spec, plan);
+        },
+        async cancel() {},
+        async destroy() {},
+      },
+      workspaces,
+      allowedOperations: SEMANTIC_OPERATION_IDS,
+      capabilities: boundary.capabilities,
+      resolveWorkspaceRoot: async (workspaceId) => join(workspacesRoot, workspaceId),
+      generateSandboxId: () => `sandbox:write-${++nextSandbox}`,
+    });
+    const sandbox = await writeCapable.prepare(taskId, jobId, workspace, budget, policy, context());
+    const current = await writeCapable.execute(
+      sandbox,
+      inspectPlan(sandbox, "target.ts"),
+      context(),
+    );
     const fingerprint = ContentHash.parse(fingerprintOf(current.metadata, "target.ts"));
     const plan = authorizeSemanticExecution({
       operationId: "code.patch",
@@ -327,9 +365,10 @@ describe("capabilities are issuer-bound, single-use, and re-checked at dispatch"
     // Authorization succeeded against a current target; the workspace then moves on.
     writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 3;\n", "utf8");
 
-    await expect(sandboxes.execute(sandbox, plan, context())).rejects.toMatchObject({
+    await expect(writeCapable.execute(sandbox, plan, context())).rejects.toMatchObject({
       code: "CONFLICT",
     });
+    expect(writeReached).toBe(false);
   });
 });
 

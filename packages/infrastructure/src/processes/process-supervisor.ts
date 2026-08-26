@@ -16,6 +16,13 @@ export interface SupervisedProcessOptions {
   readonly environment?: Readonly<Record<string, string>>;
   readonly inheritEnvironment?: readonly string[];
   readonly stderrLimitBytes?: number;
+  /**
+   * Optional combined stdout+stderr ceiling. Opt-in because attaching a stdout counter puts the
+   * stream into flowing mode, which would change behavior for callers that read stdout as a
+   * protocol channel. Callers that own both streams (the sandbox) set it; JSON-RPC adapter
+   * callers keep the stderr-only accounting they already rely on.
+   */
+  readonly maxCombinedOutputBytes?: number;
   readonly shutdownTimeoutMs?: number;
 }
 
@@ -23,6 +30,7 @@ export class ProcessSupervisor {
   #child: ChildProcessWithoutNullStreams | undefined;
   readonly #options: SupervisedProcessOptions;
   #stderrBytes = 0;
+  #combinedOutputBytes = 0;
   #terminationReason: ProcessTerminationReason | undefined;
 
   constructor(options: SupervisedProcessOptions) {
@@ -49,13 +57,30 @@ export class ProcessSupervisor {
     });
     this.#child = child;
     this.#terminationReason = undefined;
+    this.#stderrBytes = 0;
+    this.#combinedOutputBytes = 0;
+    const combinedLimit = this.#options.maxCombinedOutputBytes;
+    // Only byte counts are retained here, never the output itself, so bounding cannot be
+    // defeated by a process that amplifies its own output.
+    const countCombined = (chunk: Buffer): void => {
+      if (combinedLimit === undefined) return;
+      this.#combinedOutputBytes += chunk.length;
+      if (this.#combinedOutputBytes > combinedLimit) {
+        this.#terminationReason ??= "output_limit";
+        void this.stop("SIGKILL");
+      }
+    };
     child.stderr.on("data", (chunk: Buffer) => {
       this.#stderrBytes += chunk.length;
       if (this.#stderrBytes > (this.#options.stderrLimitBytes ?? 1024 * 1024)) {
         this.#terminationReason ??= "output_limit";
         void this.stop("SIGKILL");
       }
+      countCombined(chunk);
     });
+    if (combinedLimit !== undefined) {
+      child.stdout.on("data", countCombined);
+    }
     child.once("exit", () => {
       if (this.#child === child) this.#child = undefined;
     });

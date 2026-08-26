@@ -1,9 +1,5 @@
-import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
 import {
   ApplicationError,
-  type ApplicationJsonObject,
   type AuthorizedSemanticExecutionPlan,
   type OperationContext,
   type SandboxExecutionResult,
@@ -12,10 +8,18 @@ import {
   type SandboxPort,
   type SandboxStatus,
   type SemanticExecutionCapabilityVerifier,
+  type WorkspaceCurrencyPrecondition,
   type WorkspaceHandle,
-  type WorkspaceManagerPort,
 } from "@v31m4/application";
 import { type JobId, type ResourceBudget, SandboxId, type TaskId } from "@v31m4/domain";
+import type { WorkspaceExecutionInterlockPort } from "./workspace-execution-interlock.js";
+import {
+  assertExistingDirectory,
+  assertSameCanonicalRoot,
+  assertWorkspaceIdentityUnchanged,
+  assertWorkspaceStillCurrent,
+  compareAndApply,
+} from "./workspace-guards.js";
 
 /** Everything a backend needs to realize one sandbox. Assembled only by the supervisor. */
 export interface SandboxExecutionSpec {
@@ -27,10 +31,32 @@ export interface SandboxExecutionSpec {
   readonly workspaceRoot: string;
   readonly budget: ResourceBudget;
   readonly policy: SandboxIsolationPolicy;
+  /**
+   * The only sanctioned way for a backend to write into the assigned workspace. It re-verifies
+   * the plan's declared fingerprint and writes atomically, so a future patch backend cannot
+   * accidentally apply a stale change by writing directly.
+   */
+  readonly applyWorkspaceChange: WorkspaceCompareAndApply;
 }
+
+/**
+ * Compare-and-apply over the assigned workspace. There is no "just write" entry point: the
+ * expected fingerprint is re-checked inside the same call that performs the write, under the
+ * execution lease the supervisor holds, so check and apply cannot drift apart.
+ */
+export type WorkspaceCompareAndApply = (
+  precondition: WorkspaceCurrencyPrecondition,
+  nextContent: string | Uint8Array,
+) => Promise<void>;
 
 export interface SandboxBackend {
   readonly id: string;
+  /**
+   * Backends that can apply workspace writes must declare it. The supervisor refuses to dispatch
+   * a `workspace_write` effect to a backend that has not, so a write path can never appear by
+   * accident — only by an explicit opt-in that comes with the compare-and-apply primitive.
+   */
+  readonly supportsWorkspaceWrite?: boolean;
   prepare(spec: SandboxExecutionSpec, context: OperationContext): Promise<void>;
   /**
    * Backends receive an issued authorization, never a bare operation name plus free-form JSON.
@@ -61,7 +87,11 @@ export class SandboxIndeterminateEffectError extends Error {
 
 export interface SandboxSupervisorOptions {
   readonly backend: SandboxBackend;
-  readonly workspaces: WorkspaceManagerPort;
+  /**
+   * The one workspace authority, wrapped so lifecycle changes and in-flight effects are ordered
+   * against each other. Execution re-reads through this rather than trusting any captured handle.
+   */
+  readonly workspaces: WorkspaceExecutionInterlockPort;
   /**
    * The closed set of semantic operations this sandbox may run. The catalog itself is owned
    * by the runtime; injecting the set keeps the boundary fail-closed without creating a
@@ -84,6 +114,8 @@ export interface SandboxSupervisorOptions {
 interface SandboxEntry {
   handle: SandboxHandle;
   readonly spec: SandboxExecutionSpec;
+  /** The authoritative record as it stood at prepare time, for identity comparison only. */
+  readonly preparedWorkspace: WorkspaceHandle;
 }
 
 /**
@@ -151,10 +183,14 @@ export class SandboxSupervisor implements SandboxPort {
       workspaceRoot,
       budget,
       policy,
+      applyWorkspaceChange: (
+        precondition: WorkspaceCurrencyPrecondition,
+        nextContent: string | Uint8Array,
+      ) => compareAndApply(workspaceRoot, precondition, nextContent),
     });
     await this.#options.backend.prepare(spec, context);
     const handle = freezeHandle(spec, this.#options.backend.id, "ready");
-    this.#sandboxes.set(sandboxId, { handle, spec });
+    this.#sandboxes.set(sandboxId, { handle, spec, preparedWorkspace: authoritative });
     return handle;
   }
 
@@ -192,14 +228,49 @@ export class SandboxSupervisor implements SandboxPort {
         { details: { sandboxId: sandbox.id, operation: verified.operationId } },
       );
     }
+    if (
+      verified.effectClass === "workspace_write" &&
+      this.#options.backend.supportsWorkspaceWrite !== true
+    ) {
+      throw new ApplicationError(
+        "UNSUPPORTED_OPERATION",
+        "This backend does not declare workspace-write support, so it may not receive a write effect.",
+        { details: { sandboxId: sandbox.id, backend: this.#options.backend.id } },
+      );
+    }
     // Spend the capability before any effect can start, so an interrupted attempt cannot be
     // retried on the same authority.
     this.#options.capabilities.consume(verified);
-    // Re-verify the workspace facts this execution depends on. Authorization-time validation
-    // leaves a window in which the workspace moves on and a stale effect still runs.
-    await assertWorkspaceStillCurrent(entry.spec.workspaceRoot, verified);
-    this.#setStatus(entry, "running");
+
+    // Take the execution lease and re-read the *authoritative* workspace. Neither the caller's
+    // handle nor the prepare-time record is execution authority: a workspace sealed, discarded,
+    // or replaced since then must stop the effect before dispatch, and the lease keeps a seal
+    // from landing between this check and the backend call.
+    const { workspace: authoritative, lease } = await this.#options.workspaces.beginExecution(
+      entry.spec.workspaceId,
+      entry.spec.sandboxId,
+      context,
+    );
     try {
+      assertWorkspaceIdentityUnchanged(
+        authoritative,
+        entry.preparedWorkspace,
+        entry.spec.sandboxId,
+      );
+      // The path the workspace resolves to must also still be the one the sandbox prepared.
+      const currentRoot = await this.#options.resolveWorkspaceRoot(authoritative.id);
+      await assertSameCanonicalRoot(entry.spec.workspaceRoot, currentRoot, entry.spec.sandboxId);
+      // Re-verify the workspace facts this execution depends on. Authorization-time validation
+      // leaves a window in which the workspace moves on and a stale effect still runs.
+      await assertWorkspaceStillCurrent(entry.spec.workspaceRoot, verified);
+    } catch (error) {
+      // Refused before dispatch: nothing ran, so the sandbox itself is not degraded.
+      lease.release();
+      throw error;
+    }
+
+    try {
+      this.#setStatus(entry, "running");
       const result = await this.#options.backend.execute(entry.spec, verified, context);
       this.#setStatus(entry, "ready");
       return result;
@@ -220,6 +291,8 @@ export class SandboxSupervisor implements SandboxPort {
       }
       this.#setStatus(entry, "degraded");
       throw error;
+    } finally {
+      lease.release();
     }
   }
 
@@ -285,140 +358,4 @@ function freezeHandle(
     backendId,
     status,
   });
-}
-
-async function assertExistingDirectory(path: string): Promise<void> {
-  if (!isAbsolute(path)) {
-    throw new ApplicationError("PERMISSION_DENIED", "A workspace root must be an absolute path.", {
-      details: { path },
-    });
-  }
-  const entry = await stat(path).catch(() => null);
-  if (entry === null || !entry.isDirectory()) {
-    throw new ApplicationError("NOT_FOUND", "The assigned workspace directory does not exist.", {
-      details: { path },
-    });
-  }
-}
-
-/**
- * Re-reads the authoritative workspace immediately before dispatch and proves the execution's
- * declared preconditions still hold. A mismatch is `CONFLICT`, and the backend is never reached.
- */
-async function assertWorkspaceStillCurrent(
-  workspaceRoot: string,
-  plan: AuthorizedSemanticExecutionPlan,
-): Promise<void> {
-  const precondition = plan.currencyPrecondition;
-  if (precondition === null) return;
-  if (!precondition.allowedPathScope.includes(precondition.path)) {
-    throw new ApplicationError(
-      "PERMISSION_DENIED",
-      "The execution target is outside its own declared path scope.",
-      { details: { path: precondition.path, operationId: plan.operationId } },
-    );
-  }
-  // Every declared path must still resolve inside the assigned workspace.
-  for (const path of precondition.allowedPathScope) {
-    await containedPath(workspaceRoot, path);
-  }
-  const observed = await fingerprintWorkspaceFile(workspaceRoot, precondition.path);
-  if (observed !== precondition.expectedFingerprint) {
-    throw new ApplicationError(
-      "CONFLICT",
-      "The execution target changed between authorization and dispatch; the stale effect is rejected.",
-      {
-        details: {
-          operationId: plan.operationId,
-          path: precondition.path,
-          expectedFingerprint: precondition.expectedFingerprint,
-          observedFingerprint: observed,
-        },
-      },
-    );
-  }
-}
-
-/** SHA-256 of a real workspace file, or the empty string when it does not exist. */
-async function fingerprintWorkspaceFile(
-  workspaceRoot: string,
-  relativePath: string,
-): Promise<string> {
-  const contained = await containedPath(workspaceRoot, relativePath);
-  const bytes = await readFile(contained).catch(() => null);
-  return bytes === null ? "" : createHash("sha256").update(bytes).digest("hex");
-}
-
-/**
- * Hermetic reference backend.
- *
- * It performs real work — real path containment against the assigned workspace and real
- * SHA-256 fingerprints of real file bytes — so tests exercise the actual boundary rather than
- * a stub. It deliberately performs **no** effects: an effectful request returns an honest
- * `failed` result naming the reason instead of fabricating success. It is the default for
- * hermetic verification and is not a security boundary; real isolation comes from a backend
- * such as the direct-Docker challenger, chosen only after a target-host bake-off.
- */
-export class ReferenceSandboxBackend implements SandboxBackend {
-  readonly id = "reference";
-
-  async prepare(spec: SandboxExecutionSpec): Promise<void> {
-    await assertExistingDirectory(spec.workspaceRoot);
-  }
-
-  async execute(
-    spec: SandboxExecutionSpec,
-    plan: AuthorizedSemanticExecutionPlan,
-  ): Promise<SandboxExecutionResult> {
-    if (plan.effectClass !== "read") {
-      return Object.freeze({
-        status: "failed" as const,
-        outputArtifactIds: Object.freeze([]),
-        logArtifactIds: Object.freeze([]),
-        metadata: Object.freeze({
-          reason: "reference_backend_performs_no_effects",
-          operationId: plan.operationId,
-        }),
-      });
-    }
-    const fingerprints: Record<string, string> = {};
-    for (const path of readPathScope(plan.parameters)) {
-      const contained = await containedPath(spec.workspaceRoot, path);
-      const bytes = await readFile(contained).catch(() => null);
-      fingerprints[path] = bytes === null ? "" : createHash("sha256").update(bytes).digest("hex");
-    }
-    return Object.freeze({
-      status: "completed" as const,
-      outputArtifactIds: Object.freeze([]),
-      logArtifactIds: Object.freeze([]),
-      metadata: Object.freeze({
-        operationId: plan.operationId,
-        fingerprints: Object.freeze(fingerprints),
-      }),
-    });
-  }
-
-  async cancel(): Promise<void> {}
-  async destroy(): Promise<void> {}
-}
-
-function readPathScope(parameters: ApplicationJsonObject): readonly string[] {
-  const scope = parameters["pathScope"];
-  if (!Array.isArray(scope)) return [];
-  return scope.filter((entry): entry is string => typeof entry === "string");
-}
-
-/** Resolves a workspace-relative path and proves, through the real filesystem, that it stays inside. */
-async function containedPath(workspaceRoot: string, relativePath: string): Promise<string> {
-  const canonicalRoot = await realpath(workspaceRoot);
-  const target = resolve(canonicalRoot, relativePath);
-  const canonicalTarget = await realpath(target).catch(() => target);
-  if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(canonicalRoot + sep)) {
-    throw new ApplicationError(
-      "PERMISSION_DENIED",
-      "A sandbox path escapes the assigned workspace.",
-      { details: { workspaceRoot: canonicalRoot, path: relativePath } },
-    );
-  }
-  return target;
 }
