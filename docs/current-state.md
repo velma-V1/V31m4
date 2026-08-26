@@ -128,6 +128,16 @@ This file is a concise operational handoff for future Claude Code sessions. It r
        table and requires the root mount to carry `ro`, keeping the failed write as supplemental
        evidence only. The egress probe now proves its own utility exists before treating that
        utility's failure as evidence of a blocked network.
+  - **Round 5 (independent re-review of `3bd7b8a`).** One finding, reproduced and repaired: the
+    network proof only proved DNS failure. `getent hosts …` exiting non-zero was read as "egress
+    blocked", but name resolution can fail on a fully connected host — demonstrated here, where
+    `getent hosts example.invalid` exits 2 while the kernel reports `eth0`/`eth1`/`loopback0`, a
+    default route via `0100000A`, and a numeric-IP TCP connect to `1.1.1.1:443` succeeds. The proof
+    now reads what `--network none` actually establishes: `/sys/class/net` must contain only `lo`,
+    and `/proc/net/route` must carry no default route and no route off a non-loopback interface. A
+    live numeric-IP connection attempt remains supplemental and is skipped when no such tool
+    exists, so correctness never depends on an optional utility. The proof no longer prints an
+    egress claim unless those kernel observations pass.
   - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
     (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
     disabled for this distro, and no digest-pinned image has been supplied. A non-empty
@@ -144,9 +154,9 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
     With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
   - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
-  - Current gate after round 4: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **618 passing / 16 skipped / 8 todo (642 total) across 115
-    passing + 5 skipped test files (120 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+  - Current gate after round 5: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **626 passing / 16 skipped / 8 todo (650 total) across 116
+    passing + 5 skipped test files (121 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 1 gate.
 
 - **Next action: finish Task 1** — run the target-host Docker proof above once a container runtime

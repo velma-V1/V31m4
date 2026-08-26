@@ -866,3 +866,99 @@ The mandatory target-host Docker proof. No container runtime is reachable and no
 is supplied, so every isolation property — UID, read-only root mount, socket absence, egress, tmpfs
 scratch, workspace-only write, capability attestation, and real timeout cleanup — remains
 unobserved. **Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted.
+
+---
+
+# Independent review round 5 — finding and remediation
+
+**Verifier:** independent re-review of `3bd7b8a` · **Repair starting HEAD:**
+`3bd7b8a678d23a78e147e5e0c7b0ecd9afaaa04e`, clean worktree.
+
+## Finding (MEDIUM) — the network proof only proved DNS failure
+
+Round 4 hardened the egress probe to confirm `getent` exists before using its failure as evidence.
+That closed "missing utility looks like blocked network" but not the deeper problem: a broken name
+lookup is not absence of egress.
+
+**Reproduction, on this fully networked host:**
+
+```text
+$ getent hosts example.invalid ; echo $?
+2                                  # the round-4 assertion (status === "failed") is satisfied
+
+$ for i in /sys/class/net/*; do echo "${i##*/}"; done
+eth0
+eth1
+lo
+loopback0
+
+$ cat /proc/net/route
+Iface   Destination  Gateway   Flags ... Mask
+eth0    00000000     0100000A  0003  ... 00000000     # default route
+eth0    0000000A     00000000  0001  ... 00FFFFFF
+
+$ timeout 8 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443'
+TCP connect to 1.1.1.1:443 SUCCEEDED
+```
+
+So the proof would have printed "network egress: blocked" on a machine with three non-loopback
+interfaces, a default route, and working outbound TCP. That is a false PASS of the Task 1 network
+isolation requirement.
+
+## Repair — observe the isolation, do not infer it
+
+`--network none` establishes a network namespace containing only loopback with no route off it, and
+that state is kernel-visible. `apps/runtime/tests/autonomy/runtime-network-attestation.ts` adds:
+
+- `parseNetworkInterfaces` / `assertOnlyLoopbackInterfaces` — the effective interface set must be
+  exactly `{ lo }`. An empty listing or an unexpanded glob is a failed observation, not "no
+  interfaces".
+- `parseRoutingTable` / `assertNoExternalRoutes` — `/proc/net/route` must contain no default route
+  (destination and mask both `00000000`) and no route at all on a non-loopback interface. A missing
+  header means the table was never read; a short record is malformed. Both fail.
+
+The target-host proof now reads the interface set with shell globbing (`for i in /sys/class/net/*`)
+rather than `ls`, so the observation does not depend on which userspace tools the image ships, and
+reads `/proc/net/route` directly. The live connection attempt is **supplemental**: it uses a numeric
+IP so it needs no DNS, runs only when a suitable tool is present, and is skipped with an honest
+report otherwise — correctness never depends on an optional utility being installed. If the tool is
+present the connection must fail, because success would contradict the kernel observations.
+
+The proof no longer emits any egress claim unless those observations pass. `getent` is no longer
+required by the proof at all.
+
+## Regressions (hermetic, no Docker required)
+
+Interfaces: only `lo` accepted (including duplicate/whitespace-padded input); `eth0`+`lo`,
+`lo`+`docker0`, `tun0`, and the exact four-interface set observed on this host all rejected; empty
+input, whitespace-only input, and an unexpanded glob rejected as unread observations.
+
+Routes: header-only table accepted with zero routes; the real connected fixture rejected with its
+default route correctly identified on `eth0`; a non-default route off a non-loopback interface
+rejected; a default route rejected even when it sits on loopback; empty input, a table with no
+header, and a short record all rejected.
+
+## Round-5 verification
+
+- Focused Task 1 suites: **152 passing / 2 skipped / 8 todo (162 total) across 12 passing + 1
+  skipped test files (13 total)**.
+- `packages/infrastructure/tests/supervised-processes.test.ts`: **9 passing**.
+- `pnpm check`: **exit 0** — lint 375 files, 0 errors (9 pre-existing warnings, 1 pre-existing
+  info), typecheck 9/9, **626 passing / 16 skipped / 8 todo (650 total) across 116 passing + 5
+  skipped test files (121 total)**.
+- `pnpm build`: 9/9. `git diff --check`: clean.
+- Static/reference proof: 2 passing, exit 0, container assertions honestly NOT PROVEN.
+- `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` exits **1**.
+- Rounds 1–4 preserved; no dependency, lockfile, `allowBuilds`, adapter-protocol-1.0, or
+  runtime-API-1.0 change.
+
+One lint suppression was added with its reason: the shell parameter expansion `${i##*/}` sent to the
+container trips `noTemplateCurlyInString`, which reads it as a mistaken JS template placeholder.
+Warning count is unchanged from the frozen baseline.
+
+## Remaining blocker (unchanged)
+
+The mandatory target-host Docker proof. No container runtime is reachable and no digest-pinned image
+is supplied, so every isolation property — including the new interface and routing-table
+observations — remains unobserved. **Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox
+backend is promoted.

@@ -24,6 +24,10 @@ import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
 import {
+  assertNoExternalRoutes,
+  assertOnlyLoopbackInterfaces,
+} from "./runtime-network-attestation.js";
+import {
   assertHardenedRuntimePrivileges,
   assertReadOnlyRootFilesystem,
 } from "./runtime-privilege-attestation.js";
@@ -297,24 +301,53 @@ realTest(
     expect(socket.status).toBe("failed");
     report("docker socket: absent");
 
-    // Prove the probe mechanism exists before treating its failure as evidence: a missing
-    // utility fails the same way a blocked lookup does.
-    const probePresent = await sandboxes.execute(
+    // Network isolation is read from the kernel, not inferred from a name lookup. DNS can fail on
+    // a fully connected host, so `getent` failing proves nothing about egress. What
+    // `--network none` actually establishes is a namespace with only loopback and no route off
+    // it, and that is directly observable.
+    const interfaceListing = await sandboxes.execute(
       sandbox,
-      run("command -v getent >/dev/null 2>&1", sandbox),
+      // Shell globbing rather than `ls`, so the observation does not depend on which userspace
+      // tools the image happens to ship.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: `${i##*/}` is POSIX shell parameter expansion sent to the container, not a JS template placeholder.
+      run('for i in /sys/class/net/*; do echo "${i##*/}"; done', sandbox),
       context(),
     );
-    expect(
-      probePresent.status,
-      "the egress probe utility must exist before its failure means anything",
-    ).toBe("completed");
-    const egress = await sandboxes.execute(
+    expect(interfaceListing.status).toBe("completed");
+    const interfaces = assertOnlyLoopbackInterfaces(String(interfaceListing.metadata["stdout"]));
+
+    const routeTable = await sandboxes.execute(
       sandbox,
-      run("getent hosts example.com", sandbox),
+      run("cat /proc/net/route", sandbox),
       context(),
     );
-    expect(egress.status).toBe("failed");
-    report("network egress: blocked (probe utility confirmed present first)");
+    expect(routeTable.status).toBe("completed");
+    const routes = assertNoExternalRoutes(String(routeTable.metadata["stdout"]));
+    report(
+      `network isolation: interfaces=[${interfaces.join(",")}] external/default routes=${routes.length}`,
+    );
+
+    // Supplemental only: a live numeric-IP connection attempt, which needs no DNS. Correctness
+    // does not depend on the tool being installed — but if it is present the connection must
+    // fail, because a success would contradict the kernel observations above.
+    const connectProbe = await sandboxes.execute(
+      sandbox,
+      run("command -v wget >/dev/null 2>&1", sandbox),
+      context(),
+    );
+    if (connectProbe.status === "completed") {
+      const egress = await sandboxes.execute(
+        sandbox,
+        run("wget -q -T 3 -O /dev/null http://1.1.1.1/", sandbox),
+        context(),
+      );
+      expect(egress.status, "a numeric-IP connection must not succeed under --network none").toBe(
+        "failed",
+      );
+      report("network egress: live numeric-IP connection refused (supplemental)");
+    } else {
+      report("network egress: no numeric-IP probe tool present; supplemental check skipped");
+    }
 
     const outsideWorkspace = await sandboxes.execute(
       sandbox,
