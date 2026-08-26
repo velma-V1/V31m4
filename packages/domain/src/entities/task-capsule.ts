@@ -25,6 +25,31 @@ import {
   TaskId,
   type TaskId as TaskIdType,
 } from "../value-objects/ids.js";
+import { buildDag, type TaskDagNode, type TaskDagNodeInput } from "./task-capsule-dag.js";
+import {
+  boundedIds,
+  boundedTexts,
+  buildActiveFingerprints,
+  ISO_PATTERN,
+  integerWithin,
+  optionalId,
+  PHASES,
+  TASK_CAPSULE_LIMITS,
+  type TaskPhase,
+  text,
+} from "./task-capsule-fields.js";
+
+export type { TaskDagNode, TaskDagNodeInput } from "./task-capsule-dag.js";
+/**
+ * The Task Capsule entity: one revision, its identity, and the chain that links it to the last.
+ *
+ * The bounded field vocabulary lives in `task-capsule-fields.ts` and the plan graph in
+ * `task-capsule-dag.ts`; both are re-exported here so this module stays the single import site
+ * for everything a caller needs. What remains is the entity itself — which fields a revision
+ * carries, what a later revision may change, and the canonical fingerprint that proves it was
+ * not altered in storage.
+ */
+export { TASK_CAPSULE_LIMITS, type TaskPhase } from "./task-capsule-fields.js";
 
 /**
  * The Task Capsule: one task's bounded, durable, self-describing state.
@@ -38,58 +63,6 @@ import {
  * Ledger, the evidence store, and the artifact store; the capsule holds identifiers pointing at
  * them. It is current state, never a transcript.
  */
-export type TaskPhase =
-  | "investigate"
-  | "plan"
-  | "execute"
-  | "verify"
-  | "repair"
-  | "blocked"
-  | "complete";
-
-const PHASES: ReadonlySet<string> = new Set<TaskPhase>([
-  "investigate",
-  "plan",
-  "execute",
-  "verify",
-  "repair",
-  "blocked",
-  "complete",
-]);
-
-export const TASK_CAPSULE_LIMITS = Object.freeze({
-  maxDagNodes: 64,
-  maxDependenciesPerNode: 16,
-  maxTotalDependencies: 256,
-  maxHypotheses: 16,
-  maxRisks: 16,
-  maxPlanSteps: 32,
-  maxConstraints: 32,
-  maxAcceptanceCriteria: 64,
-  maxEvidenceReferences: 128,
-  maxDecisionReferences: 64,
-  maxCheckpointReferences: 64,
-  maxArtifactReferences: 64,
-  maxLedgerReferences: 256,
-  maxActiveFingerprints: 32,
-  maxTextLength: 2_000,
-  maxAttemptCeiling: 100,
-});
-
-export interface TaskDagNode {
-  readonly id: string;
-  readonly title: string;
-  readonly dependsOn: readonly string[];
-  readonly blocked: boolean;
-}
-
-export interface TaskDagNodeInput {
-  readonly id: string;
-  readonly title: string;
-  readonly dependsOn?: readonly string[];
-  readonly blocked?: boolean;
-}
-
 export interface TaskCapsule {
   readonly taskId: TaskIdType;
   readonly jobId: JobIdType;
@@ -160,196 +133,6 @@ export type TaskCapsuleChanges = Partial<
     "taskId" | "jobId" | "projectId" | "parentTaskId" | "maxAttempts" | "updatedAt"
   >
 > & { readonly updatedAt: string };
-
-const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
-
-function fail(message: string, details: Readonly<Record<string, string | number>> = {}): never {
-  assertDomain(false, "INVALID_TASK_CAPSULE", message, details);
-}
-
-function text(value: string, label: string, allowEmpty = false): string {
-  assertDomain(
-    typeof value === "string" &&
-      value === value.trim() &&
-      (allowEmpty || value.length > 0) &&
-      value.length <= TASK_CAPSULE_LIMITS.maxTextLength,
-    "INVALID_TASK_CAPSULE",
-    `${label} must be canonical text of at most ${TASK_CAPSULE_LIMITS.maxTextLength} characters.`,
-    { label },
-  );
-  return value;
-}
-
-function boundedTexts(values: readonly string[], label: string, limit: number): readonly string[] {
-  assertDomain(
-    Array.isArray(values) && values.length <= limit,
-    "INVALID_TASK_CAPSULE",
-    `${label} may hold at most ${limit} entries.`,
-    { label, count: Array.isArray(values) ? values.length : -1 },
-  );
-  return Object.freeze(values.map((value) => text(value, label)));
-}
-
-function boundedIds<T>(
-  values: readonly string[],
-  label: string,
-  limit: number,
-  parse: (value: string) => T,
-): readonly T[] {
-  assertDomain(
-    Array.isArray(values) && values.length <= limit,
-    "INVALID_TASK_CAPSULE",
-    `${label} may hold at most ${limit} entries.`,
-    { label, count: Array.isArray(values) ? values.length : -1 },
-  );
-  const parsed = values.map((value) => parse(value));
-  assertDomain(
-    new Set(parsed).size === parsed.length,
-    "INVALID_TASK_CAPSULE",
-    `${label} must be unique.`,
-    { label },
-  );
-  return Object.freeze(parsed);
-}
-
-function integerWithin(value: number, label: string, minimum: number, maximum: number): number {
-  assertDomain(
-    Number.isSafeInteger(value) && value >= minimum && value <= maximum,
-    "INVALID_TASK_CAPSULE",
-    `${label} must be an integer between ${minimum} and ${maximum}.`,
-    { label, value: String(value) },
-  );
-  return value;
-}
-
-function optionalId<T>(value: string | null | undefined, parse: (raw: string) => T): T | null {
-  return value === undefined || value === null ? null : parse(value);
-}
-
-/** Validates the DAG: canonical unique nodes, real dependencies, no self-edge, and acyclic. */
-function buildDag(inputs: readonly TaskDagNodeInput[]): readonly TaskDagNode[] {
-  assertDomain(
-    Array.isArray(inputs) && inputs.length <= TASK_CAPSULE_LIMITS.maxDagNodes,
-    "INVALID_TASK_CAPSULE",
-    `A task DAG may hold at most ${TASK_CAPSULE_LIMITS.maxDagNodes} nodes.`,
-    { count: Array.isArray(inputs) ? inputs.length : -1 },
-  );
-
-  const nodes = inputs.map((node) => {
-    assertDomain(
-      isCanonicalDurableId(node.id),
-      "INVALID_TASK_CAPSULE",
-      "A task DAG node identifier must use canonical durable-ID syntax.",
-      { id: String(node.id) },
-    );
-    const dependsOn = node.dependsOn ?? [];
-    assertDomain(
-      Array.isArray(dependsOn) && dependsOn.length <= TASK_CAPSULE_LIMITS.maxDependenciesPerNode,
-      "INVALID_TASK_CAPSULE",
-      `A task DAG node may declare at most ${TASK_CAPSULE_LIMITS.maxDependenciesPerNode} dependencies.`,
-      { id: node.id, count: Array.isArray(dependsOn) ? dependsOn.length : -1 },
-    );
-    assertDomain(
-      new Set(dependsOn).size === dependsOn.length,
-      "INVALID_TASK_CAPSULE",
-      "Task DAG dependencies must be unique within a node.",
-      { id: node.id },
-    );
-    assertDomain(
-      !dependsOn.includes(node.id),
-      "INVALID_TASK_CAPSULE",
-      "A task DAG node cannot depend on itself.",
-      { id: node.id },
-    );
-    return Object.freeze({
-      id: node.id,
-      title: text(node.title, "task DAG node title"),
-      dependsOn: Object.freeze([...dependsOn]),
-      blocked: node.blocked === true,
-    });
-  });
-
-  const ids = nodes.map((node) => node.id);
-  assertDomain(
-    new Set(ids).size === ids.length,
-    "INVALID_TASK_CAPSULE",
-    "Task DAG node identifiers must be unique.",
-  );
-  const known = new Set(ids);
-  let totalDependencies = 0;
-  for (const node of nodes) {
-    totalDependencies += node.dependsOn.length;
-    for (const dependency of node.dependsOn) {
-      assertDomain(
-        known.has(dependency),
-        "INVALID_TASK_CAPSULE",
-        "A task DAG dependency must reference a node that exists.",
-        { id: node.id, dependency },
-      );
-    }
-  }
-  assertDomain(
-    totalDependencies <= TASK_CAPSULE_LIMITS.maxTotalDependencies,
-    "INVALID_TASK_CAPSULE",
-    `A task DAG may hold at most ${TASK_CAPSULE_LIMITS.maxTotalDependencies} dependencies.`,
-    { totalDependencies },
-  );
-  assertAcyclic(nodes);
-  return Object.freeze(nodes);
-}
-
-/** Iterative depth-first cycle detection; recursion would make a deep DAG a stack hazard. */
-function assertAcyclic(nodes: readonly TaskDagNode[]): void {
-  const edges = new Map(nodes.map((node) => [node.id, node.dependsOn]));
-  const state = new Map<string, "visiting" | "done">();
-  for (const start of edges.keys()) {
-    if (state.get(start) === "done") continue;
-    const stack: { readonly id: string; index: number }[] = [{ id: start, index: 0 }];
-    state.set(start, "visiting");
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1] as { readonly id: string; index: number };
-      const dependencies = edges.get(frame.id) ?? [];
-      if (frame.index >= dependencies.length) {
-        state.set(frame.id, "done");
-        stack.pop();
-        continue;
-      }
-      const next = dependencies[frame.index] as string;
-      frame.index += 1;
-      const seen = state.get(next);
-      if (seen === "visiting") {
-        fail("The task DAG contains a cycle.", { node: frame.id, dependency: next });
-      }
-      if (seen !== "done") {
-        state.set(next, "visiting");
-        stack.push({ id: next, index: 0 });
-      }
-    }
-  }
-}
-
-function buildActiveFingerprints(
-  input: Readonly<Record<string, string>>,
-): Readonly<Record<string, ContentHash>> {
-  const keys = Object.keys(input);
-  assertDomain(
-    keys.length <= TASK_CAPSULE_LIMITS.maxActiveFingerprints,
-    "INVALID_TASK_CAPSULE",
-    `A capsule may hold at most ${TASK_CAPSULE_LIMITS.maxActiveFingerprints} active fingerprints.`,
-    { count: keys.length },
-  );
-  const entries: Record<string, ContentHash> = {};
-  for (const key of keys.sort()) {
-    assertDomain(
-      isCanonicalDurableId(key),
-      "INVALID_TASK_CAPSULE",
-      "An active fingerprint name must use canonical durable-ID syntax.",
-      { key },
-    );
-    entries[key] = ContentHash.parse(input[key] as string);
-  }
-  return Object.freeze(entries);
-}
 
 /** The logical state a fingerprint covers: everything except the fingerprint itself. */
 function fingerprintPayload(capsule: Omit<TaskCapsule, "fingerprint">): CanonicalValue {

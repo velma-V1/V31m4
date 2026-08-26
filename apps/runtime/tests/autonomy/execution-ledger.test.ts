@@ -1335,6 +1335,94 @@ describe("decisions read the whole ledger", () => {
     expect(first.attempts[0]?.attemptEntryId).toBe("ledger:paged");
   });
 
+  /** Tampers with one stored row so its fingerprint no longer matches its content. */
+  function tamperWith(entryId: string): void {
+    const row = database.connection
+      .prepare("SELECT body FROM records WHERE record_type = ? AND record_id = ?")
+      .get("execution_ledger_entry", entryId) as { body: string };
+    const body = JSON.parse(row.body) as Record<string, unknown>;
+    body["detail"] = "tampered after the fact";
+    database.connection
+      .prepare("UPDATE records SET body = ? WHERE record_type = ? AND record_id = ?")
+      .run(JSON.stringify(body), "execution_ledger_entry", entryId);
+  }
+
+  async function recordObservationFor(entryTaskId: TaskId, id: string): Promise<void> {
+    await database.unitOfWork.execute(context, async (transaction) => {
+      await ledger.append(
+        ExecutionLedgerEntry.create({
+          id,
+          taskId: entryTaskId,
+          jobId,
+          recordedAt: "2026-08-26T00:00:00.000Z",
+          detail: `observation ${id}`,
+          kind: "observation",
+          facts: [
+            {
+              resourceKind: "workspace_file",
+              locator: `${id}.ts`,
+              fingerprint: ContentHash.parse(sha256Hex(id)),
+            },
+          ],
+        }),
+        context,
+        transaction,
+      );
+    });
+  }
+
+  /**
+   * A ledger page is one task's history. Reading and rehydrating every row of the table for every
+   * page made one unreadable row — belonging to *any* task — throw for *all* of them, and since
+   * `runGovernedEffect` folds history before it may claim an intent, that stopped every governed
+   * effect in the runtime. The blast radius of a bad row is now the task that owns it.
+   */
+  it("scopes a page, and a corrupt row's blast radius, to the owning task", async () => {
+    const otherTaskId = TaskId.parse("task:neighbour");
+    await recordObservationFor(otherTaskId, "ledger:neighbour-1");
+    await recordObservationFor(otherTaskId, "ledger:neighbour-2");
+    await recordAttempt("ledger:mine", reconciler.intentFingerprintFor(await inspectPlan()));
+
+    const mine = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(mine.total).toBe(1);
+    expect(mine.items.map((entry) => entry.id)).toEqual(["ledger:mine"]);
+    expect(mine.nextCursor).toBeUndefined();
+
+    tamperWith("ledger:neighbour-1");
+
+    // The neighbour's own history fails closed, as it must.
+    await expect(ledger.listForTask(otherTaskId, { limit: 500 }, context)).rejects.toThrow();
+    // This task's history is unaffected, and its governed effects still run.
+    const after = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(after.total).toBe(1);
+    expect((await reconciler.projection(taskId, context)).attempts).toHaveLength(1);
+  });
+
+  it("still refuses to fold a history whose own row was tampered with", async () => {
+    await recordObservationFor(taskId, "ledger:ours");
+    tamperWith("ledger:ours");
+    await expect(reconciler.projection(taskId, context)).rejects.toThrow();
+  });
+
+  it("pages a long history without rehydrating rows outside the page", async () => {
+    await fillHistory(LONG_HISTORY);
+    await recordObservationFor(TaskId.parse("task:neighbour"), "ledger:neighbour-1");
+    tamperWith("ledger:neighbour-1");
+
+    const first = await ledger.listForTask(taskId, { limit: 200 }, context);
+    expect(first.items).toHaveLength(200);
+    expect(first.total).toBe(LONG_HISTORY);
+    expect(first.nextCursor).toBe("200");
+    const second = await ledger.listForTask(
+      taskId,
+      { limit: 200, cursor: first.nextCursor as string },
+      context,
+    );
+    expect(second.items.map((entry) => entry.id)).toEqual(
+      Array.from({ length: 200 }, (_unused, index) => `ledger:filler-${200 + index}`),
+    );
+  });
+
   it("resolves a check's dependency across the page boundary and survives a restart", async () => {
     // The observation sits on page one and the check that depends on it past the boundary, so a
     // truncated read would lose the edge rather than the entry.

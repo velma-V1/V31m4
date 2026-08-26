@@ -31,9 +31,12 @@ This file is a concise operational handoff for future Claude Code sessions. It r
   final count at the Task 0 commit is **490 passing / 14 skipped / 9 todo (513 total) across 107
   passing + 5 skipped files (112 total)**. No runtime API, adapter protocol, or product behavior was
   changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
-- **Task 1 (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation): INCOMPLETE —
-  independent verification FAILED, then repaired; the mandatory target-host Docker proof is still
-  BLOCKED.** Do not read this as a passed gate.
+- **Task 1 (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation): PASS. The
+  mandatory target-host Docker proof is CLOSED at `c059a33`.** The record below preserves the
+  earlier FAILED and BLOCKED rounds as history; they are no longer the current status. The
+  authoritative proof record is `docs/reviews/autonomy-task1-phase1-evidence.md`, whose final
+  section reports the successful real Docker run — real engine, digest-pinned image, live
+  container, every required isolation property observed, cleanup independently verified.
   - First implementation: commit `fc84f37`. An independent Codex review then found four defects and
     returned **FAIL**. All four are reproduced, root-caused, and repaired (commit recorded in
     `docs/reviews/autonomy-task1-phase1-evidence.md`), but Task 1 does **not** pass its hard gate
@@ -173,14 +176,23 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     files (123 total)**; `pnpm build` 9/9. The non-mandatory proof passed its two reference/static
     checks and explicitly reported direct-Docker isolation **NOT PROVEN** because no digest-pinned
     image was supplied. This is implementation readiness evidence only, not a passed Task 1 gate.
-  - **Still BLOCKED — the required target-host Docker proof.** A Windows Docker CLI shim is on
+  - **CLOSED — the required target-host Docker proof.** It ran for real against `c059a33`; see
+    the final section of `docs/reviews/autonomy-task1-phase1-evidence.md` for the engine, the
+    pinned image, and the per-property observations. Two defects surfaced and were repaired in the
+    course of closing it: the proof derived a non-root identity from the assigned workspace rather
+    than hardcoding one, and `assertDockerRuntimeObservation` dropped a fixed three-mount total in
+    favour of a stricter rule (exactly one host-visible mount; any additional bind, any volume, and
+    any unapproved tmpfs target refused whatever the total). No isolation property was relaxed and
+    the host workspace was not adjusted to make the proof pass.
+
+    *History (superseded).* Before that run the proof was blocked here: a Windows Docker CLI shim was on
     this WSL2 distro's `PATH`, but invoking `docker version` reports that Docker is unavailable in
-    the distro and asks for Docker Desktop WSL integration; `/var/run/docker.sock` is absent and no
-    digest-pinned image has been supplied. A non-empty
+    the distro and asks for Docker Desktop WSL integration; `/var/run/docker.sock` was absent and
+    no digest-pinned image had been supplied. A non-empty
     `V31M4_SANDBOX_IMAGE` is **not** a pinned image; the proof validates the digest syntax and the
-    backend refuses to construct itself without one. Therefore non-root execution, read-only root,
-    absent Docker socket, blocked egress, workspace-only write, and verified container cleanup are
-    **NOT observed** and Task 1 may not be called PASS. To close it:
+    backend refuses to construct itself without one. Until the run recorded above, non-root
+    execution, read-only root, absent Docker socket, blocked egress, workspace-only write, and
+    verified container cleanup were all unobserved. The command that closed it:
 
     ```bash
     V31M4_SANDBOX_IMAGE=<repository>@sha256:<64 hex> \
@@ -188,16 +200,16 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     node scripts/prove-autonomy-phase1-real.mjs
     ```
 
-    With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
+    That blockage is resolved; the command above is the one that closed the proof.
   - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
   - Current gate after round 5: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
     pre-existing info), typecheck 9/9, **626 passing / 16 skipped / 8 todo (650 total) across 116
     passing + 5 skipped test files (121 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 1 gate.
 
-- **Next action: finish Task 1** — run the target-host Docker proof above once a container runtime
-  and a digest-pinned image are available, then submit Task 1 for independent re-review.
-  **Task 2 is FORBIDDEN** until Task 1's hard gate actually passes.
+- **Task 1's hard gate has passed.** Task 2 and Task 3 are therefore no longer forbidden, and the
+  clean Task 1+2+3 integration candidate described under "Task 1+2+3 final integration" below is
+  the current line of work.
 
 - **Task 2 / Task 3 (staging branch `autonomy-task2-3-staging`): implemented, independently
   reviewed, FAILED, then repaired — NOT accepted.** This work lives only on the staging branch;
@@ -330,23 +342,74 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     `packages/application/tests/services/task-transition-policy.test.ts`, and 5 against the real
     durable repository in `apps/runtime/tests/autonomy/task-state.test.ts`; 6 of them failed
     before the repair and pass after it.
-  - **Five MEDIUM findings were verified and deliberately deferred, none blocking.** Three are in
-    Task-1-owned code that this branch must not carry (`SandboxIsolationPolicy`'s numeric bounds
-    are bypassable by a hand-built policy literal; the semantic `role` is a caller assertion never
-    cross-checked against `context.actor.roles`; `workspaceRoot` is interpolated unescaped into
-    the Docker `--mount` CSV). One is Task-3 persistence
+  - **Five MEDIUM findings were verified and deliberately deferred on this branch, none blocking.**
+    Three are in Task-1-owned code that this branch must not carry (`SandboxIsolationPolicy`'s
+    numeric bounds are bypassable by a hand-built policy literal; the semantic `role` is a caller
+    assertion never cross-checked against `context.actor.roles`; `workspaceRoot` is interpolated
+    unescaped into the Docker `--mount` CSV). One is Task-3 persistence
     (`SqliteExecutionLedgerRepository.listForTask` rehydrates every ledger row of every task per
     page, so one corrupt row stops governed effects for all tasks — availability, fail-closed, and
     a durable-query change that does not belong in a focused security repair). One is branch
     ancestry (`autonomy-task123-integration-rehearsal` is built on `c059a33^`, not on final Task 1
     `c059a33`, so it ships the superseded `assertDockerRuntimeObservation`; fail-closed, and
-    rewriting the preserved rehearsal was out of scope).
+    rewriting the preserved rehearsal was out of scope). **All but one are now closed on the
+    integration branch** — see "Task 1+2+3 final integration" below.
   - Gate after round 5: `pnpm lint` exit 0 (9 pre-existing warnings, 1 pre-existing info),
     `pnpm typecheck` 9/9, `pnpm test` **877 passing / 16 skipped / 6 todo (899) across 124 passing
-    + 5 skipped test files (129 total)**, `pnpm build` 9/9. Still a green regression suite, **not**
-    a passed Task 2 or Task 3 gate: Task 1's target-host Docker proof remains BLOCKED, so final
-    Task 1+2+3 integration and Task 4 stay BLOCKED, and this branch is submitted for independent
-    re-audit rather than merged.
+    + 5 skipped test files (129 total)**, `pnpm build` 9/9. That was a green regression suite on the
+    staging branch, not a merged result; the branch was submitted for independent re-audit rather
+    than merged, and it was accepted there. Task 2 and Task 3 are **PASS** as accepted at
+    `34a74d9`. Task 4 remains BLOCKED and unstarted.
+
+## Task 1+2+3 final integration (`autonomy-task123-final-integration`)
+
+The first real clean Task 1+2+3 integration candidate. **Not a passed final-integration gate** —
+it is built and locally verified here, and its next hard gate is independent review.
+
+- **Branch:** `autonomy-task123-final-integration`, branched from final Task 1 `c059a33` and
+  reconciled forward. It is not a fast-forward of anything: the final Task 1 line and the repaired
+  Task 2/3 line (`34a74d9`) genuinely diverge, and the reconciliation was semantic. Every Task 1
+  file is byte-identical to `c059a33`; the Task 2/3 work was adapted to Task 1's stronger contract,
+  never the reverse. The superseded `autonomy-task123-integration-rehearsal` was used as behavioural
+  reference only — its final authority design was ported, its rejected intermediate history was not
+  replayed, and the branch itself is untouched.
+- **Authority design.** A governed execution surface builds the Task 1 semantic boundary, the
+  sandbox that boundary governs, and the Execution Ledger reconciler together, so a reconciler
+  whose verifier and sink come from different authorities cannot be assembled. Privileged behaviour
+  is captured at canonical construction and held in module-private state, so patching a public
+  member changes what a caller is told and nothing about what executes. Semantic effects have
+  exactly one gateway. Live execution authority and historical reconciliation authority stay
+  distinct: settling reads the durable `effect_attempt` row alone — no capability, no sandbox
+  handle, no dispatch — so reconciliation is observation and settlement, never a second execution
+  path.
+- **Security items from the round-5 audit.** The HIGH was already closed by the repaired Task 2/3
+  line the integration carries (`34a74d9` gates capsule creation on the phase-entry rules), and the
+  branch-ancestry MEDIUM is eliminated by construction, since this branch descends from `c059a33`
+  and carries the current `assertDockerRuntimeObservation`. Three MEDIUMs are repaired here with
+  permanent regressions: `SandboxIsolationPolicy` is now nominally branded and re-asserted at the
+  container argument sink; a workspace root containing `,` or `=` is refused before a sandbox
+  exists, because such a path cannot be expressed safely in a `--mount` specification; and the
+  Execution Ledger filters and pages in SQL, rehydrating only the returned page, so one unreadable
+  row no longer stops governed effects for every task. One MEDIUM remains deliberately deferred —
+  binding the semantic `role` to `context.actor.roles` — because the autonomy module is still
+  unwired and the binding belongs with the Manager/Executor/Auditor phase that will define it.
+- **Architecture.** `packages/domain/src/entities/task-capsule.ts` was 604 lines, over the frozen
+  500-line limit. It is split along real responsibility boundaries into the entity itself, its
+  bounded field vocabulary (`task-capsule-fields.ts`), and its plan graph (`task-capsule-dag.ts`).
+  No functionality was removed, no contract weakened, and the canonical fingerprint is byte-identical
+  before and after. The source-size test — which historically covered one package's `src` — is now a
+  genuine repository-wide gate over every first-party production source root the repository actually
+  has, with regression coverage proving an oversized file is caught and that only build output and
+  vendored code are skipped. Zero production source files exceed 500 lines.
+- **Frozen invariants held:** runtime API 1.0 unbroken, `ADAPTER_PROTOCOL_VERSION` still `"1.0.0"`,
+  adapter 1.1 still additive, exactly 19 semantic model-facing operations, `git.worktree` still
+  absent from that set, `WorkspaceManagerPort` still the workspace/worktree lifecycle authority.
+- **Preserved branches are untouched:** `autonomy-v1.1.0`, `autonomy-task2-3-staging`,
+  `autonomy-task2-audit-repair`, `autonomy-task123-integration-rehearsal`, and `main` are all at
+  the SHAs they held before this work.
+- **Next hard gate: independent review of the integration candidate.** Main promotion is not
+  started — the repository still has a separate promotion-governance gap involving
+  main/workflow/ruleset protection — and Task 4 remains BLOCKED.
 
 ## Verified implemented state
 

@@ -267,6 +267,25 @@ async function containedDirectory(workspaceRoot: string, directory: string): Pro
   return canonical;
 }
 
+/**
+ * Characters that cannot appear in a workspace root, because the container argument vector puts
+ * that root inside a comma-separated `key=value` list: `--mount type=bind,source=<root>,target=…`.
+ * A comma in the path injects further mount options into a security-critical argument — a root of
+ * `/srv/ws,readonly=false,bind-propagation=rshared` produced exactly that. Refusing is the right
+ * answer rather than escaping: a workspace path that cannot be expressed safely should not run.
+ */
+const UNSAFE_WORKSPACE_ROOT_CHARACTERS = /[,=]/u;
+
+function assertExpressibleWorkspaceRoot(path: string): void {
+  if (UNSAFE_WORKSPACE_ROOT_CHARACTERS.test(path)) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "A workspace root may not contain `,` or `=`; such a path cannot be expressed safely in a sandbox mount specification.",
+      { details: { path } },
+    );
+  }
+}
+
 /** The assigned workspace must be a real, absolute directory before anything runs. */
 export async function assertExistingDirectory(path: string): Promise<string> {
   if (!isAbsolute(path)) {
@@ -274,11 +293,16 @@ export async function assertExistingDirectory(path: string): Promise<string> {
       details: { path },
     });
   }
+  assertExpressibleWorkspaceRoot(path);
   const entry = await stat(path).catch(() => null);
   if (entry === null || !entry.isDirectory()) {
     throw new ApplicationError("NOT_FOUND", "The assigned workspace directory does not exist.", {
       details: { path },
     });
   }
-  return realpath(path);
+  // The resolved path is what the mount specification actually carries, so a symlink that lands
+  // on a comma-bearing real directory is refused too.
+  const canonical = await realpath(path);
+  assertExpressibleWorkspaceRoot(canonical);
+  return canonical;
 }

@@ -190,17 +190,29 @@ export class SqliteExecutionLedgerRepository implements ExecutionLedgerRepositor
       });
     }
     const offset = request.cursor === undefined ? 0 : Number(request.cursor);
+    // Selection, ordering, and paging all happen in SQL, and only the returned page is
+    // rehydrated. Reading every ledger row for every page of every task made one unreadable row —
+    // belonging to *any* task — throw for *all* of them, which stopped every governed effect in
+    // the runtime, and it defeated the paging the ledger scan is built on. `taskId` is read from
+    // the stored body, and rehydration still re-verifies the fingerprint of each row it returns,
+    // so a row whose task was edited fails closed rather than being served as history.
+    const total = (
+      this.ledgerDatabase.connection
+        .prepare(
+          "SELECT COUNT(*) AS total FROM records WHERE record_type = ? AND json_extract(body, '$.taskId') = ?",
+        )
+        .get(LEDGER_TYPE, taskId) as { total: number }
+    ).total;
     const rows = this.ledgerDatabase.connection
-      .prepare("SELECT body FROM records WHERE record_type = ? ORDER BY rowid ASC")
-      .all(LEDGER_TYPE) as { body: string }[];
-    const all = rows
-      .map((row) => ExecutionLedgerEntry.rehydrate(JSON.parse(row.body)))
-      .filter((entry) => entry.taskId === taskId);
-    const page = all.slice(offset, offset + limit);
+      .prepare(
+        "SELECT body FROM records WHERE record_type = ? AND json_extract(body, '$.taskId') = ? ORDER BY rowid ASC LIMIT ? OFFSET ?",
+      )
+      .all(LEDGER_TYPE, taskId, limit, offset) as { body: string }[];
+    const page = rows.map((row) => ExecutionLedgerEntry.rehydrate(JSON.parse(row.body)));
     return Object.freeze({
       items: Object.freeze(page),
-      total: all.length,
-      ...(offset + page.length < all.length ? { nextCursor: String(offset + page.length) } : {}),
+      total,
+      ...(offset + page.length < total ? { nextCursor: String(offset + page.length) } : {}),
     });
   }
 }

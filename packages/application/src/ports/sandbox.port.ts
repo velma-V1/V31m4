@@ -29,6 +29,14 @@ export type SandboxNetworkPolicy =
  * that carry no host secrets, are non-authoritative, and are destroyed with the sandbox.
  */
 export interface SandboxIsolationPolicy {
+  /**
+   * Nominal marker. The two numeric ceilings are plain numbers, so a structural literal that
+   * satisfied this interface without going through `create` typechecked and reached the argument
+   * builder unbounded — `maxPids: -1` is *unlimited* to Docker, which silently removed the
+   * fork-bomb ceiling from an otherwise correctly isolated container. Only `create` stamps this
+   * field, so an unbranded literal is now a compile error rather than a valid policy.
+   */
+  readonly policyKind: "sandbox_isolation_policy";
   readonly maxCpuMillisPerSecond: number;
   readonly maxPids: number;
   readonly network: SandboxNetworkPolicy;
@@ -79,7 +87,9 @@ function assertBoundedInteger(
     Number.isSafeInteger(value) && value >= minimum && value <= maximum,
     "INVALID_APPLICATION_INPUT",
     `${label} must be an integer between ${minimum} and ${maximum}.`,
-    { details: { label, value } },
+    // `NaN` and the infinities are not representable in the error's JSON details, and reporting a
+    // rejected bound must not itself throw an untyped error where a typed refusal is expected.
+    { details: { label, value: Number.isFinite(value) ? value : String(value) } },
   );
 }
 
@@ -154,11 +164,45 @@ export const SandboxIsolationPolicy = Object.freeze({
     );
     assertBoundedInteger("maxPids", input.maxPids, 1, MAX_PIDS);
     return Object.freeze({
+      policyKind: "sandbox_isolation_policy" as const,
       maxCpuMillisPerSecond: input.maxCpuMillisPerSecond,
       maxPids: input.maxPids,
       network: freezeNetworkPolicy(input.network),
       ...REQUIRED_INVARIANTS,
     });
+  },
+
+  /**
+   * Re-asserts, at a security-critical sink, everything `create` guarantees.
+   *
+   * The nominal brand closes this at compile time, but a backend emitting a container argument
+   * vector is exactly where an erased type is not a defence: `as`, `any`, a JSON round-trip, or a
+   * plain JavaScript caller all reach it. This is the one bounds check, reused rather than
+   * restated, so the ceilings cannot drift between the factory and the sink.
+   */
+  assertCanonical(policy: SandboxIsolationPolicy): void {
+    assertApplication(
+      typeof policy === "object" &&
+        policy !== null &&
+        policy.policyKind === "sandbox_isolation_policy",
+      "PERMISSION_DENIED",
+      "A sandbox isolation policy must be one SandboxIsolationPolicy.create issued.",
+    );
+    for (const [key, required] of Object.entries(REQUIRED_INVARIANTS)) {
+      assertApplication(
+        (policy as unknown as Record<string, unknown>)[key] === required,
+        "PERMISSION_DENIED",
+        `Sandbox isolation invariant ${key} cannot be relaxed.`,
+        { details: { key, required } },
+      );
+    }
+    assertBoundedInteger(
+      "maxCpuMillisPerSecond",
+      policy.maxCpuMillisPerSecond,
+      1,
+      MAX_CPU_MILLIS_PER_SECOND,
+    );
+    assertBoundedInteger("maxPids", policy.maxPids, 1, MAX_PIDS);
   },
 });
 

@@ -957,6 +957,57 @@ describe("workspace path containment", () => {
   });
 });
 
+/**
+ * `--mount` is a comma-separated `key=value` list, so a comma in the resolved workspace root
+ * injects further mount options into a security-critical argument: a root of
+ * `/srv/ws,readonly=false,bind-propagation=rshared` produced exactly that. A path that cannot be
+ * expressed safely is refused before a sandbox exists, rather than escaped at the argument.
+ */
+describe("workspace roots that cannot be expressed in a mount specification", () => {
+  it("refuses to prepare a sandbox for a root containing a mount separator", async () => {
+    for (const unsafe of ["ws,readonly=false", "ws=x", "ws,bind-propagation=rshared"]) {
+      const hostile = join(root, unsafe);
+      mkdirSync(hostile, { recursive: true });
+      const supervised = new SandboxSupervisor({
+        backend: new ReferenceSandboxBackend(),
+        workspaces,
+        allowedOperations: ALLOWED_OPERATIONS,
+        capabilities: authority,
+        resolveWorkspaceRoot: async () => hostile,
+        generateSandboxId: () => "sandbox:1",
+      });
+      await expect(
+        supervised.prepare(taskId, jobId, activeHandle, budget, policy, context()),
+        unsafe,
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    }
+  });
+
+  it("refuses a safe-looking root whose real path carries a mount separator", async () => {
+    const real = join(root, "real,readonly=false");
+    mkdirSync(real);
+    const link = join(root, "innocent");
+    symlinkSync(real, link, "dir");
+    const supervised = new SandboxSupervisor({
+      backend: new ReferenceSandboxBackend(),
+      workspaces,
+      allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: authority,
+      resolveWorkspaceRoot: async () => link,
+      generateSandboxId: () => "sandbox:1",
+    });
+    await expect(
+      supervised.prepare(taskId, jobId, activeHandle, budget, policy, context()),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+
+  it("still prepares an ordinary workspace root", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    expect(handle.status).toBe("ready");
+  });
+});
+
 describe("guarded workspace writes", () => {
   it("refuses a write effect for a backend that has not declared write support", async () => {
     const supervised = supervisor(new ReferenceSandboxBackend());
@@ -1344,6 +1395,38 @@ describe("direct Docker sandbox authority boundaries", () => {
     expect(() =>
       buildDockerRunArguments(spec({ policy: allowlisted }), settings, ["true"]),
     ).toThrow(ApplicationError);
+  });
+
+  /**
+   * The quantitative ceilings used to be the one part of the isolation contract a structural
+   * literal could relax: `--pids-limit -1` is *unlimited* to Docker, so a policy that never went
+   * through `SandboxIsolationPolicy.create` removed the fork-bomb ceiling from a container that
+   * was otherwise correctly isolated. The argument builder now re-asserts the policy itself.
+   */
+  it("refuses to build an argument vector from a policy no factory issued", () => {
+    for (const forged of [
+      { ...policy, maxPids: -1 },
+      { ...policy, maxPids: 0 },
+      { ...policy, maxCpuMillisPerSecond: Number.NaN },
+      { ...policy, policyKind: "forged" },
+      { ...policy, writableWorkspaceOnly: false },
+    ]) {
+      let thrown: unknown;
+      try {
+        buildDockerRunArguments(
+          spec({ policy: forged as unknown as SandboxIsolationPolicy }),
+          settings,
+          ["true"],
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, JSON.stringify(forged)).toBeInstanceOf(ApplicationError);
+    }
+    // The canonical policy still builds, and still carries its ceilings.
+    expect(buildDockerRunArguments(spec(), settings, ["true"]).join(" ")).toContain(
+      "--pids-limit 64",
+    );
   });
 
   it("reports an unavailable container runtime instead of degrading isolation", async () => {

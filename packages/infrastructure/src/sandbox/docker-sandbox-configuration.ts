@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { ApplicationError, type ApplicationJsonObject } from "@v31m4/application";
+import {
+  ApplicationError,
+  type ApplicationJsonObject,
+  SandboxIsolationPolicy,
+} from "@v31m4/application";
 import type { SandboxExecutionSpec } from "./sandbox-supervisor.js";
 
 /**
@@ -142,6 +146,10 @@ export function buildDockerRunArguments(
   command: readonly string[],
 ): string[] {
   assertValidDockerSandboxSettings(settings);
+  // The settings were already validated; the *policy* was not. `--pids-limit -1` is unlimited to
+  // Docker and `--cpus NaN` is malformed, so the ceilings are re-asserted here — against the same
+  // factory that issues them — before either reaches the argument vector.
+  SandboxIsolationPolicy.assertCanonical(spec.policy);
   if (spec.policy.network.mode !== "none") {
     throw new ApplicationError(
       "UNSUPPORTED_OPERATION",

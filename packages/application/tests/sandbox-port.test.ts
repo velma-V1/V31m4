@@ -96,6 +96,40 @@ describe("SandboxIsolationPolicy", () => {
       ).toThrow(ApplicationError);
     }
   });
+
+  /**
+   * The invariant booleans are literal types, so TypeScript already refuses to relax them. The two
+   * ceilings are plain numbers, and a structural literal that never went through `create` used to
+   * satisfy the interface and reach the container argument builder unbounded. `assertCanonical` is
+   * the runtime half of that repair, for the paths a type cannot guard.
+   */
+  it("refuses a policy it did not issue, and re-asserts every bound it did", () => {
+    const canonical = SandboxIsolationPolicy.create(minimalInput);
+    expect(canonical.policyKind).toBe("sandbox_isolation_policy");
+    expect(() => SandboxIsolationPolicy.assertCanonical(canonical)).not.toThrow();
+
+    const { policyKind: _issued, ...unbranded } = canonical;
+    for (const candidate of [
+      unbranded,
+      { ...canonical, maxPids: -1 },
+      { ...canonical, maxPids: 0 },
+      { ...canonical, maxPids: 4_097 },
+      { ...canonical, maxCpuMillisPerSecond: Number.NaN },
+      { ...canonical, maxCpuMillisPerSecond: 64_001 },
+      { ...canonical, writableWorkspaceOnly: false },
+      { ...canonical, allowHostDockerSocket: true },
+      {},
+      null,
+    ]) {
+      let thrown: unknown;
+      try {
+        SandboxIsolationPolicy.assertCanonical(candidate as SandboxIsolationPolicy);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, JSON.stringify(candidate)).toBeInstanceOf(ApplicationError);
+    }
+  });
 });
 
 describe("sandbox execution status model", () => {
