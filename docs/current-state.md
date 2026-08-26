@@ -267,6 +267,51 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 2 or Task 3 gate.
 
+- **Round 5 — independent defensive security audit of Tasks 1/2/3, repaired on
+  `autonomy-task2-audit-repair` (branched from `autonomy-task2-3-staging` at `c7ef85e`).** The
+  audit returned `SECURITY_GATE := FAIL` on one HIGH. It was re-verified here against the exact
+  SHA before any code changed — reproduced red against the **real** SQLite repository and the real
+  `TaskManager`, not only against fakes — and confirmed.
+  - **T2-3 — creation was a second entry point into the state machine that skipped every
+    phase-entry rule.** `createTaskCapsule` never consulted `TaskTransitionPolicy`, and its
+    evidence check was guarded by `verifiedEvidenceIds.length > 0`. Citing nothing therefore
+    skipped the evidence authority entirely, so a first revision could be born already `complete`
+    — which is **terminal**, so the checked API could never afterwards correct the durable record
+    — or already in `repair`, or already in `execute` without the attempt its entry costs. T2-1
+    had closed the half where a *reference* could be laundered as verified; the half where the
+    *phase itself* needs justification stayed open. **Repaired at the authority boundary, not in
+    the entity:** `TaskCapsule.create` is a structural constructor that must keep building any
+    revision, including rehydration, so the use case enforces the rule. `TaskTransitionPolicy`
+    now publishes `requiresEvidence(phase)` alongside the existing `attemptCost(phase)`, and
+    `createTaskCapsule` asks the policy rather than restating the set — one place for the rule,
+    no second copy to drift. A phase whose entry needs evidence may not be created on assertion
+    alone (the existing `assessTaskEvidence`/`resolveTaskEvidence` pair then validates the
+    citation exactly as the transition path does), and a phase whose entry spends an attempt may
+    not be created with that attempt unpaid. Both are refused, never coerced. Non-gated phases
+    stay creatable exactly as before, and no Task Capsule public contract, canonical fingerprint,
+    durable revision semantic, evidence-scope check, or Task 3 attempt/reconciliation semantic
+    changed. Regressions: 8 in `packages/application/tests/use-cases/task-capsule.test.ts`, 1 in
+    `packages/application/tests/services/task-transition-policy.test.ts`, and 5 against the real
+    durable repository in `apps/runtime/tests/autonomy/task-state.test.ts`; 6 of them failed
+    before the repair and pass after it.
+  - **Five MEDIUM findings were verified and deliberately deferred, none blocking.** Three are in
+    Task-1-owned code that this branch must not carry (`SandboxIsolationPolicy`'s numeric bounds
+    are bypassable by a hand-built policy literal; the semantic `role` is a caller assertion never
+    cross-checked against `context.actor.roles`; `workspaceRoot` is interpolated unescaped into
+    the Docker `--mount` CSV). One is Task-3 persistence
+    (`SqliteExecutionLedgerRepository.listForTask` rehydrates every ledger row of every task per
+    page, so one corrupt row stops governed effects for all tasks — availability, fail-closed, and
+    a durable-query change that does not belong in a focused security repair). One is branch
+    ancestry (`autonomy-task123-integration-rehearsal` is built on `c059a33^`, not on final Task 1
+    `c059a33`, so it ships the superseded `assertDockerRuntimeObservation`; fail-closed, and
+    rewriting the preserved rehearsal was out of scope).
+  - Gate after round 5: `pnpm lint` exit 0 (9 pre-existing warnings, 1 pre-existing info),
+    `pnpm typecheck` 9/9, `pnpm test` **877 passing / 16 skipped / 6 todo (899) across 124 passing
+    + 5 skipped test files (129 total)**, `pnpm build` 9/9. Still a green regression suite, **not**
+    a passed Task 2 or Task 3 gate: Task 1's target-host Docker proof remains BLOCKED, so final
+    Task 1+2+3 integration and Task 4 stay BLOCKED, and this branch is submitted for independent
+    re-audit rather than merged.
+
 ## Verified implemented state
 
 - Layers 1-5: hardened baseline complete before this canonical continuation.

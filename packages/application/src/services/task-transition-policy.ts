@@ -270,6 +270,17 @@ export const TaskTransitionPolicy = Object.freeze({
   },
 
   /**
+   * Whether entering `phase` must be justified by evidence.
+   *
+   * Exposed because entering a phase is not only something a *transition* does: a first revision
+   * is created directly in some phase, and that entry has to clear the same bar. Callers ask the
+   * policy rather than restating the set, so there is one place the rule can change.
+   */
+  requiresEvidence(phase: TaskPhase): boolean {
+    return REQUIRES_EVIDENCE.has(phase);
+  },
+
+  /**
    * Evaluates a proposal against the current capsule. Every failed predicate is reported, not
    * just the first, so a caller learns everything it must fix rather than one thing at a time.
    *

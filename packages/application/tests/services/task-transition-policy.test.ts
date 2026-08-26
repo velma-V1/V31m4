@@ -386,3 +386,15 @@ describe("TaskTransitionPolicy attempt accounting", () => {
     }
   });
 });
+
+describe("TaskTransitionPolicy evidence requirement", () => {
+  it("names complete and repair as the phases whose entry needs evidence, and nothing else", () => {
+    // The same set the policy applies to a transition's target, published so the creation path
+    // asks rather than keeps a second copy that can drift.
+    expect(TaskTransitionPolicy.requiresEvidence("complete")).toBe(true);
+    expect(TaskTransitionPolicy.requiresEvidence("repair")).toBe(true);
+    for (const phase of ["investigate", "plan", "execute", "verify", "blocked"] as const) {
+      expect(TaskTransitionPolicy.requiresEvidence(phase), phase).toBe(false);
+    }
+  });
+});

@@ -679,3 +679,83 @@ describe("replay without conversation history", () => {
     expect(replayed[2]?.fingerprint).toBe(capsules.head?.value.fingerprint);
   });
 });
+
+/**
+ * Creation is a sibling entry point into the same authoritative state machine, so it must satisfy
+ * the same rules that govern *entering* a phase. Otherwise a first revision can be born already
+ * `complete` — a terminal phase with no legal outgoing move, so the checked API could never
+ * correct the record — with the evidence authority never consulted at all.
+ */
+describe("creation obeys the phase-entry rules", () => {
+  it("refuses to create a capsule already complete without evidence", async () => {
+    await expect(
+      createTaskCapsule(deps(), { ...draft, phase: "complete" }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(0);
+    expect(capsules.head).toBeNull();
+  });
+
+  it("refuses to create a capsule already in repair without evidence", async () => {
+    await expect(
+      createTaskCapsule(deps(), { ...draft, phase: "repair", attempts: 1 }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(0);
+  });
+
+  it("does not reach the evidence authority when nothing needs proving", async () => {
+    // A phase that needs no proof must not be made to acquire some.
+    const { capsule } = await createTaskCapsule(deps(), { ...draft, phase: "plan" }, context);
+    expect(capsule.phase).toBe("plan");
+    expect(evidence.records.size).toBe(0);
+  });
+
+  it("accepts creation in an evidence-gated phase backed by real passing evidence", async () => {
+    await evidence.append(evidenceRecord());
+    const { capsule } = await createTaskCapsule(
+      deps(),
+      { ...draft, phase: "complete", verifiedEvidenceIds: ["evidence:passing"] },
+      context,
+    );
+    expect(capsule.phase).toBe("complete");
+    expect(capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+  });
+
+  it("still refuses an evidence-gated phase whose citation the authority rejects", async () => {
+    await evidence.append(evidenceRecord({ status: "failed" }));
+    await expect(
+      createTaskCapsule(
+        deps(),
+        { ...draft, phase: "complete", verifiedEvidenceIds: ["evidence:passing"] },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(0);
+  });
+
+  it("refuses to be born mid-attempt without paying for the attempt", async () => {
+    // Entering `execute` costs an attempt on the transition path; creation may not enter it free.
+    await expect(
+      createTaskCapsule(deps(), { ...draft, phase: "execute" }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(0);
+  });
+
+  it("accepts creation in execute once the attempt is accounted for", async () => {
+    const { capsule } = await createTaskCapsule(
+      deps(),
+      { ...draft, phase: "execute", attempts: 1 },
+      context,
+    );
+    expect(capsule.phase).toBe("execute");
+    expect(capsule.attempts).toBe(1);
+  });
+
+  it("leaves the non-gated phases creatable exactly as before", async () => {
+    for (const phase of ["investigate", "plan", "verify", "blocked"] as const) {
+      capsules = new FakeRepository();
+      evidence = new FakeEvidence();
+      const { capsule } = await createTaskCapsule(deps(), { ...draft, phase }, context);
+      expect(capsule.phase, phase).toBe(phase);
+    }
+  });
+});

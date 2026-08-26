@@ -450,3 +450,79 @@ describe("DAG readiness", () => {
     expect(readyDagNodeIds(capsule)).toEqual(["node:other"]);
   });
 });
+
+/**
+ * The same rule against the real durable repository. The point of proving it here rather than
+ * only against a fake is that a bypass at creation writes a *durable* terminal record: `complete`
+ * has no legal outgoing transition, so the checked API can never correct what was persisted.
+ */
+describe("durable creation obeys the phase-entry rules", () => {
+  async function storeEvidence(
+    overrides: Partial<Parameters<typeof EvidenceRecord.create>[0]> = {},
+  ): Promise<void> {
+    const record = EvidenceRecord.create({
+      id: "evidence:passing",
+      projectId: "project:1",
+      jobId: "job:1",
+      kind: "unit_test",
+      subjectType: "task",
+      subjectId: "task:root",
+      status: "passed",
+      summary: "the targeted regression passed",
+      artifactIds: ["artifact:log"],
+      verifierId: "verifier:node",
+      verifierVersion: "1.0.0",
+      createdAt: "2026-08-26T00:00:00.000Z",
+      ...overrides,
+    });
+    await database.unitOfWork.execute(context, async (transaction) => {
+      await evidence.append(record, context, transaction);
+    });
+  }
+
+  it("never persists a task declared complete at birth", async () => {
+    await expect(
+      manager.createTask({ ...draft, phase: "complete" }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    // Nothing at all was written: no head, no revision, no half-created task.
+    expect(await manager.loadCurrent(taskId, context)).toBeNull();
+    expect(await capsules.getRevision(taskId, 1, context)).toBeNull();
+  });
+
+  it("never persists a task declared in repair at birth", async () => {
+    await expect(
+      manager.createTask({ ...draft, phase: "repair", attempts: 1 }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(await manager.loadCurrent(taskId, context)).toBeNull();
+  });
+
+  it("never persists a task born mid-attempt with the budget unspent", async () => {
+    await expect(manager.createTask({ ...draft, phase: "execute" }, context)).rejects.toMatchObject(
+      { code: "INVALID_APPLICATION_INPUT" },
+    );
+    expect(await manager.loadCurrent(taskId, context)).toBeNull();
+  });
+
+  it("persists an evidence-gated creation backed by the durable evidence authority", async () => {
+    await storeEvidence();
+    const created = await manager.createTask(
+      { ...draft, phase: "complete", verifiedEvidenceIds: ["evidence:passing"] },
+      context,
+    );
+    const current = await manager.loadCurrent(taskId, context);
+    expect(current?.capsule.phase).toBe("complete");
+    expect(current?.capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+    expect(current?.head.value.fingerprint).toBe(created.capsule.fingerprint);
+  });
+
+  it("refuses a durable evidence-gated creation the authority does not back", async () => {
+    await storeEvidence({ status: "failed" });
+    await expect(
+      manager.createTask(
+        { ...draft, phase: "complete", verifiedEvidenceIds: ["evidence:passing"] },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(await manager.loadCurrent(taskId, context)).toBeNull();
+  });
+});
