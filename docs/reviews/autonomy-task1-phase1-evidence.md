@@ -1153,3 +1153,56 @@ node scripts/prove-autonomy-phase1-real.mjs
 
 **Task 1's target-host proof is closed.** No sandbox backend is promoted by this result; the
 bake-off decision is separate and unchanged.
+
+---
+
+## Target-host proof re-run on the Task 1+2+3 final integration candidate
+
+The proof above closed Task 1 at `c059a33`. A final integration is a different tree, so it
+receives its own host evidence rather than inheriting that run. This section records the re-run on
+branch `autonomy-task123-final-integration` — the first clean Task 1+2+3 integration candidate,
+after the pre-integration security and architecture repairs.
+
+The proof was run against the final integrated working tree, in mandatory Docker mode:
+
+```bash
+V31M4_AUTONOMY_PHASE1_REAL=1 \
+V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 \
+V31M4_SANDBOX_IMAGE=alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+node scripts/prove-autonomy-phase1-real.mjs
+```
+
+### Environment
+
+- Docker client 29.6.2, Server **Docker Desktop 4.84.0 (234817)**, engine 29.6.2, API 1.55
+- Windows 11 + WSL2, Docker Desktop WSL integration enabled for this distribution
+- Image `alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce`
+- Workspace owner `1000:1000`; `userSpec` derived from the assigned workspace, non-root
+
+### Observed in the real V31M4-created container
+
+| Property | Observation |
+| --- | --- |
+| Reference-backend boundary | PASS |
+| Non-root identity | `effective container uid: 1000`, matching the derived `userSpec` |
+| Read-only root | `/proc/self/mountinfo` reports `ro,relatime`; refused write kept as supplemental |
+| Sole host bind | `effectiveMounts=1` — the workspace bind at `/workspace` and nothing else |
+| Docker socket | absent |
+| Network | mode `none`; interfaces `[lo]`; external/default routes `0`; live numeric-IP connect refused (supplemental) |
+| Workspace-only write | permitted inside, verified on the host filesystem afterwards |
+| `/tmp`, HOME | both tmpfs, neither maps host storage; `HOME=/home/sandbox`, `TMPDIR=/tmp` |
+| Capabilities | `CapEff=0000000000000000`, `CapBnd=0000000000000000` |
+| No new privileges | `NoNewPrivs=1` |
+| Ownership | `docker inspect` against the exact running container; `network=none`, `readOnlyRoot=true` |
+| Real timeout | wall-clock timeout exercised; container force-removed, absence independently verified |
+| Cleanup | `v31m4-sandbox-35356f49b6dc…` removed and absence **independently verified** |
+
+Result: `direct-Docker container assertions: PASS` — proof file 1 passed, 2 tests passed, exit 0.
+
+The workspace-root repair made in this candidate — refusing a root containing `,` or `=`, because
+such a path cannot be expressed safely in a `--mount` specification — did not affect this run: the
+proof's real workspace root carries neither character, and the observed mount is the single
+expected bind.
+
+**`TASK1_TARGET_HOST_PROOF := PASS` for the final integration candidate.** No sandbox backend is
+promoted by this result; the bake-off decision is separate and unchanged.

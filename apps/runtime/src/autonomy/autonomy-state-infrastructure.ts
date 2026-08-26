@@ -209,10 +209,15 @@ export class SqliteExecutionLedgerRepository implements ExecutionLedgerRepositor
       )
       .all(LEDGER_TYPE, taskId, limit, offset) as { body: string }[];
     const page = rows.map((row) => ExecutionLedgerEntry.rehydrate(JSON.parse(row.body)));
+    // Continuation is decided by the rows this page actually returned, not by the count: the
+    // canonical scan folds a task's whole history and stops when a page reports no successor, so
+    // a total that disagreed with the page — by even one row — would silently truncate the fold
+    // and hide a blocking attempt. A full page always offers a successor; at worst that costs one
+    // empty read at the end, which is the safe direction to be wrong in.
     return Object.freeze({
       items: Object.freeze(page),
       total,
-      ...(offset + page.length < total ? { nextCursor: String(offset + page.length) } : {}),
+      ...(page.length === limit ? { nextCursor: String(offset + page.length) } : {}),
     });
   }
 }

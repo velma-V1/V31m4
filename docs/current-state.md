@@ -407,6 +407,14 @@ it is built and locally verified here, and its next hard gate is independent rev
 - **Preserved branches are untouched:** `autonomy-v1.1.0`, `autonomy-task2-3-staging`,
   `autonomy-task2-audit-repair`, `autonomy-task123-integration-rehearsal`, and `main` are all at
   the SHAs they held before this work.
+- **Target-host Docker proof: PASS on this candidate's own tree.** The candidate does not inherit
+  `c059a33`'s run; it was re-run here in mandatory Docker mode against the final integrated working
+  tree, with the digest-pinned image, and every required isolation property was observed again.
+  See the final section of `docs/reviews/autonomy-task1-phase1-evidence.md`.
+- **Local gates: `pnpm typecheck` 9/9, `pnpm test` 933 passing / 16 skipped / 6 todo (955) across
+  127 passing + 5 skipped files (132 total), `pnpm lint` exit 0 (9 pre-existing warnings, 1
+  pre-existing info), `pnpm build` 9/9, `git diff --check` clean.** A green local gate set and a
+  passed host proof are **not** a passed final-integration gate.
 - **Next hard gate: independent review of the integration candidate.** Main promotion is not
   started — the repository still has a separate promotion-governance gap involving
   main/workflow/ruleset protection — and Task 4 remains BLOCKED.
