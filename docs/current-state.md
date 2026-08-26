@@ -199,6 +199,155 @@ This file is a concise operational handoff for future Claude Code sessions. It r
   and a digest-pinned image are available, then submit Task 1 for independent re-review.
   **Task 2 is FORBIDDEN** until Task 1's hard gate actually passes.
 
+- **Task 2 / Task 3 (staging branch `autonomy-task2-3-staging`): implemented, independently
+  reviewed, FAILED, then repaired — NOT accepted.** This work lives only on the staging branch;
+  `autonomy-v1.1.0` is untouched at `bf5ef96b059e26d0176fbf6cf81a37d96d169731` and nothing is
+  merged. Task 1 remains INCOMPLETE, so neither task may be called passed. An independent review
+  of `faa13e3` returned four HIGH findings; each was reproduced against the committed code before
+  any repair, then root-caused, repaired, and covered by permanent regressions:
+  - **T2-1 — a fabricated evidence ID satisfied a checked transition.** `TaskTransitionPolicy`
+    validated only syntax, count, and uniqueness, so `evidence:fake` could enter `complete` or
+    `repair`. Transitions now resolve every cited reference through the existing
+    `EvidenceRepositoryPort` inside the same transaction and require the record to exist, be
+    `passed`, belong to the capsule's project, agree with its job, and be about a subject the
+    capsule owns. The policy stays pure but takes a mandatory evidence assessment, so it cannot be
+    evaluated on caller assertion at all. Self-review found the same hole at creation
+    (`createTaskCapsule` could seed `verifiedEvidenceIds`); that is repaired through the same
+    authority. No second evidence store was created.
+  - **T3-1 — a same-intent check/append race.** `runGovernedEffect` projected, decided, then
+    appended as separate steps, so two concurrent callers could both claim and both dispatch.
+    Reading the history, `decideRetry`, and the `effect_attempt` append now happen in one
+    authoritative `UnitOfWork` transaction that commits before anything reaches the environment.
+  - **T3-2 — request task ID could disagree with plan/sandbox.** The complete scoped identity
+    (`request.taskId`/`plan.taskId`/`sandbox.taskId`, `plan.jobId`/`sandbox.jobId`,
+    `plan.workspaceId`/`sandbox.workspaceId`, `plan.sandboxId`/`sandbox.id`) is now checked before
+    projection, ledger write, or dispatch; a mismatch fails closed with no entry and no dispatch.
+  - **T3-3 — first-500 ledger truncation.** Retry projection, reconciliation, and finalized-outcome
+    conflict detection each read one 500-entry page and ignored `nextCursor`. All three now use one
+    canonical paged walk built on the existing `collectPortPages` mechanism, which follows the
+    cursor to exhaustion, rejects a repeated cursor as `INTEGRITY_FAILURE`, and reports its
+    defensive page ceiling as a typed non-success rather than pretending history ended.
+  - **Round 2 (independent re-review of `314604e`).** Two further HIGH findings, both reproduced
+    against the committed code before any repair and both repaired:
+    - **T2-2 — evidence was validated against the previous state.** `proposeTaskTransition`
+      resolved and judged evidence against `current`, then applied `TaskCapsuleChanges` — which may
+      replace `acceptanceCriterionIds` or `changeArtifactIds` in the same move. A record proving a
+      subject the committed capsule no longer owned could therefore authorize the transition, and
+      already-carried `verifiedEvidenceIds` were exempted from revalidation entirely. Evidence is
+      now judged against a typed `TaskEvidenceScope` derived from immutable task/project/job
+      identity plus the proposed changes, **every** reference that will exist afterwards is
+      revalidated (carried ones included), and a post-condition proves the scope evaluated is the
+      scope actually written. The scope carries a nominal marker, so passing a capsule where the
+      committed scope is required is a compile error rather than a silent regression.
+    - **T3-4 — check validity dependencies were not enforced.** `isEntryStillValid` read only the
+      entry's own facts and the invalidated set, so `dependsOnEntryIds` meant nothing: a check
+      whose own report had not moved stayed "current" after the observation it rested on was
+      invalidated or went stale. Validity now requires every declared dependency to exist, be
+      fact-bearing, belong to the same task and job, and itself be valid, chaining transitively and
+      failing closed on a missing, foreign, or cyclic dependency. Reference edges are also hardened
+      at append time: outcome/failure/check/invalidation references must all resolve inside the
+      same task **and** job, and an invalidation may only name a fact-bearing entry — so it can
+      never be aimed at an effect attempt.
+  - **Round 3 (independent re-review of `74f6e31`, Task 3 only).** Two further HIGH findings, both
+    reproduced against the committed code before any repair and both repaired by replacing the
+    ad-hoc outcome checks with one canonical attempt-outcome state machine:
+    - **T3-5 — a `failure` could create a second resolution.** The fold treated a failure naming an
+      attempt as resolving it, but the append-time conflict check considered only the three
+      `effect_*`/`reconciliation_*` kinds. So `failure → confirmation`, `confirmation → failure`,
+      and `failure → failure` were all accepted, and every later fold of that task threw
+      `INTEGRITY_FAILURE` — an accepted append permanently bricked the task's history, since even
+      claiming a new intent folds first.
+    - **T3-6 — an indeterminate attempt could never be reconciled.** `reconciliation_indeterminate`
+      marked the attempt resolved, and append then refused any later confirmation or
+      non-application. An effect whose reality became observable after a crash was therefore
+      blocked for ever, contradicting the canonical invariant that unknown effects block retry
+      *until reconciled*.
+    - **The repair.** `unresolved`, `failed`, and `indeterminate` all block a retry but stay
+      reconcilable; `confirmed` and `not_applied` are terminal. Transitions are
+      `unresolved → {failed, indeterminate, confirmed, not_applied}`,
+      `failed → {indeterminate, confirmed, not_applied}`, `indeterminate → {confirmed,
+      not_applied}`, and nothing leaves a terminal state. There is no self-transition, so a
+      repeated status can never be used to manufacture history. The append path and the fold share
+      one table, so every accepted sequence folds and a forbidden stored transition is corruption.
+      A new `EffectReconciler.reconcileAttempt` settles an already-attempted effect from a probe's
+      observation with **zero** sandbox dispatches, validates the transition inside the
+      authoritative transaction so exactly one of two concurrent reconciliations wins, and writes
+      nothing when reality is still unprovable and already on record as such.
+  - **Round 4 (independent re-review of `0bcad10`, Task 3 only).** One further HIGH finding,
+    reproduced against the committed code before any repair, then repaired:
+    - **T3-7 — authoritative ledger state did not prove the Task 1 issuer.** `EffectReconciler`
+      accepted anything *typed* as an `AuthorizedSemanticExecutionPlan` and never held a
+      `SemanticExecutionCapabilityVerifier` of its own. On the effect path the only issuer check
+      lived at the sandbox sink, which runs *after* the `effect_attempt` is already durable, so a
+      capability minted by a foreign semantic authorization boundary created authoritative history
+      before Task 1 ever rejected it — behaviour an existing test explicitly accepted. Worse,
+      `reconcileAttempt` dispatches through `SandboxPort` by design, so on that path no issuer
+      check happened at all: a foreign plan, a plain `{ ...plan }` copy, or an
+      `Object.create(plan)` forgery (which passes `instanceof`) could drive the probe and append a
+      terminal `effect_confirmation`. Reproduced: all four attacks produced a full authoritative
+      outcome.
+    - **The repair.** `SemanticExecutionCapabilityVerifier` is now a mandatory
+      `EffectReconcilerDependencies` member — the verify half of the *same* boundary the paired
+      `SandboxPort` holds — and both `runGovernedEffect` and `reconcileAttempt` verify the issuer
+      as their first statement: before the projection a claim reads, before any append, before
+      dispatch, and before the probe. It is `verify`, never `consume`: the single-use spend stays
+      at the sink in `SandboxSupervisor`, untouched, and reconciliation performs no effect so it
+      must not re-spend execution authority. Investigated rather than assumed: Task 1's `verify`
+      tests only the authority's own mint registry and is independent of `consumed`, so a
+      capability whose execution already spent it stays authenticity-verifiable and can settle the
+      attempt it created — no bearer-token authority was invented and no Task 1 semantics were
+      weakened. `observePostState` became private, removing the last public entry point that could
+      run a probe on an unverified plan.
+  - Gate after round 4: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **863 passing / 16 skipped / 6 todo (885) across 124
+    passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+    is a green regression suite, **not** a passed Task 2 or Task 3 gate.
+
+- **Round 5 — independent defensive security audit of Tasks 1/2/3, repaired on
+  `autonomy-task2-audit-repair` (branched from `autonomy-task2-3-staging` at `c7ef85e`).** The
+  audit returned `SECURITY_GATE := FAIL` on one HIGH. It was re-verified here against the exact
+  SHA before any code changed — reproduced red against the **real** SQLite repository and the real
+  `TaskManager`, not only against fakes — and confirmed.
+  - **T2-3 — creation was a second entry point into the state machine that skipped every
+    phase-entry rule.** `createTaskCapsule` never consulted `TaskTransitionPolicy`, and its
+    evidence check was guarded by `verifiedEvidenceIds.length > 0`. Citing nothing therefore
+    skipped the evidence authority entirely, so a first revision could be born already `complete`
+    — which is **terminal**, so the checked API could never afterwards correct the durable record
+    — or already in `repair`, or already in `execute` without the attempt its entry costs. T2-1
+    had closed the half where a *reference* could be laundered as verified; the half where the
+    *phase itself* needs justification stayed open. **Repaired at the authority boundary, not in
+    the entity:** `TaskCapsule.create` is a structural constructor that must keep building any
+    revision, including rehydration, so the use case enforces the rule. `TaskTransitionPolicy`
+    now publishes `requiresEvidence(phase)` alongside the existing `attemptCost(phase)`, and
+    `createTaskCapsule` asks the policy rather than restating the set — one place for the rule,
+    no second copy to drift. A phase whose entry needs evidence may not be created on assertion
+    alone (the existing `assessTaskEvidence`/`resolveTaskEvidence` pair then validates the
+    citation exactly as the transition path does), and a phase whose entry spends an attempt may
+    not be created with that attempt unpaid. Both are refused, never coerced. Non-gated phases
+    stay creatable exactly as before, and no Task Capsule public contract, canonical fingerprint,
+    durable revision semantic, evidence-scope check, or Task 3 attempt/reconciliation semantic
+    changed. Regressions: 8 in `packages/application/tests/use-cases/task-capsule.test.ts`, 1 in
+    `packages/application/tests/services/task-transition-policy.test.ts`, and 5 against the real
+    durable repository in `apps/runtime/tests/autonomy/task-state.test.ts`; 6 of them failed
+    before the repair and pass after it.
+  - **Five MEDIUM findings were verified and deliberately deferred, none blocking.** Three are in
+    Task-1-owned code that this branch must not carry (`SandboxIsolationPolicy`'s numeric bounds
+    are bypassable by a hand-built policy literal; the semantic `role` is a caller assertion never
+    cross-checked against `context.actor.roles`; `workspaceRoot` is interpolated unescaped into
+    the Docker `--mount` CSV). One is Task-3 persistence
+    (`SqliteExecutionLedgerRepository.listForTask` rehydrates every ledger row of every task per
+    page, so one corrupt row stops governed effects for all tasks — availability, fail-closed, and
+    a durable-query change that does not belong in a focused security repair). One is branch
+    ancestry (`autonomy-task123-integration-rehearsal` is built on `c059a33^`, not on final Task 1
+    `c059a33`, so it ships the superseded `assertDockerRuntimeObservation`; fail-closed, and
+    rewriting the preserved rehearsal was out of scope).
+  - Gate after round 5: `pnpm lint` exit 0 (9 pre-existing warnings, 1 pre-existing info),
+    `pnpm typecheck` 9/9, `pnpm test` **877 passing / 16 skipped / 6 todo (899) across 124 passing
+    + 5 skipped test files (129 total)**, `pnpm build` 9/9. Still a green regression suite, **not**
+    a passed Task 2 or Task 3 gate: Task 1's target-host Docker proof remains BLOCKED, so final
+    Task 1+2+3 integration and Task 4 stay BLOCKED, and this branch is submitted for independent
+    re-audit rather than merged.
+
 ## Verified implemented state
 
 - Layers 1-5: hardened baseline complete before this canonical continuation.
