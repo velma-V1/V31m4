@@ -120,6 +120,8 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
     unitOfWork: db.unitOfWork,
     ledger,
     sandboxes: countingSandboxes(sandboxes),
+    // The same Task 1 boundary the sandbox was paired with — not a second authority.
+    capabilities: boundary.capabilities,
     generateEntryId: () => `ledger:${++entryCounter}`,
     now: () => "2026-08-26T00:00:00.000Z",
   });
@@ -204,19 +206,13 @@ describe("effect lifecycle ordering", () => {
   });
 
   it("records the attempt even when the dispatch itself fails", async () => {
-    // A plan the sandbox will refuse: it was issued by a different boundary.
-    const foreign = createSemanticAuthorizationBoundary().authorize({
-      operationId: "code.inspect",
-      role: "executor",
-      policyDecision: "allow",
-      taskId,
-      jobId,
-      workspace,
-      sandbox,
-      parameters: { pathScope: ["target.ts"] },
-    });
+    // A dispatch the sandbox will refuse, with the issuer beyond doubt: the capability is
+    // canonical but has already been spent at the sink, so the replay is denied there. A foreign
+    // capability could not be used to make this point — it never reaches a ledger write at all.
+    const plan = inspectPlan();
+    await sandboxes.execute(sandbox, plan, context);
     const outcome = await reconciler.runGovernedEffect(
-      { taskId, sandbox, plan: foreign, probe: notAppliedProbe },
+      { taskId, sandbox, plan, probe: notAppliedProbe },
       context,
     );
     // The dispatch was refused and the probe proved nothing happened.
@@ -1526,5 +1522,210 @@ describe("restart recovery", () => {
       context,
     );
     expect(second.outcomeKind).toBe("effect_confirmation");
+  });
+});
+
+/**
+ * T3-7. The Execution Ledger is authoritative history, so nothing may write to it — or probe on
+ * a capability's behalf — before that capability is proved to have come from the canonical Task 1
+ * authority. Verifying only at the sandbox sink is too late on the effect path (the attempt is
+ * already durable) and never happens at all on the reconciliation path, which dispatches nothing.
+ */
+describe("authoritative ledger state requires the canonical Task 1 issuer", () => {
+  /** An otherwise identical capability from a different semantic authorization boundary. */
+  function foreignPlan(): ReturnType<typeof inspectPlan> {
+    return createSemanticAuthorizationBoundary().authorize({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { pathScope: ["target.ts"] },
+    });
+  }
+
+  /**
+   * Structurally identical, but not the object the authority minted. The class has no private
+   * runtime field to copy, so this is assignable — which is precisely why verification is
+   * issuer-bound rather than a shape or `instanceof` check.
+   */
+  function clonedPlan(): ReturnType<typeof inspectPlan> {
+    return { ...inspectPlan() } as ReturnType<typeof inspectPlan>;
+  }
+
+  /**
+   * The strongest structural forgery: an object whose prototype chain runs through a real minted
+   * plan, so `instanceof AuthorizedSemanticExecutionPlan` is true and every field reads through.
+   * Only identity in the authority's own registry separates it from the real thing.
+   */
+  function prototypeForgedPlan(): ReturnType<typeof inspectPlan> {
+    return Object.create(inspectPlan()) as ReturnType<typeof inspectPlan>;
+  }
+
+  let probeCalls = 0;
+  const countingProbe =
+    (inner: EffectPostStateProbe): EffectPostStateProbe =>
+    async (...args) => {
+      probeCalls += 1;
+      return inner(...args);
+    };
+
+  beforeEach(() => {
+    probeCalls = 0;
+  });
+
+  async function ledgerKinds(): Promise<readonly string[]> {
+    const page = await ledger.listForTask(taskId, { limit: 500 }, context);
+    return page.items.map((entry) => entry.kind);
+  }
+
+  /** Leaves one genuine, still-reconcilable attempt behind, from the canonical boundary. */
+  async function indeterminateAttempt(): Promise<string> {
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: inspectPlan(), probe: unknownProbe },
+      context,
+    );
+    expect(outcome.outcomeKind).toBe("reconciliation_indeterminate");
+    return outcome.attemptEntryId;
+  }
+
+  for (const [label, mint] of [
+    ["a foreign boundary", foreignPlan],
+    ["a structural copy", clonedPlan],
+    ["a prototype-chain forgery", prototypeForgedPlan],
+  ] as const) {
+    it(`refuses ${label} on runGovernedEffect before any ledger write or dispatch`, async () => {
+      await expect(
+        reconciler.runGovernedEffect(
+          { taskId, sandbox, plan: mint(), probe: countingProbe(appliedProbe) },
+          context,
+        ),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+
+      expect(await ledgerKinds()).toEqual([]);
+      expect(dispatches).toBe(0);
+      expect(probeCalls).toBe(0);
+    });
+
+    for (const [outcomeLabel, probe] of [
+      ["applied", appliedProbe],
+      ["not_applied", notAppliedProbe],
+    ] as const) {
+      it(`refuses ${label} on reconcileAttempt (${outcomeLabel}) before the probe runs`, async () => {
+        const attemptEntryId = await indeterminateAttempt();
+        const before = await ledgerKinds();
+        const dispatchesBefore = dispatches;
+        probeCalls = 0;
+
+        await expect(
+          reconciler.reconcileAttempt(
+            { taskId, sandbox, plan: mint(), attemptEntryId, probe: countingProbe(probe) },
+            context,
+          ),
+        ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+
+        expect(probeCalls).toBe(0);
+        expect(dispatches).toBe(dispatchesBefore);
+        expect(await ledgerKinds()).toEqual(before);
+        // The attempt is exactly as it was, and still reconcilable by its rightful authority.
+        const projection = await reconciler.projection(taskId, context);
+        expect(projection.attempts[0]?.outcome).toBe("indeterminate");
+      });
+    }
+  }
+
+  it("still runs the whole normal lifecycle for the canonical issuer", async () => {
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: inspectPlan(), probe: countingProbe(appliedProbe) },
+      context,
+    );
+    expect(outcome.outcomeKind).toBe("effect_confirmation");
+    expect(await ledgerKinds()).toEqual(["effect_attempt", "effect_confirmation"]);
+    expect(dispatches).toBe(1);
+    expect(probeCalls).toBe(1);
+  });
+
+  /**
+   * The Task 1 contract splits the two deliberately: `consume` is the single-use spend that
+   * belongs immediately before a real effect, while `verify` proves issuance and stays true
+   * afterwards. Reconciliation performs no effect, so it verifies and never consumes — which is
+   * what lets the very capability whose execution went unproven settle its own attempt later.
+   */
+  it("still verifies a capability its own execution already consumed", async () => {
+    const plan = inspectPlan();
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan, probe: unknownProbe },
+      context,
+    );
+    expect(dispatches).toBe(1);
+    // The sandbox spent it at the sink; a replay through the sink is refused.
+    await expect(sandboxes.execute(sandbox, plan, context)).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+
+    const settled = await reconciler.reconcileAttempt(
+      { taskId, sandbox, plan, attemptEntryId: outcome.attemptEntryId, probe: appliedProbe },
+      context,
+    );
+    expect(settled.outcome).toBe("confirmed");
+    // Reconciliation never re-spends and never re-dispatches.
+    expect(dispatches).toBe(1);
+  });
+
+  it("accepts a fresh canonical authorization for the same intent, scope, and issuer", async () => {
+    const attemptEntryId = await indeterminateAttempt();
+    const settled = await reconciler.reconcileAttempt(
+      { taskId, sandbox, plan: inspectPlan(), attemptEntryId, probe: appliedProbe },
+      context,
+    );
+    expect(settled.outcome).toBe("confirmed");
+    expect(dispatches).toBe(1);
+  });
+
+  it("refuses a canonical capability whose intent is not the attempt's, writing nothing", async () => {
+    const attemptEntryId = await indeterminateAttempt();
+    const before = await ledgerKinds();
+    const otherIntent = boundary.authorize({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { pathScope: ["other.ts"] },
+    });
+    await expect(
+      reconciler.reconcileAttempt(
+        { taskId, sandbox, plan: otherIntent, attemptEntryId, probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(await ledgerKinds()).toEqual(before);
+  });
+
+  it("refuses a foreign capability whose scoped identity also disagrees", async () => {
+    // Both defects at once: neither may be reported as success, and neither may write.
+    const foreign = createSemanticAuthorizationBoundary().authorize({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId: TaskId.parse("task:other"),
+      jobId,
+      workspace,
+      sandbox: { ...sandbox, taskId: TaskId.parse("task:other") },
+      parameters: { pathScope: ["target.ts"] },
+    });
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: foreign, probe: countingProbe(appliedProbe) },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(await ledgerKinds()).toEqual([]);
+    expect(dispatches).toBe(0);
+    expect(probeCalls).toBe(0);
   });
 });

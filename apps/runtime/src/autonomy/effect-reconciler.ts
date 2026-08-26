@@ -13,6 +13,7 @@ import {
   type SandboxExecutionResult,
   type SandboxHandle,
   type SandboxPort,
+  type SemanticExecutionCapabilityVerifier,
   type UnitOfWorkPort,
   type UnitOfWorkTransaction,
 } from "@v31m4/application";
@@ -29,8 +30,14 @@ import {
  *
  * The order is the whole point:
  *
- *   authorize (Task 1) → append effect_attempt → dispatch through SandboxPort
- *     → inspect verified post-state → append exactly one outcome
+ *   authorize (Task 1) → verify the issuer → append effect_attempt → dispatch through
+ *     SandboxPort (which verifies and *spends* the capability) → inspect verified post-state
+ *     → append exactly one outcome
+ *
+ * Issuer verification is this reconciler's own first step, not something it inherits from the
+ * sink. The ledger is authoritative history; a capability minted by some other semantic
+ * authorization boundary must not be able to write to it, and on the reconciliation path — which
+ * never dispatches — the sink would never see it at all.
  *
  * The attempt is durable *before* anything can happen in the environment, so a crash mid-effect
  * leaves an unresolved attempt rather than silence. Nothing here re-authorizes, re-dispatches,
@@ -62,6 +69,14 @@ export interface EffectReconcilerDependencies {
   readonly unitOfWork: UnitOfWorkPort;
   readonly ledger: ExecutionLedgerRepositoryPort;
   readonly sandboxes: SandboxPort;
+  /**
+   * The verify half of the *same* Task 1 semantic authorization boundary this reconciler's
+   * `SandboxPort` was paired with. Mandatory: the Execution Ledger is authoritative history, so
+   * nothing may write to it — or probe on its behalf — without first proving the capability came
+   * from the canonical issuer. Injecting a different boundary's verifier here than the sandbox
+   * holds would re-open exactly the gap this closes.
+   */
+  readonly capabilities: SemanticExecutionCapabilityVerifier;
   readonly generateEntryId: () => string;
   readonly now: () => string;
 }
@@ -146,6 +161,26 @@ export class EffectReconciler {
   }
 
   /**
+   * Proves the capability was issued by the canonical Task 1 authority, before this reconciler
+   * takes any authoritative action on its behalf.
+   *
+   * The sandbox verifies and spends the capability at the execution sink, but that is far too
+   * late for Task 3: by then the attempt is already durable. A plan minted by a foreign semantic
+   * authorization boundary — or a structural copy that merely looks like one — would otherwise
+   * create authoritative ledger history, and on the reconciliation path, which never dispatches
+   * at all, its issuer would never be checked by anyone.
+   *
+   * This is `verify`, never `consume`. Verification proves authenticity and issuer; consumption
+   * is the single-use spend that belongs immediately before the real effect sink, where
+   * `SandboxSupervisor` still performs it. Reconciliation performs no effect, so re-spending
+   * execution authority there would be wrong — and an already-consumed capability stays
+   * authentic, which is what lets the attempt it created be settled later.
+   */
+  private requireCanonicalAuthority(plan: AuthorizedSemanticExecutionPlan): void {
+    this.dependencies.capabilities.verify(plan);
+  }
+
+  /**
    * Every identity this effect is checked and recorded against must be the same identity it
    * executes under. The request carries its own `taskId`, and the plan and the sandbox each
    * carry theirs; if those disagree, an effect authorized for one task could be projected
@@ -186,6 +221,9 @@ export class EffectReconciler {
     context: OperationContext,
   ): Promise<GovernedEffectOutcome> {
     const { plan, sandbox, taskId } = request;
+    // Authority first: before the projection this claim reads, before the attempt is appended,
+    // and before anything reaches SandboxPort.
+    this.requireCanonicalAuthority(plan);
     this.assertScopedIdentity(request);
     const intentFingerprint = this.intentFingerprintFor(plan);
 
@@ -243,7 +281,7 @@ export class EffectReconciler {
     return this.recordOutcome(request, attempt, result, post, dispatchFailure, context);
   }
 
-  async observePostState(
+  private async observePostState(
     request: GovernedEffectRequest,
     result: SandboxExecutionResult | null,
     context: OperationContext,
@@ -328,6 +366,9 @@ export class EffectReconciler {
     context: OperationContext,
   ): Promise<EffectReconciliationResult> {
     const { plan, taskId, attemptEntryId } = request;
+    // Authority first: before the ledger is read to authorize this reconciliation, before the
+    // probe observes anything on this plan's behalf, and before any entry is appended.
+    this.requireCanonicalAuthority(plan);
     this.assertScopedIdentity(request);
 
     const before = await this.requireReconcilableAttempt(request, context);

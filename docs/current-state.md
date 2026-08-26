@@ -237,8 +237,33 @@ This file is a concise operational handoff for future Claude Code sessions. It r
       observation with **zero** sandbox dispatches, validates the transition inside the
       authoritative transaction so exactly one of two concurrent reconciliations wins, and writes
       nothing when reality is still unprovable and already on record as such.
-  - Gate after round 3: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **847 passing / 16 skipped / 6 todo (869) across 124
+  - **Round 4 (independent re-review of `0bcad10`, Task 3 only).** One further HIGH finding,
+    reproduced against the committed code before any repair, then repaired:
+    - **T3-7 — authoritative ledger state did not prove the Task 1 issuer.** `EffectReconciler`
+      accepted anything *typed* as an `AuthorizedSemanticExecutionPlan` and never held a
+      `SemanticExecutionCapabilityVerifier` of its own. On the effect path the only issuer check
+      lived at the sandbox sink, which runs *after* the `effect_attempt` is already durable, so a
+      capability minted by a foreign semantic authorization boundary created authoritative history
+      before Task 1 ever rejected it — behaviour an existing test explicitly accepted. Worse,
+      `reconcileAttempt` dispatches through `SandboxPort` by design, so on that path no issuer
+      check happened at all: a foreign plan, a plain `{ ...plan }` copy, or an
+      `Object.create(plan)` forgery (which passes `instanceof`) could drive the probe and append a
+      terminal `effect_confirmation`. Reproduced: all four attacks produced a full authoritative
+      outcome.
+    - **The repair.** `SemanticExecutionCapabilityVerifier` is now a mandatory
+      `EffectReconcilerDependencies` member — the verify half of the *same* boundary the paired
+      `SandboxPort` holds — and both `runGovernedEffect` and `reconcileAttempt` verify the issuer
+      as their first statement: before the projection a claim reads, before any append, before
+      dispatch, and before the probe. It is `verify`, never `consume`: the single-use spend stays
+      at the sink in `SandboxSupervisor`, untouched, and reconciliation performs no effect so it
+      must not re-spend execution authority. Investigated rather than assumed: Task 1's `verify`
+      tests only the authority's own mint registry and is independent of `consumed`, so a
+      capability whose execution already spent it stays authenticity-verifiable and can settle the
+      attempt it created — no bearer-token authority was invented and no Task 1 semantics were
+      weakened. `observePostState` became private, removing the last public entry point that could
+      run a probe on an unverified plan.
+  - Gate after round 4: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **863 passing / 16 skipped / 6 todo (885) across 124
     passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 2 or Task 3 gate.
 

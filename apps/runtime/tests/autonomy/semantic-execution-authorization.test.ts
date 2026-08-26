@@ -368,3 +368,47 @@ describe("authorization binding", () => {
     ).toBe("git.status");
   });
 });
+
+/**
+ * The two halves of the capability contract are deliberately different questions, and Task 3's
+ * `EffectReconciler` depends on the distinction: it verifies authenticity before touching
+ * authoritative ledger state, and never consumes, because reconciliation performs no effect.
+ * Pinning the semantics here means a future change to either half fails loudly rather than
+ * silently re-opening a Task 3 authority gap.
+ */
+describe("capability verify and consume are separate questions", () => {
+  it("keeps a consumed capability authentic, while refusing to spend it twice", () => {
+    const plan = authorizeSemanticExecution(request());
+    boundary.capabilities.consume(plan);
+
+    // Authenticity does not expire when the single-use spend does.
+    expect(boundary.capabilities.verify(plan)).toBe(plan);
+    expect(() => boundary.capabilities.consume(plan)).toThrow(ApplicationError);
+  });
+
+  it("refuses another boundary's capability, and a structural copy of its own", () => {
+    const foreign = createSemanticAuthorizationBoundary().authorize(request());
+    // The third candidate passes `instanceof` — its prototype chain runs through a real plan —
+    // which is exactly why verification is registry identity, not a branding check.
+    for (const candidate of [
+      foreign,
+      { ...authorizeSemanticExecution(request()) },
+      Object.create(authorizeSemanticExecution(request())),
+      {},
+      null,
+    ]) {
+      let thrown: unknown;
+      try {
+        boundary.capabilities.verify(candidate);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, JSON.stringify(candidate)).toBeInstanceOf(ApplicationError);
+      expect((thrown as ApplicationError).code).toBe("PERMISSION_DENIED");
+    }
+    // Nor may an unminted object be spent.
+    expect(() =>
+      boundary.capabilities.consume({ ...authorizeSemanticExecution(request()) }),
+    ).toThrow(ApplicationError);
+  });
+});
