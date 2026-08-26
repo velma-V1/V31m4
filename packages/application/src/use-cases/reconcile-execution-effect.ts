@@ -33,6 +33,73 @@ export interface AttemptState {
 }
 
 /**
+ * The one canonical attempt-outcome state machine.
+ *
+ * Two ideas that were previously conflated are kept apart here. `unresolved`, `failed`, and
+ * `indeterminate` all **block** another try at the same intent, but none of them is a settled
+ * answer about reality — each may still be reconciled once something observable is obtained.
+ * `confirmed` and `not_applied` are **terminal**: reality was established, and no later entry may
+ * revise it.
+ *
+ * Every transition is a strict move toward being settled, so there is no self-transition anywhere:
+ * repeating a status is not a state change and may not be used to manufacture history. A failure
+ * or an indeterminate record can never be written twice for one attempt, and neither can overwrite
+ * a terminal outcome.
+ *
+ * The same table governs both the append path and the fold, so a history the append path accepted
+ * always folds — and a stored sequence this table forbids is corruption, not caller input.
+ */
+export const ATTEMPT_OUTCOME_TRANSITIONS: Readonly<
+  Record<AttemptOutcome, readonly AttemptOutcome[]>
+> = Object.freeze({
+  unresolved: Object.freeze<AttemptOutcome[]>([
+    "failed",
+    "indeterminate",
+    "confirmed",
+    "not_applied",
+  ]),
+  // A failure says the attempt did not succeed; it never says the effect failed to land, so it may
+  // still be settled either way once reality is observed.
+  failed: Object.freeze<AttemptOutcome[]>(["indeterminate", "confirmed", "not_applied"]),
+  // Unknown blocks retry *until reconciled*, not for ever.
+  indeterminate: Object.freeze<AttemptOutcome[]>(["confirmed", "not_applied"]),
+  confirmed: Object.freeze<AttemptOutcome[]>([]),
+  not_applied: Object.freeze<AttemptOutcome[]>([]),
+});
+
+/** Whether reality is settled for this attempt, so no later outcome may revise it. */
+export function isTerminalAttemptOutcome(outcome: AttemptOutcome): boolean {
+  return ATTEMPT_OUTCOME_TRANSITIONS[outcome].length === 0;
+}
+
+export function canTransitionAttemptOutcome(from: AttemptOutcome, to: AttemptOutcome): boolean {
+  return ATTEMPT_OUTCOME_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * The outcome an entry asserts about an attempt, or `null` when it asserts none. A `failure`
+ * carrying no `attemptEntryId` is ordinary failure history rather than an attempt outcome.
+ */
+export function assertedAttemptOutcome(
+  entry: ExecutionLedgerEntry,
+): Readonly<{ attemptEntryId: LedgerEntryId; outcome: AttemptOutcome }> | null {
+  switch (entry.kind) {
+    case "effect_confirmation":
+      return { attemptEntryId: entry.attemptEntryId, outcome: "confirmed" };
+    case "effect_nonapplication":
+      return { attemptEntryId: entry.attemptEntryId, outcome: "not_applied" };
+    case "reconciliation_indeterminate":
+      return { attemptEntryId: entry.attemptEntryId, outcome: "indeterminate" };
+    case "failure":
+      return entry.attemptEntryId === null
+        ? null
+        : { attemptEntryId: entry.attemptEntryId, outcome: "failed" };
+    default:
+      return null;
+  }
+}
+
+/**
  * The part of a fact-bearing entry that decides whether it is still current.
  *
  * Only `observation` and `check_result` can go stale, so only those are indexed. Keeping a
@@ -58,7 +125,7 @@ export interface LedgerProjection {
 }
 
 interface LedgerFold {
-  readonly attempts: Map<string, { state: AttemptState; resolved: boolean }>;
+  readonly attempts: Map<string, AttemptState>;
   readonly invalidated: Set<string>;
   readonly validityNodes: Map<string, LedgerValidityNode>;
 }
@@ -97,71 +164,55 @@ function foldLedgerPage(fold: LedgerFold, entries: readonly ExecutionLedgerEntry
         dependsOnEntryIds: entry.kind === "check_result" ? entry.dependsOnEntryIds : [],
       });
     }
-    switch (entry.kind) {
-      case "effect_attempt":
-        attempts.set(entry.id, {
-          resolved: false,
-          state: {
-            attemptEntryId: entry.id,
-            intentFingerprint: entry.intentFingerprint,
-            operationId: entry.operationId,
-            outcome: "unresolved",
-          },
-        });
-        break;
-      case "effect_confirmation":
-        resolve(attempts, entry.attemptEntryId, "confirmed");
-        break;
-      case "effect_nonapplication":
-        resolve(attempts, entry.attemptEntryId, "not_applied");
-        break;
-      case "reconciliation_indeterminate":
-        resolve(attempts, entry.attemptEntryId, "indeterminate");
-        break;
-      case "failure":
-        if (entry.attemptEntryId !== null) {
-          // A failure resolves an attempt only when the attempt never started producing an
-          // effect; an indeterminate record is what covers "it may have run".
-          resolve(attempts, entry.attemptEntryId, "failed");
-        }
-        break;
-      case "invalidation":
-        for (const id of entry.invalidatesEntryIds) invalidated.add(id);
-        break;
-      default:
-        break;
+    if (entry.kind === "effect_attempt") {
+      attempts.set(entry.id, {
+        attemptEntryId: entry.id,
+        intentFingerprint: entry.intentFingerprint,
+        operationId: entry.operationId,
+        outcome: "unresolved",
+      });
+    }
+    if (entry.kind === "invalidation") {
+      for (const id of entry.invalidatesEntryIds) invalidated.add(id);
+    }
+    const asserted = assertedAttemptOutcome(entry);
+    if (asserted !== null) {
+      advanceAttempt(attempts, asserted.attemptEntryId, asserted.outcome);
     }
   }
 }
 
 function finishFold(fold: LedgerFold): LedgerProjection {
   return Object.freeze({
-    attempts: Object.freeze([...fold.attempts.values()].map((held) => held.state)),
+    attempts: Object.freeze([...fold.attempts.values()]),
     invalidatedEntryIds: fold.invalidated,
     validityNodes: fold.validityNodes,
   });
 }
 
-function resolve(
-  attempts: Map<string, { state: AttemptState; resolved: boolean }>,
+/**
+ * Moves one attempt along the canonical state machine.
+ *
+ * The append path validates the very same transition before anything is stored, so a stored
+ * sequence that lands here illegally cannot have come through it — it is corrupted or
+ * hand-edited history, and surfacing that is the point. What this must never do is throw for a
+ * sequence the append path accepted, which would make a task's history permanently unreplayable.
+ */
+function advanceAttempt(
+  attempts: Map<string, AttemptState>,
   attemptEntryId: string,
   outcome: AttemptOutcome,
 ): void {
   const held = attempts.get(attemptEntryId);
   if (held === undefined) return;
-  if (held.resolved) {
-    // The first finalized outcome stands. A conflicting second one is a defect to surface, not
-    // a silent overwrite of history.
+  if (!canTransitionAttemptOutcome(held.outcome, outcome)) {
     throw new ApplicationError(
       "INTEGRITY_FAILURE",
-      "An effect attempt has more than one finalized outcome.",
-      { details: { attemptEntryId, existing: held.state.outcome, conflicting: outcome } },
+      "An effect attempt records an outcome transition the state machine forbids.",
+      { details: { attemptEntryId, existing: held.outcome, conflicting: outcome } },
     );
   }
-  attempts.set(attemptEntryId, {
-    resolved: true,
-    state: { ...held.state, outcome },
-  });
+  attempts.set(attemptEntryId, { ...held, outcome });
 }
 
 export type RetryDecision =
@@ -374,4 +425,46 @@ export async function reconcileExecutionEffect(
     transaction,
   );
   return finishFold(fold);
+}
+
+/**
+ * The current state of exactly one attempt, folded from the task's complete durable history.
+ *
+ * The whole history is walked — the deciding outcome may sit on any page — but only entries about
+ * this attempt are folded, so the answer costs a scan rather than a full projection. `null` means
+ * no such attempt exists in this task's history.
+ */
+export async function attemptOutcomeState(
+  ledger: ExecutionLedgerRepositoryPort,
+  taskId: TaskId,
+  attemptEntryId: string,
+  context: OperationContext,
+  transaction?: UnitOfWorkTransaction,
+): Promise<AttemptOutcome | null> {
+  const attempts = new Map<string, AttemptState>();
+  await scanTaskLedger(
+    ledger,
+    taskId,
+    context,
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.kind === "effect_attempt" && entry.id === attemptEntryId) {
+          attempts.set(entry.id, {
+            attemptEntryId: entry.id,
+            intentFingerprint: entry.intentFingerprint,
+            operationId: entry.operationId,
+            outcome: "unresolved",
+          });
+          continue;
+        }
+        const asserted = assertedAttemptOutcome(entry);
+        if (asserted !== null && asserted.attemptEntryId === attemptEntryId) {
+          advanceAttempt(attempts, attemptEntryId, asserted.outcome);
+        }
+      }
+      return "continue";
+    },
+    transaction,
+  );
+  return attempts.get(attemptEntryId)?.outcome ?? null;
 }

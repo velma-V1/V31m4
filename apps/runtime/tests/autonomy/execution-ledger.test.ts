@@ -30,7 +30,11 @@ import {
 } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteExecutionLedgerRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
-import { type EffectPostState, EffectReconciler } from "../../src/autonomy/effect-reconciler.js";
+import {
+  type EffectPostState,
+  type EffectPostStateProbe,
+  EffectReconciler,
+} from "../../src/autonomy/effect-reconciler.js";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
@@ -395,6 +399,386 @@ describe("append-only history", () => {
  * an edge could cross a task or job boundary, another job's outcome could finalize this job's
  * attempt, or a check could rest on history this task never produced.
  */
+/**
+ * An attempt moves along one canonical state machine, and the append path enforces it. Two
+ * properties matter most: no sequence it accepts may leave the history unreplayable, and an
+ * attempt that is merely unproven must stay reconcilable rather than being trapped for good.
+ */
+describe("attempt outcome transitions at the append boundary", () => {
+  const facts = [
+    {
+      resourceKind: "workspace_file",
+      locator: "target.ts",
+      fingerprint: ContentHash.parse(sha256Hex("after")),
+    },
+  ];
+  const ATTEMPT = "ledger:state-attempt";
+  let sequence = 0;
+
+  function deps() {
+    return { unitOfWork: database.unitOfWork, ledger };
+  }
+
+  async function seedAttempt(): Promise<void> {
+    sequence = 0;
+    await appendExecutionLedgerEntry(
+      deps(),
+      ExecutionLedgerEntry.create({
+        id: ATTEMPT,
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "attempting code.inspect",
+        kind: "effect_attempt",
+        intentFingerprint: ContentHash.parse(sha256Hex("a state intent")),
+        operationId: "code.inspect",
+        workspaceId: workspace.id,
+        sandboxId: sandbox.id,
+      }),
+      context,
+    );
+  }
+
+  /** Appends the entry that asserts `outcome` for the seeded attempt. */
+  function record(outcome: "failed" | "indeterminate" | "confirmed" | "not_applied") {
+    sequence += 1;
+    const kind =
+      outcome === "failed"
+        ? "failure"
+        : outcome === "confirmed"
+          ? "effect_confirmation"
+          : outcome === "not_applied"
+            ? "effect_nonapplication"
+            : "reconciliation_indeterminate";
+    return appendExecutionLedgerEntry(
+      deps(),
+      ExecutionLedgerEntry.create({
+        id: `ledger:state-${outcome}-${sequence}`,
+        taskId,
+        jobId,
+        recordedAt: `2026-08-26T00:00:0${sequence}.000Z`,
+        detail: `recording ${outcome}`,
+        kind,
+        attemptEntryId: ATTEMPT,
+        ...(outcome === "failed"
+          ? { reason: "the process died" }
+          : { facts: outcome === "indeterminate" ? [] : facts }),
+      }),
+      context,
+    );
+  }
+
+  async function outcomeOf(): Promise<string | undefined> {
+    return (await reconciler.projection(taskId, context)).attempts.find(
+      (candidate) => candidate.attemptEntryId === ATTEMPT,
+    )?.outcome;
+  }
+
+  it("settles a failed attempt once reality is observed, either way", async () => {
+    for (const settled of ["confirmed", "not_applied"] as const) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      await record("failed");
+      expect(await outcomeOf(), settled).toBe("failed");
+      await record(settled);
+      expect(await outcomeOf(), settled).toBe(settled);
+    }
+  });
+
+  it("settles an indeterminate attempt once reality is observed, either way", async () => {
+    for (const settled of ["confirmed", "not_applied"] as const) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      await record("indeterminate");
+      expect(await outcomeOf(), settled).toBe("indeterminate");
+      await record(settled);
+      expect(await outcomeOf(), settled).toBe(settled);
+    }
+  });
+
+  it("lets a failed attempt become indeterminate, but never the reverse", async () => {
+    await seedAttempt();
+    await record("failed");
+    await record("indeterminate");
+    expect(await outcomeOf()).toBe("indeterminate");
+    await expect(record("failed")).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("refuses every outcome once an attempt is confirmed", async () => {
+    for (const later of ["failed", "indeterminate", "not_applied"] as const) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      await record("confirmed");
+      await expect(record(later), later).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await outcomeOf(), later).toBe("confirmed");
+    }
+  });
+
+  it("refuses every outcome once an attempt is a verified non-application", async () => {
+    for (const later of ["confirmed", "failed", "indeterminate"] as const) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      await record("not_applied");
+      await expect(record(later), later).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await outcomeOf(), later).toBe("not_applied");
+    }
+  });
+
+  it("refuses a repeated status, so no-progress spam cannot manufacture history", async () => {
+    for (const repeated of ["failed", "indeterminate"] as const) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      await record(repeated);
+      await expect(record(repeated), repeated).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(await outcomeOf(), repeated).toBe(repeated);
+    }
+  });
+
+  it("keeps history replayable after every sequence the append path accepts", async () => {
+    // The defect this replaces: `failure` was not counted as a resolution at append time, so
+    // failure-then-confirmation was accepted and every later fold of that task threw.
+    const paths: readonly (readonly (
+      | "failed"
+      | "indeterminate"
+      | "confirmed"
+      | "not_applied"
+    )[])[] = [
+      ["failed", "confirmed"],
+      ["failed", "not_applied"],
+      ["failed", "indeterminate", "confirmed"],
+      ["failed", "indeterminate", "not_applied"],
+      ["indeterminate", "confirmed"],
+      ["indeterminate", "not_applied"],
+      ["confirmed"],
+      ["not_applied"],
+    ];
+    for (const path of paths) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedAttempt();
+      for (const step of path) await record(step);
+      // Folds cleanly, and ends exactly where the path said.
+      expect(await outcomeOf(), path.join(" -> ")).toBe(path[path.length - 1]);
+    }
+  });
+
+  it("still keeps a failed attempt blocking until it is settled", async () => {
+    await seedAttempt();
+    await record("failed");
+    const projection = await reconciler.projection(taskId, context);
+    expect(decideRetry(projection, ContentHash.parse(sha256Hex("a state intent"))).allowed).toBe(
+      false,
+    );
+    await record("not_applied");
+    // Only a verified non-application opens the way to a genuinely new attempt.
+    expect(
+      decideRetry(
+        await reconciler.projection(taskId, context),
+        ContentHash.parse(sha256Hex("a state intent")),
+      ).allowed,
+    ).toBe(true);
+  });
+});
+
+/**
+ * The way out of an unsettled attempt. It reads reality and writes what reality proves — it never
+ * runs the effect again, because the effect may already have landed.
+ */
+describe("reconciling an attempt without re-dispatching", () => {
+  async function attemptOnce(
+    probe: EffectPostStateProbe,
+  ): Promise<{ readonly attemptEntryId: string; readonly plan: ReturnType<typeof inspectPlan> }> {
+    const plan = inspectPlan();
+    const outcome = await reconciler.runGovernedEffect({ taskId, sandbox, plan, probe }, context);
+    return { attemptEntryId: outcome.attemptEntryId, plan };
+  }
+
+  function reconcile(attemptEntryId: string, probe: EffectPostStateProbe) {
+    // A fresh capability for the same intent: reconciliation is about the recorded attempt, not
+    // about spending an authorization to run anything.
+    return reconciler.reconcileAttempt(
+      { taskId, sandbox, plan: inspectPlan(), attemptEntryId, probe },
+      context,
+    );
+  }
+
+  it("settles an indeterminate attempt as confirmed, dispatching nothing", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    expect(dispatches).toBe(1);
+
+    const settled = await reconcile(attemptEntryId, appliedProbe);
+    expect(settled.outcome).toBe("confirmed");
+    expect(settled.outcomeKind).toBe("effect_confirmation");
+    // The whole point: reconciliation observed, it did not re-run.
+    expect(dispatches).toBe(1);
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts[0]?.outcome).toBe("confirmed");
+  });
+
+  it("settles an indeterminate attempt as a verified non-application, then permits a new try", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    const settled = await reconcile(attemptEntryId, notAppliedProbe);
+    expect(settled.outcome).toBe("not_applied");
+    expect(dispatches).toBe(1);
+
+    // Proof it never landed is what clears the way for a genuinely new attempt.
+    const retried = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+      context,
+    );
+    expect(retried.outcomeKind).toBe("effect_confirmation");
+    expect(retried.attemptEntryId).not.toBe(attemptEntryId);
+    expect(dispatches).toBe(2);
+  });
+
+  it("settles a failed attempt from observed reality", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    // Record a failure over the indeterminate attempt is forbidden, so seed the failed state on a
+    // second attempt instead: prove the same intent after a verified non-application.
+    await reconcile(attemptEntryId, notAppliedProbe);
+    const second = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: inspectPlan(), probe: unknownProbe },
+      context,
+    );
+    const settled = await reconcile(second.attemptEntryId, appliedProbe);
+    expect(settled.outcome).toBe("confirmed");
+    expect(dispatches).toBe(2);
+  });
+
+  it("writes nothing when reality is still unprovable and the attempt already says so", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    const before = await ledger.listForTask(taskId, { limit: 500 }, context);
+
+    const again = await reconcile(attemptEntryId, unknownProbe);
+    expect(again.outcomeEntryId).toBeNull();
+    expect(again.outcomeKind).toBeNull();
+    expect(again.outcome).toBe("indeterminate");
+    expect(again.reason).toMatch(/could not be read/u);
+
+    // No no-progress entry was appended, and the intent is still blocked.
+    const after = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(after.items).toHaveLength(before.items.length);
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("refuses to reconcile an attempt that has already settled", async () => {
+    const { attemptEntryId } = await attemptOnce(appliedProbe);
+    await expect(reconcile(attemptEntryId, notAppliedProbe)).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(dispatches).toBe(1);
+  });
+
+  it("refuses an attempt that does not exist, or one describing a different effect", async () => {
+    await expect(reconcile("ledger:nowhere", appliedProbe)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    const otherPlan = boundary.authorize({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      // A different path scope is a different intent.
+      parameters: { pathScope: ["other.ts"] },
+    });
+    await expect(
+      reconciler.reconcileAttempt(
+        { taskId, sandbox, plan: otherPlan, attemptEntryId, probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+  });
+
+  it("refuses a reconciliation whose scoped identity disagrees, writing nothing", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    const before = await ledger.listForTask(taskId, { limit: 500 }, context);
+    await expect(
+      reconciler.reconcileAttempt(
+        {
+          taskId: TaskId.parse("task:other"),
+          sandbox,
+          plan: inspectPlan(),
+          attemptEntryId,
+          probe: appliedProbe,
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    const after = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(after.items).toHaveLength(before.items.length);
+    expect(dispatches).toBe(1);
+  });
+
+  it("lets exactly one of two concurrent terminal reconciliations win", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    const outcomes = await Promise.allSettled([
+      reconcile(attemptEntryId, appliedProbe),
+      reconcile(attemptEntryId, notAppliedProbe),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const loser = outcomes.find(
+      (outcome) => outcome.status === "rejected",
+    ) as PromiseRejectedResult;
+    expect((loser.reason as ApplicationError).code).toBe("CONFLICT");
+
+    // Exactly one terminal outcome exists, and the history still folds.
+    const page = await ledger.listForTask(taskId, { limit: 500 }, context);
+    const terminals = page.items.filter(
+      (item) => item.kind === "effect_confirmation" || item.kind === "effect_nonapplication",
+    );
+    expect(terminals).toHaveLength(1);
+    const projection = await reconciler.projection(taskId, context);
+    expect(["confirmed", "not_applied"]).toContain(projection.attempts[0]?.outcome);
+    expect(dispatches).toBe(1);
+  });
+
+  it("keeps an indeterminate attempt reconcilable across a restart", async () => {
+    const { attemptEntryId } = await attemptOnce(unknownProbe);
+    database.close();
+
+    const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
+    database = new SqliteRuntimeDatabase(databasePath);
+    await wire(database);
+
+    // Still blocking after the restart...
+    const recovered = await reconciler.projection(taskId, context);
+    expect(recovered.attempts[0]?.outcome).toBe("indeterminate");
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // ...and still settleable, which is exactly what a permanent trap would not be.
+    const dispatchesBefore = dispatches;
+    const settled = await reconcile(attemptEntryId, appliedProbe);
+    expect(settled.outcome).toBe("confirmed");
+    expect(dispatches).toBe(dispatchesBefore);
+  });
+});
+
 describe("references may not cross scope", () => {
   const facts = [
     {
@@ -997,6 +1381,32 @@ describe("decisions read the whole ledger", () => {
         "target.ts": ContentHash.parse(sha256Hex("source-after")),
       }),
     ).toBe(false);
+  });
+
+  it("finds and settles an attempt whose state lives past the page boundary", async () => {
+    // The attempt and its indeterminate record sit before 500 filler entries, so both the
+    // reconciliation pre-check and the append-time transition check must read the whole history.
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: inspectPlan(), probe: unknownProbe },
+      context,
+    );
+    await fillHistory(LONG_HISTORY);
+    expect((await ledger.listForTask(taskId, { limit: 500 }, context)).nextCursor).toBe("500");
+
+    const settled = await reconciler.reconcileAttempt(
+      {
+        taskId,
+        sandbox,
+        plan: inspectPlan(),
+        attemptEntryId: outcome.attemptEntryId,
+        probe: appliedProbe,
+      },
+      context,
+    );
+    expect(settled.outcome).toBe("confirmed");
+    expect(dispatches).toBe(1);
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts[0]?.outcome).toBe("confirmed");
   });
 
   it("keeps a >500-entry history blocking under two concurrent identical intents", async () => {

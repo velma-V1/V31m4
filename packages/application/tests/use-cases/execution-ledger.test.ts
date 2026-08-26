@@ -7,8 +7,12 @@ import {
 import { describe, expect, it } from "vitest";
 import { ApplicationError } from "../../src/application-errors.js";
 import {
+  type AttemptOutcome,
+  assertedAttemptOutcome,
+  canTransitionAttemptOutcome,
   decideRetry,
   isEntryStillValid,
+  isTerminalAttemptOutcome,
   projectLedger,
   reconcileExecutionEffect,
 } from "../../src/use-cases/reconcile-execution-effect.js";
@@ -112,6 +116,118 @@ describe("ledger projection", () => {
   });
 });
 
+/**
+ * One canonical state machine governs what an attempt's recorded outcome may become. `unresolved`,
+ * `failed`, and `indeterminate` all block another try at the same intent while still being open to
+ * being settled; `confirmed` and `not_applied` are terminal.
+ */
+describe("attempt outcome state machine", () => {
+  const ALL: readonly AttemptOutcome[] = [
+    "unresolved",
+    "failed",
+    "indeterminate",
+    "confirmed",
+    "not_applied",
+  ];
+
+  const EXPECTED: Readonly<Record<AttemptOutcome, readonly AttemptOutcome[]>> = {
+    unresolved: ["failed", "indeterminate", "confirmed", "not_applied"],
+    failed: ["indeterminate", "confirmed", "not_applied"],
+    indeterminate: ["confirmed", "not_applied"],
+    confirmed: [],
+    not_applied: [],
+  };
+
+  it("permits exactly the canonical transitions and nothing else", () => {
+    for (const from of ALL) {
+      for (const to of ALL) {
+        expect(canTransitionAttemptOutcome(from, to), `${from} -> ${to}`).toBe(
+          EXPECTED[from].includes(to),
+        );
+      }
+    }
+  });
+
+  it("has no self-transition, so repeating a status is never progress", () => {
+    for (const outcome of ALL) {
+      expect(canTransitionAttemptOutcome(outcome, outcome), outcome).toBe(false);
+    }
+  });
+
+  it("treats confirmed and not_applied as terminal and the rest as reconcilable", () => {
+    expect(ALL.filter((outcome) => isTerminalAttemptOutcome(outcome))).toEqual([
+      "confirmed",
+      "not_applied",
+    ]);
+  });
+
+  it("reads the outcome an entry asserts, and ignores a failure that names no attempt", () => {
+    const cases = [
+      ["effect_confirmation", "confirmed"],
+      ["effect_nonapplication", "not_applied"],
+      ["reconciliation_indeterminate", "indeterminate"],
+    ] as const;
+    for (const [kind, outcome] of cases) {
+      const asserted = assertedAttemptOutcome(
+        entry({
+          kind,
+          attemptEntryId: "ledger:a",
+          facts: kind === "reconciliation_indeterminate" ? [] : facts,
+        }),
+      );
+      expect(asserted, kind).toEqual({ attemptEntryId: "ledger:a", outcome });
+    }
+    expect(
+      assertedAttemptOutcome(
+        entry({ kind: "failure", attemptEntryId: "ledger:a", reason: "the process died" }),
+      ),
+    ).toEqual({ attemptEntryId: "ledger:a", outcome: "failed" });
+    // Ordinary failure history, not an attempt outcome.
+    expect(
+      assertedAttemptOutcome(entry({ kind: "failure", reason: "the workspace vanished" })),
+    ).toBeNull();
+    expect(assertedAttemptOutcome(entry({ kind: "observation", facts }))).toBeNull();
+  });
+
+  it("folds every legal sequence without ever becoming unfollowable", () => {
+    const outcomeEntry = (outcome: AttemptOutcome) =>
+      outcome === "failed"
+        ? entry({ kind: "failure", attemptEntryId: "ledger:a", reason: "the process died" })
+        : entry({
+            kind:
+              outcome === "confirmed"
+                ? "effect_confirmation"
+                : outcome === "not_applied"
+                  ? "effect_nonapplication"
+                  : "reconciliation_indeterminate",
+            attemptEntryId: "ledger:a",
+            facts: outcome === "indeterminate" ? [] : facts,
+          });
+
+    // Every path of length 1 and 2 the machine allows must fold, and end in the state it names.
+    for (const first of EXPECTED.unresolved) {
+      const one = projectLedger([attempt("ledger:a"), outcomeEntry(first)]);
+      expect(one.attempts[0]?.outcome, first).toBe(first);
+      for (const second of EXPECTED[first]) {
+        const two = projectLedger([attempt("ledger:a"), outcomeEntry(first), outcomeEntry(second)]);
+        expect(two.attempts[0]?.outcome, `${first} -> ${second}`).toBe(second);
+      }
+    }
+  });
+
+  it("surfaces a forbidden transition in stored history as an integrity failure", () => {
+    // Only reachable through corrupted or hand-edited storage: the append path validates the same
+    // table, so nothing it accepted can land here.
+    expect(() =>
+      projectLedger([
+        attempt("ledger:a"),
+        entry({ kind: "effect_confirmation", attemptEntryId: "ledger:a", facts }),
+        entry({ kind: "failure", attemptEntryId: "ledger:a", reason: "a rewritten past" }),
+      ]),
+    ).toThrow(ApplicationError);
+  });
+});
+
 describe("retry decisions", () => {
   it("allows an intent that was never attempted", () => {
     expect(decideRetry(projectLedger([]), INTENT).allowed).toBe(true);
@@ -175,6 +291,41 @@ describe("retry decisions", () => {
   it("does not confuse a different intent with this one", () => {
     const projection = projectLedger([attempt("ledger:a", hash("some other work"))]);
     expect(decideRetry(projection, INTENT).allowed).toBe(true);
+  });
+
+  it("blocks on every state except a verified non-application", () => {
+    // The whole point of the reconcilable/terminal split: `failed` and `indeterminate` still block
+    // a retry, even though they can later be settled. Only proof the effect did *not* land clears
+    // the way for a new attempt.
+    const cases: readonly (readonly [AttemptOutcome, boolean])[] = [
+      ["unresolved", false],
+      ["failed", false],
+      ["indeterminate", false],
+      ["confirmed", false],
+      ["not_applied", true],
+    ];
+    for (const [outcome, allowed] of cases) {
+      const history = [attempt("ledger:a")];
+      if (outcome === "failed") {
+        history.push(
+          entry({ kind: "failure", attemptEntryId: "ledger:a", reason: "the process died" }),
+        );
+      } else if (outcome !== "unresolved") {
+        history.push(
+          entry({
+            kind:
+              outcome === "confirmed"
+                ? "effect_confirmation"
+                : outcome === "not_applied"
+                  ? "effect_nonapplication"
+                  : "reconciliation_indeterminate",
+            attemptEntryId: "ledger:a",
+            facts: outcome === "indeterminate" ? [] : facts,
+          }),
+        );
+      }
+      expect(decideRetry(projectLedger(history), INTENT).allowed, outcome).toBe(allowed);
+    }
   });
 
   it("keeps blocking after a duplicate concurrent attempt is recorded", () => {

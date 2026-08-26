@@ -1,9 +1,12 @@
 import {
   ApplicationError,
+  type AttemptOutcome,
   type AuthorizedSemanticExecutionPlan,
   appendExecutionLedgerEntry,
+  canTransitionAttemptOutcome,
   decideRetry,
   type ExecutionLedgerRepositoryPort,
+  isTerminalAttemptOutcome,
   type LedgerProjection,
   type OperationContext,
   reconcileExecutionEffect,
@@ -70,15 +73,47 @@ export interface GovernedEffectRequest {
   readonly probe: EffectPostStateProbe;
 }
 
+export type EffectOutcomeKind =
+  | "effect_confirmation"
+  | "effect_nonapplication"
+  | "reconciliation_indeterminate";
+
 export interface GovernedEffectOutcome {
   readonly attemptEntryId: string;
   readonly outcomeEntryId: string;
-  readonly outcomeKind:
-    | "effect_confirmation"
-    | "effect_nonapplication"
-    | "reconciliation_indeterminate";
+  readonly outcomeKind: EffectOutcomeKind;
   readonly result: SandboxExecutionResult | null;
 }
+
+/** Settling an attempt that already happened. There is no sandbox dispatch on this path. */
+export interface EffectReconciliationRequest extends GovernedEffectRequest {
+  readonly attemptEntryId: string;
+}
+
+export interface EffectReconciliationResult {
+  readonly attemptEntryId: string;
+  /** The attempt's state after this reconciliation. */
+  readonly outcome: AttemptOutcome;
+  /** The entry appended, or `null` when reality stayed unprovable and nothing changed. */
+  readonly outcomeEntryId: string | null;
+  readonly outcomeKind: EffectOutcomeKind | null;
+  /** Why nothing was written, when nothing was. */
+  readonly reason: string | null;
+}
+
+const OUTCOME_FOR_POST_STATE: Readonly<Record<EffectPostState["kind"], AttemptOutcome>> =
+  Object.freeze({
+    applied: "confirmed",
+    not_applied: "not_applied",
+    unknown: "indeterminate",
+  });
+
+const LEDGER_KIND_FOR_POST_STATE: Readonly<Record<EffectPostState["kind"], EffectOutcomeKind>> =
+  Object.freeze({
+    applied: "effect_confirmation",
+    not_applied: "effect_nonapplication",
+    unknown: "reconciliation_indeterminate",
+  });
 
 export class EffectReconciler {
   constructor(private readonly dependencies: EffectReconcilerDependencies) {}
@@ -272,5 +307,122 @@ export class EffectReconciler {
       outcomeKind,
       result,
     });
+  }
+
+  /**
+   * Settles an effect that was already attempted, from observed reality alone.
+   *
+   * This is the way out of a blocking-but-unsettled attempt — `unresolved`, `failed`, or
+   * `indeterminate`. It **never dispatches**: the effect may already have landed, and running it
+   * again to find out would be the duplicate the ledger exists to prevent. The caller's probe
+   * inspects the world, and only what the probe can actually prove is written down. A process
+   * exit, an exception, or a timeout is not proof of non-application, which is why the probe — not
+   * the dispatch history — decides.
+   *
+   * When reality is still unprovable, an attempt that has not yet been recorded as indeterminate
+   * becomes indeterminate, and one that already is stays exactly as it is: repeating a status is
+   * not progress and is never written. Nothing here consults a model.
+   */
+  async reconcileAttempt(
+    request: EffectReconciliationRequest,
+    context: OperationContext,
+  ): Promise<EffectReconciliationResult> {
+    const { plan, taskId, attemptEntryId } = request;
+    this.assertScopedIdentity(request);
+
+    const before = await this.requireReconcilableAttempt(request, context);
+
+    // Observation happens outside any transaction — it is external execution, and Layer 7 forbids
+    // that inside one. The append below re-reads the attempt's committed state, so a racing
+    // reconciliation cannot slip a second terminal outcome in behind this probe.
+    const post = await this.observePostState(request, null, context);
+    const outcome = OUTCOME_FOR_POST_STATE[post.kind];
+
+    if (!canTransitionAttemptOutcome(before, outcome)) {
+      // `requireReconcilableAttempt` already refused every terminal state, and both terminal
+      // outcomes are reachable from all three reconcilable ones. So this is exactly one case:
+      // still unprovable, and already on record as unprovable. Saying so beats appending a
+      // no-progress entry that would only pad history.
+      return Object.freeze({
+        attemptEntryId,
+        // The state as this reconciliation observed it; nothing here changed it.
+        outcome: before,
+        outcomeEntryId: null,
+        outcomeKind: null,
+        reason: post.kind === "unknown" ? post.reason : `already recorded as ${before}`,
+      });
+    }
+
+    const outcomeKind = LEDGER_KIND_FOR_POST_STATE[post.kind];
+    const entry = ExecutionLedgerEntry.create({
+      id: this.dependencies.generateEntryId(),
+      taskId,
+      jobId: plan.jobId,
+      recordedAt: this.dependencies.now(),
+      attemptEntryId,
+      kind: outcomeKind,
+      facts: post.kind === "unknown" ? [] : post.facts,
+      detail:
+        post.kind === "unknown"
+          ? `${plan.operationId} still could not be proved applied or unapplied: ${post.reason}`
+          : `${plan.operationId} reconciled as ${post.kind} without re-dispatching`,
+    });
+    // One transaction: the append path folds the attempt's committed state and validates the
+    // transition before writing, so exactly one of two concurrent reconciliations can win and the
+    // loser gets a deterministic conflict.
+    await this.dependencies.unitOfWork.execute(context, async (transaction) => {
+      await appendExecutionLedgerEntry(this.dependencies, entry, context, transaction);
+    });
+
+    return Object.freeze({
+      attemptEntryId,
+      outcome,
+      outcomeEntryId: entry.id,
+      outcomeKind,
+      reason: null,
+    });
+  }
+
+  /**
+   * The attempt must exist in this task's durable history, describe this exact plan's intent, and
+   * still be open to being settled. Anything else is a deterministic conflict before any
+   * observation is made.
+   */
+  private async requireReconcilableAttempt(
+    request: EffectReconciliationRequest,
+    context: OperationContext,
+  ): Promise<AttemptOutcome> {
+    const projection = await this.projection(request.taskId, context);
+    const attempt = projection.attempts.find(
+      (candidate) => candidate.attemptEntryId === request.attemptEntryId,
+    );
+    if (attempt === undefined) {
+      throw new ApplicationError(
+        "NOT_FOUND",
+        "There is no such effect attempt in this task's history.",
+        { details: { taskId: request.taskId, attemptEntryId: request.attemptEntryId } },
+      );
+    }
+    if (attempt.intentFingerprint !== this.intentFingerprintFor(request.plan)) {
+      throw new ApplicationError(
+        "INVALID_APPLICATION_INPUT",
+        "The attempt being reconciled describes a different effect than this authorization.",
+        {
+          details: {
+            attemptEntryId: request.attemptEntryId,
+            attemptOperationId: attempt.operationId,
+            planOperationId: request.plan.operationId,
+          },
+        },
+      );
+    }
+    if (isTerminalAttemptOutcome(attempt.outcome)) {
+      throw new ApplicationError(
+        "CONFLICT",
+        "This effect attempt has already settled and cannot be reconciled again.",
+        { details: { attemptEntryId: request.attemptEntryId, outcome: attempt.outcome } },
+      );
+    }
+    return attempt.outcome;
   }
 }

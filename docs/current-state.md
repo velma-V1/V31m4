@@ -212,8 +212,33 @@ This file is a concise operational handoff for future Claude Code sessions. It r
       at append time: outcome/failure/check/invalidation references must all resolve inside the
       same task **and** job, and an invalidation may only name a fact-bearing entry — so it can
       never be aimed at an effect attempt.
-  - Gate after round 2: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **822 passing / 16 skipped / 6 todo (844) across 124
+  - **Round 3 (independent re-review of `74f6e31`, Task 3 only).** Two further HIGH findings, both
+    reproduced against the committed code before any repair and both repaired by replacing the
+    ad-hoc outcome checks with one canonical attempt-outcome state machine:
+    - **T3-5 — a `failure` could create a second resolution.** The fold treated a failure naming an
+      attempt as resolving it, but the append-time conflict check considered only the three
+      `effect_*`/`reconciliation_*` kinds. So `failure → confirmation`, `confirmation → failure`,
+      and `failure → failure` were all accepted, and every later fold of that task threw
+      `INTEGRITY_FAILURE` — an accepted append permanently bricked the task's history, since even
+      claiming a new intent folds first.
+    - **T3-6 — an indeterminate attempt could never be reconciled.** `reconciliation_indeterminate`
+      marked the attempt resolved, and append then refused any later confirmation or
+      non-application. An effect whose reality became observable after a crash was therefore
+      blocked for ever, contradicting the canonical invariant that unknown effects block retry
+      *until reconciled*.
+    - **The repair.** `unresolved`, `failed`, and `indeterminate` all block a retry but stay
+      reconcilable; `confirmed` and `not_applied` are terminal. Transitions are
+      `unresolved → {failed, indeterminate, confirmed, not_applied}`,
+      `failed → {indeterminate, confirmed, not_applied}`, `indeterminate → {confirmed,
+      not_applied}`, and nothing leaves a terminal state. There is no self-transition, so a
+      repeated status can never be used to manufacture history. The append path and the fold share
+      one table, so every accepted sequence folds and a forbidden stored transition is corruption.
+      A new `EffectReconciler.reconcileAttempt` settles an already-attempted effect from a probe's
+      observation with **zero** sandbox dispatches, validates the transition inside the
+      authoritative transaction so exactly one of two concurrent reconciliations wins, and writes
+      nothing when reality is still unprovable and already on record as such.
+  - Gate after round 3: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **847 passing / 16 skipped / 6 todo (869) across 124
     passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 2 or Task 3 gate.
 
