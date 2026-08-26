@@ -14,6 +14,21 @@
 const LOOPBACK_INTERFACE = "lo";
 /** `/proc/net/route` renders addresses and masks as 8 hex digits, little-endian. */
 const UNSPECIFIED_ADDRESS = "00000000";
+const ROUTE_HEADER = Object.freeze([
+  "Iface",
+  "Destination",
+  "Gateway",
+  "Flags",
+  "RefCnt",
+  "Use",
+  "Metric",
+  "Mask",
+  "MTU",
+  "Window",
+  "IRTT",
+]);
+const INTERFACE_NAME = /^[A-Za-z0-9_.:-]+$/u;
+const ROUTE_HEX = /^[A-Fa-f0-9]{8}$/u;
 
 export interface RouteEntry {
   readonly interfaceName: string;
@@ -68,18 +83,30 @@ export function parseRoutingTable(procNetRoute: string): readonly RouteEntry[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const header = lines[0];
-  if (header === undefined || !header.startsWith("Iface")) {
+  const header = lines[0]?.split(/\s+/u);
+  if (
+    header === undefined ||
+    header.length !== ROUTE_HEADER.length ||
+    header.some((field, index) => field !== ROUTE_HEADER[index])
+  ) {
     throw new Error("Routing table observation is missing its header; the table was not read.");
   }
   return Object.freeze(
     lines.slice(1).map((line) => {
       const fields = line.split(/\s+/u);
-      if (fields.length < 8) {
+      if (fields.length !== ROUTE_HEADER.length) {
         throw new Error(`Malformed routing table record: ${line}`);
       }
       const [interfaceName, destination, gateway] = fields as [string, string, string, ...string[]];
       const mask = fields[7] as string;
+      if (
+        !INTERFACE_NAME.test(interfaceName) ||
+        !ROUTE_HEX.test(destination) ||
+        !ROUTE_HEX.test(gateway) ||
+        !ROUTE_HEX.test(mask)
+      ) {
+        throw new Error(`Malformed routing table record: ${line}`);
+      }
       return Object.freeze({
         interfaceName,
         destination,

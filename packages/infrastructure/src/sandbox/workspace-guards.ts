@@ -268,7 +268,7 @@ async function containedDirectory(workspaceRoot: string, directory: string): Pro
 }
 
 /** The assigned workspace must be a real, absolute directory before anything runs. */
-export async function assertExistingDirectory(path: string): Promise<void> {
+export async function assertExistingDirectory(path: string): Promise<string> {
   if (!isAbsolute(path)) {
     throw new ApplicationError("PERMISSION_DENIED", "A workspace root must be an absolute path.", {
       details: { path },
@@ -280,4 +280,5 @@ export async function assertExistingDirectory(path: string): Promise<void> {
       details: { path },
     });
   }
+  return realpath(path);
 }

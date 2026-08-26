@@ -1,7 +1,7 @@
 import type { JobId, SandboxId, TaskId } from "@v31m4/domain";
 import { ApplicationError } from "../application-errors.js";
 import { type ApplicationJsonObject, cloneAndFreezeApplicationJson } from "../application-json.js";
-import type { PolicyDecision } from "./policy-engine.port.js";
+import type { PolicyResult } from "./policy-engine.port.js";
 import type { SandboxHandle } from "./sandbox.port.js";
 import type { WorkspaceHandle } from "./workspace-manager.port.js";
 
@@ -45,16 +45,33 @@ export interface SandboxCommand {
 export interface SemanticOperationContract {
   readonly operationId: string;
   readonly effectClass: SandboxEffectClass;
+  readonly riskClass: "low" | "moderate" | "high" | "critical";
   readonly sandboxRequirement: "none" | "required";
   readonly allowedRoles: readonly string[];
+  readonly evidencePreconditionPolicyId: string;
+  readonly resourcePolicy: SemanticResourcePolicy;
   /** True only for the explicit raw escape hatch (`command.run`). */
   readonly allowsCallerSuppliedCommand: boolean;
+}
+
+/** Canonical per-operation ceilings copied from the runtime-owned semantic catalog. */
+export interface SemanticResourcePolicy {
+  readonly maxWallClockMs: number;
+  readonly maxOutputBytes: number;
+  readonly maxConcurrent: number;
+}
+
+/** Policy provenance sealed into the execution capability after a real engine decision. */
+export interface SemanticPolicyGrant {
+  readonly decision: "allow";
+  readonly policyId: string;
+  readonly expiresAt?: string;
 }
 
 export interface SemanticExecutionAuthorizationInput {
   readonly contract: SemanticOperationContract;
   readonly role: string;
-  readonly policyDecision: PolicyDecision;
+  readonly policyGrant: PolicyResult;
   readonly taskId: TaskId;
   readonly jobId: JobId;
   readonly workspace: WorkspaceHandle;
@@ -116,6 +133,10 @@ export class AuthorizedSemanticExecutionPlan {
   readonly issuedAt: string;
   readonly operationId: string;
   readonly effectClass: SandboxEffectClass;
+  readonly riskClass: SemanticOperationContract["riskClass"];
+  readonly evidencePreconditionPolicyId: string;
+  readonly resourcePolicy: SemanticResourcePolicy;
+  readonly policyGrant: SemanticPolicyGrant;
   readonly taskId: TaskId;
   readonly jobId: JobId;
   readonly workspaceId: string;
@@ -142,6 +163,16 @@ export class AuthorizedSemanticExecutionPlan {
     this.issuedAt = issuedAt;
     this.operationId = input.contract.operationId;
     this.effectClass = input.contract.effectClass;
+    this.riskClass = input.contract.riskClass;
+    this.evidencePreconditionPolicyId = input.contract.evidencePreconditionPolicyId;
+    this.resourcePolicy = Object.freeze({ ...input.contract.resourcePolicy });
+    this.policyGrant = Object.freeze({
+      decision: "allow" as const,
+      policyId: input.policyGrant.policyId,
+      ...(input.policyGrant.expiresAt === undefined
+        ? {}
+        : { expiresAt: input.policyGrant.expiresAt }),
+    });
     this.taskId = input.taskId;
     this.jobId = input.jobId;
     this.workspaceId = input.workspace.id;
@@ -202,12 +233,13 @@ export function createSemanticExecutionAuthority(
 
   return Object.freeze({
     mint(input: SemanticExecutionAuthorizationInput): AuthorizedSemanticExecutionPlan {
-      assertExecutionPreconditions(input);
+      const issuedAt = options.now();
+      assertExecutionPreconditions(input, issuedAt);
       const plan = new AuthorizedSemanticExecutionPlan(
         PLAN_CONSTRUCTION_TOKEN,
         input,
         options.generateExecutionPlanId(),
-        options.now(),
+        issuedAt,
       );
       minted.add(plan);
       return plan;
@@ -221,6 +253,7 @@ export function createSemanticExecutionAuthority(
           {},
         );
       }
+      assertPolicyGrantCurrent(plan.policyGrant, options.now());
       return plan;
     },
 
@@ -232,6 +265,7 @@ export function createSemanticExecutionAuthority(
           {},
         );
       }
+      assertPolicyGrantCurrent(plan.policyGrant, options.now());
       if (consumed.has(plan)) {
         throw new ApplicationError(
           "PERMISSION_DENIED",
@@ -250,25 +284,41 @@ export function createSemanticExecutionAuthority(
  * for anything that is not a pure read — a prepared sandbox belonging to this exact task, job,
  * and workspace. A command may only be present in the shapes the operation permits.
  */
-function assertExecutionPreconditions(input: SemanticExecutionAuthorizationInput): void {
+function assertExecutionPreconditions(
+  input: SemanticExecutionAuthorizationInput,
+  now: string,
+): void {
   const { contract, sandbox, workspace } = input;
   assertAuthorization(
     contract.allowedRoles.includes(input.role),
     "The requested semantic operation is not permitted for this role.",
     { operationId: contract.operationId, role: input.role },
   );
-  if (input.policyDecision === "require_approval") {
+  if (input.policyGrant.decision === "require_approval") {
     throw new ApplicationError(
       "APPROVAL_REQUIRED",
       "The semantic operation requires a governed approval before it can execute.",
       { details: { operationId: contract.operationId } },
     );
   }
-  if (input.policyDecision !== "allow") {
+  if (input.policyGrant.decision !== "allow") {
     throw new ApplicationError("POLICY_REJECTED", "Policy denied the semantic operation.", {
-      details: { operationId: contract.operationId, decision: input.policyDecision },
+      details: { operationId: contract.operationId, decision: input.policyGrant.decision },
     });
   }
+  assertAuthorization(
+    typeof input.policyGrant.policyId === "string" && input.policyGrant.policyId.length > 0,
+    "A semantic execution requires policy provenance from the canonical policy engine.",
+    { operationId: contract.operationId },
+  );
+  assertPolicyGrantCurrent(input.policyGrant, now);
+  assertResourcePolicy(contract.resourcePolicy, contract.operationId);
+  assertAuthorization(
+    typeof contract.evidencePreconditionPolicyId === "string" &&
+      contract.evidencePreconditionPolicyId.length > 0,
+    "A semantic execution must preserve its canonical evidence-precondition policy identifier.",
+    { operationId: contract.operationId },
+  );
   assertAuthorization(
     workspace.id.length > 0 && workspace.status === "active",
     "A semantic operation runs only inside an active workspace assigned by WorkspaceManagerPort.",
@@ -286,7 +336,7 @@ function assertExecutionPreconditions(input: SemanticExecutionAuthorizationInput
       sandbox.workspaceId === workspace.id &&
         sandbox.taskId === input.taskId &&
         sandbox.jobId === input.jobId &&
-        sandbox.status !== "stopped",
+        sandbox.status === "ready",
       "The sandbox is not bound to this task, job, and workspace.",
       { operationId: contract.operationId, sandboxId: sandbox.id, workspaceId: workspace.id },
     );
@@ -302,6 +352,33 @@ function assertExecutionPreconditions(input: SemanticExecutionAuthorizationInput
         input.command.arguments.every((value) => typeof value === "string"),
       "Authorized command arguments must be an array of strings.",
       { operationId: contract.operationId },
+    );
+  }
+}
+
+function assertPolicyGrantCurrent(
+  grant: Pick<PolicyResult, "policyId" | "expiresAt">,
+  now: string,
+): void {
+  const nowMs = Date.parse(now);
+  assertAuthorization(Number.isFinite(nowMs), "The authorization clock returned an invalid time.", {
+    now,
+  });
+  if (grant.expiresAt === undefined) return;
+  const expiresAtMs = Date.parse(grant.expiresAt);
+  assertAuthorization(
+    Number.isFinite(expiresAtMs) && expiresAtMs > nowMs,
+    "The policy grant is malformed or expired and cannot authorize execution.",
+    { policyId: grant.policyId, expiresAt: grant.expiresAt, now },
+  );
+}
+
+function assertResourcePolicy(policy: SemanticResourcePolicy, operationId: string): void {
+  for (const [name, value] of Object.entries(policy)) {
+    assertAuthorization(
+      Number.isSafeInteger(value) && value > 0,
+      "A semantic operation resource policy must contain positive integer ceilings.",
+      { operationId, resourceLimit: name, value },
     );
   }
 }

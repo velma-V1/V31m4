@@ -130,6 +130,7 @@ export class SandboxSupervisor implements SandboxPort {
   readonly #options: SandboxSupervisorOptions;
   readonly #allowed: ReadonlySet<string>;
   readonly #sandboxes = new Map<string, SandboxEntry>();
+  readonly #preparingSandboxIds = new Set<string>();
 
   constructor(options: SandboxSupervisorOptions) {
     this.#options = options;
@@ -171,10 +172,17 @@ export class SandboxSupervisor implements SandboxPort {
       );
     }
 
-    const workspaceRoot = await this.#options.resolveWorkspaceRoot(authoritative.id);
-    await assertExistingDirectory(workspaceRoot);
+    const resolvedWorkspaceRoot = await this.#options.resolveWorkspaceRoot(authoritative.id);
+    const workspaceRoot = await assertExistingDirectory(resolvedWorkspaceRoot);
 
     const sandboxId = SandboxId.parse(this.#options.generateSandboxId());
+    if (this.#sandboxes.has(sandboxId) || this.#preparingSandboxIds.has(sandboxId)) {
+      throw new ApplicationError(
+        "CONFLICT",
+        "The generated SandboxId already has authoritative lifecycle state.",
+        { details: { sandboxId } },
+      );
+    }
     const spec: SandboxExecutionSpec = Object.freeze({
       sandboxId,
       taskId,
@@ -188,10 +196,15 @@ export class SandboxSupervisor implements SandboxPort {
         nextContent: string | Uint8Array,
       ) => compareAndApply(workspaceRoot, precondition, nextContent),
     });
-    await this.#options.backend.prepare(spec, context);
-    const handle = freezeHandle(spec, this.#options.backend.id, "ready");
-    this.#sandboxes.set(sandboxId, { handle, spec, preparedWorkspace: authoritative });
-    return handle;
+    this.#preparingSandboxIds.add(sandboxId);
+    try {
+      await this.#options.backend.prepare(spec, context);
+      const handle = freezeHandle(spec, this.#options.backend.id, "ready");
+      this.#sandboxes.set(sandboxId, { handle, spec, preparedWorkspace: authoritative });
+      return handle;
+    } finally {
+      this.#preparingSandboxIds.delete(sandboxId);
+    }
   }
 
   async execute(
@@ -202,10 +215,14 @@ export class SandboxSupervisor implements SandboxPort {
     // Identity, not shape: only a capability this sandbox's paired boundary minted is accepted.
     const verified = this.#options.capabilities.verify(plan);
     const entry = this.#require(sandbox.id);
-    if (entry.handle.status === "stopped") {
-      throw new ApplicationError("PERMISSION_DENIED", "The sandbox has been stopped.", {
-        details: { sandboxId: sandbox.id },
-      });
+    if (entry.handle.status !== "ready") {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "A sandbox accepts a new ordinary effect only while its authoritative state is ready.",
+        {
+          details: { sandboxId: sandbox.id, status: entry.handle.status },
+        },
+      );
     }
     // The authorization is bound to one sandbox, task, job, and workspace. A plan issued for
     // anything else cannot be replayed here.
@@ -242,16 +259,24 @@ export class SandboxSupervisor implements SandboxPort {
     // retried on the same authority.
     this.#options.capabilities.consume(verified);
 
+    // Claim the sandbox synchronously before the first await. A concurrent cancel/destroy must
+    // not erase or clean lifecycle state while this execution is still entering dispatch.
+    this.#setStatus(entry, "running");
+
     // Take the execution lease and re-read the *authoritative* workspace. Neither the caller's
     // handle nor the prepare-time record is execution authority: a workspace sealed, discarded,
     // or replaced since then must stop the effect before dispatch, and the lease keeps a seal
     // from landing between this check and the backend call.
-    const { workspace: authoritative, lease } = await this.#options.workspaces.beginExecution(
-      entry.spec.workspaceId,
-      entry.spec.sandboxId,
-      context,
-    );
+    let lease: { release(): void } | undefined;
+    let dispatched = false;
     try {
+      const execution = await this.#options.workspaces.beginExecution(
+        entry.spec.workspaceId,
+        entry.spec.sandboxId,
+        context,
+      );
+      lease = execution.lease;
+      const authoritative = execution.workspace;
       assertWorkspaceIdentityUnchanged(
         authoritative,
         entry.preparedWorkspace,
@@ -263,18 +288,21 @@ export class SandboxSupervisor implements SandboxPort {
       // Re-verify the workspace facts this execution depends on. Authorization-time validation
       // leaves a window in which the workspace moves on and a stale effect still runs.
       await assertWorkspaceStillCurrent(entry.spec.workspaceRoot, verified);
-    } catch (error) {
-      // Refused before dispatch: nothing ran, so the sandbox itself is not degraded.
-      lease.release();
-      throw error;
-    }
 
-    try {
-      this.#setStatus(entry, "running");
+      // Workspace validation contains asynchronous filesystem and authority reads. Re-verify the
+      // issuer and policy expiry at the final synchronous edge after those awaits and before the
+      // backend can observe the plan.
+      this.#options.capabilities.verify(verified);
+      dispatched = true;
       const result = await this.#options.backend.execute(entry.spec, verified, context);
       this.#setStatus(entry, "ready");
       return result;
     } catch (error) {
+      if (!dispatched) {
+        // Refused before dispatch: nothing ran, so the sandbox itself is not degraded.
+        this.#setStatus(entry, "ready");
+        throw error;
+      }
       if (error instanceof SandboxIndeterminateEffectError) {
         this.#setStatus(entry, "degraded");
         return Object.freeze({
@@ -292,7 +320,7 @@ export class SandboxSupervisor implements SandboxPort {
       this.#setStatus(entry, "degraded");
       throw error;
     } finally {
-      lease.release();
+      lease?.release();
     }
   }
 
@@ -302,6 +330,15 @@ export class SandboxSupervisor implements SandboxPort {
 
   async cancel(id: SandboxId, context: OperationContext): Promise<void> {
     const entry = this.#require(id);
+    if (entry.handle.status === "running" || entry.handle.status === "stopped") {
+      throw new ApplicationError(
+        "CONFLICT",
+        "Sandbox cleanup cannot overlap an execution or another lifecycle operation.",
+        { details: { sandboxId: id, status: entry.handle.status } },
+      );
+    }
+    const wasDegraded = entry.handle.status === "degraded";
+    this.#setStatus(entry, "stopped");
     try {
       await this.#options.backend.cancel(entry.spec, context);
     } catch (error) {
@@ -310,7 +347,9 @@ export class SandboxSupervisor implements SandboxPort {
       this.#setStatus(entry, "degraded");
       throw error;
     }
-    this.#setStatus(entry, "ready");
+    // Cleanup can stop a process/container, but cannot prove that an earlier unknown effect did
+    // not apply. Task 1 has no Ledger reconciler, so degraded remains non-executable until destroy.
+    this.#setStatus(entry, wasDegraded ? "degraded" : "ready");
   }
 
   /**
@@ -321,13 +360,21 @@ export class SandboxSupervisor implements SandboxPort {
   async destroy(id: SandboxId, context: OperationContext): Promise<void> {
     const entry = this.#sandboxes.get(id);
     if (entry === undefined) return;
+    if (entry.handle.status === "running" || entry.handle.status === "stopped") {
+      throw new ApplicationError(
+        "CONFLICT",
+        "Sandbox destruction cannot overlap an execution or another lifecycle operation.",
+        { details: { sandboxId: id, status: entry.handle.status } },
+      );
+    }
+    this.#setStatus(entry, "stopped");
     try {
       await this.#options.backend.destroy(entry.spec, context);
     } catch (error) {
       this.#setStatus(entry, "degraded");
       throw error;
     }
-    this.#sandboxes.delete(id);
+    if (this.#sandboxes.get(id) === entry) this.#sandboxes.delete(id);
   }
 
   #require(id: string): SandboxEntry {

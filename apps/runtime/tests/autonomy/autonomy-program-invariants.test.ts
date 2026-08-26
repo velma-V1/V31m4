@@ -1,4 +1,10 @@
-import { ApplicationError, type SandboxHandle, type WorkspaceHandle } from "@v31m4/application";
+import {
+  ApplicationError,
+  createOperationContext,
+  type PolicyDecision,
+  type SandboxHandle,
+  type WorkspaceHandle,
+} from "@v31m4/application";
 import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
@@ -21,7 +27,7 @@ describe("autonomy program invariants", () => {
    * direct effect authority, that the governed boundary fails closed on every missing
    * precondition, and that a harmless operation cannot smuggle an arbitrary executable.
    */
-  it("no model-direct effect bypass", () => {
+  it("no model-direct effect bypass", async () => {
     for (const forbidden of [
       "git.worktree",
       "shell.exec",
@@ -53,31 +59,44 @@ describe("autonomy program invariants", () => {
       backendId: "reference",
       status: "ready" as const,
     });
-    const boundary = createSemanticAuthorizationBoundary();
+    const policy = (decision: PolicyDecision = "allow") => ({
+      async evaluate() {
+        return {
+          decision,
+          policyId: `policy:test-${decision}`,
+          reasons: [],
+          requiredApprovalScopes: [],
+        };
+      },
+    });
+    const operationContext = createOperationContext({
+      requestId: "request:invariant",
+      idempotencyKey: "key:invariant",
+      actor: { id: "runtime", kind: "system", roles: ["runtime"] },
+      startedAt: "2026-08-25T00:00:00.000Z",
+    });
+    const boundary = createSemanticAuthorizationBoundary({ policy: policy() });
     const authorizeSemanticExecution = boundary.authorize;
     const allowed = {
       operationId: "command.run",
       role: "executor" as const,
-      policyDecision: "allow" as const,
       taskId,
       jobId,
       workspace,
       sandbox,
       parameters: { executable: "/bin/true", arguments: [] },
     };
-    const capability = authorizeSemanticExecution(allowed);
+    const capability = await authorizeSemanticExecution(allowed, operationContext);
     expect(capability.sandboxId).toBe(sandbox.id);
     // Only the paired boundary accepts it, and only once.
     expect(boundary.capabilities.verify(capability)).toBe(capability);
-    expect(() => createSemanticAuthorizationBoundary().capabilities.verify(capability)).toThrow(
-      ApplicationError,
-    );
+    expect(() =>
+      createSemanticAuthorizationBoundary({ policy: policy() }).capabilities.verify(capability),
+    ).toThrow(ApplicationError);
     boundary.capabilities.consume(capability);
     expect(() => boundary.capabilities.consume(capability)).toThrow(ApplicationError);
 
     for (const missing of [
-      { ...allowed, policyDecision: "deny" as const },
-      { ...allowed, policyDecision: "require_approval" as const },
       { ...allowed, workspace: { ...workspace, status: "discarded" as const } },
       { ...allowed, sandbox: null },
       { ...allowed, role: "auditor" as const },
@@ -85,10 +104,18 @@ describe("autonomy program invariants", () => {
       // A harmless operation carrying a foreign executable is a denial, not a silent drop.
       { ...allowed, operationId: "git.status", parameters: { executable: "touch" } },
     ]) {
-      expect(
-        () => authorizeSemanticExecution(missing),
+      await expect(
+        authorizeSemanticExecution(missing, operationContext),
         JSON.stringify(missing.operationId),
-      ).toThrow(ApplicationError);
+      ).rejects.toThrow(ApplicationError);
+    }
+    for (const decision of ["deny", "require_approval"] as const) {
+      await expect(
+        createSemanticAuthorizationBoundary({ policy: policy(decision) }).authorize(
+          allowed,
+          operationContext,
+        ),
+      ).rejects.toThrow(ApplicationError);
     }
   });
 

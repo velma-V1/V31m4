@@ -962,3 +962,124 @@ The mandatory target-host Docker proof. No container runtime is reachable and no
 is supplied, so every isolation property — including the new interface and routing-table
 observations — remains unobserved. **Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox
 backend is promoted.
+
+---
+
+# Final implementation repair — policy/resource authority, Docker ownership, degraded state, and proof completeness
+
+**Repair starting HEAD:** `bf5ef96b059e26d0176fbf6cf81a37d96d169731`. The repair was resumed
+from its preserved interrupted worktree; no reset, restore, stash, or restart from the base was
+performed. The last interrupted edit was audited first: it retained the exact task/job/workspace/
+sandbox predicates and added `sandbox.status === "ready"`; identity validation had not been
+replaced by status validation.
+
+## Before-fix reproductions
+
+The five independent findings were reproduced before repair:
+
+- Policy/parser/degraded/collision probe:
+  `pnpm exec vitest run apps/runtime/tests/autonomy/semantic-policy-authority.test.ts packages/infrastructure/tests/sandbox.test.ts apps/runtime/tests/autonomy/runtime-network-attestation.test.ts apps/runtime/tests/autonomy/runtime-privilege-attestation.test.ts`
+  failed **10 / 80** tests. A real policy deny was ignored in favor of caller
+  `policyDecision: "allow"`; canonical risk/evidence/resource data and grant expiry were absent;
+  a degraded sandbox redispatched and cancel restored it to ready; `sandbox:a-b` and `sandbox:a:b`
+  collided; malformed route, `NoNewPrivs: 1.0`, capability hex, and mountinfo were accepted.
+- Ownership probes:
+  `pnpm exec vitest run packages/infrastructure/tests/sandbox.test.ts -t 'foreign|collision-resistant'`
+  failed **2 / 2 selected** tests: punctuation-colliding IDs shared a name and foreign same-name
+  cleanup was not refused.
+- Effective-inspection probe:
+  `pnpm exec vitest run packages/infrastructure/tests/docker-sandbox-inspection.test.ts` failed at
+  collection because the live Docker inspection module did not exist.
+
+## Repairs
+
+1. The runtime-owned authorizer snapshots the request before its first `await`, derives policy
+   attributes and execution solely from the canonical catalog, and calls `PolicyEnginePort`.
+   Caller policy/risk/effect/resource/scope keys are rejected. Deny and `require_approval` cannot
+   mint; the latter returns `APPROVAL_REQUIRED` for the existing governed approval flow. An allow
+   seals `policyId` and optional expiry plus catalog risk, evidence-precondition identifier, and
+   resource ceilings into the issuer-bound capability. Expiry is inclusive and rechecked by both
+   verify and consume. The evidence-precondition identifier is metadata only in Task 1; no Task-6
+   evidence engine was introduced.
+2. Direct Docker uses the stricter of catalog/sandbox wall-clock and output limits. The existing
+   `WorkspaceExecutionInterlock` permits at most one effect per workspace, which is no weaker than
+   catalog `maxConcurrent` values 1 or 4. Workspace roots are canonical before becoming mount
+   authority.
+3. Container names are SHA-256-derived from the full `SandboxId`; duplicate live SandboxIds are a
+   conflict, including while asynchronous preparation is still in flight. Run argv adds exact
+   sandbox/task/job/workspace labels. Every destructive cleanup first
+   performs supervised Docker inspection, checks the deterministic name and all ownership labels,
+   removes only the observed full container ID, and independently verifies ID absence. Missing,
+   ambiguous, or foreign ownership leaves authoritative degraded state intact.
+4. `SandboxSupervisor.execute` accepts ordinary work only from authoritative `ready`. Cleanup of a
+   degraded sandbox cannot prove prior effect nonapplication and therefore cannot restore ready.
+   Execution claims `running` synchronously before its first asynchronous validation; cancel and
+   destroy use a mutually exclusive lifecycle claim, cannot race a pending dispatch, and delete
+   only their exact authoritative entry.
+5. `/proc/net/route`, `/proc/self/status`, and `/proc/self/mountinfo` parsing is strict and
+   fail-closed. The target-host proof now complements kernel observations with supervised live
+   Docker inspection of exact ownership, non-root user, read-only root, network none, dropped
+   capabilities, no-new-privileges, canonical workspace bind, approved tmpfs, and absence of any
+   extra bind, volume, or Docker socket.
+
+During the interrupted-patch audit two integration gaps were corrected before final verification:
+behavioral regressions were added for catalog resource ceilings, and the live inspection path was
+changed from re-serializing an already parsed observation to validating it directly. Additional
+adversarial review found and fixed request mutation across asynchronous policy evaluation,
+duplicate SandboxId overwrite, non-canonical mount authority, and an empty-first duplicate
+privilege field.
+
+A fresh independent post-repair source review found two additional sink-timing gaps and both were
+reproduced before correction. First, a policy grant valid at consumption could expire during
+asynchronous workspace validation and still dispatch; the sink now repeats issuer/expiry
+verification at the final synchronous edge immediately before `backend.execute`, while retaining
+consume-before-effect single use. Second, cancel/destroy could overlap that same pre-dispatch
+window and erase or clean lifecycle state before the effect launched; the synchronous execution
+and lifecycle claims above now make the overlap a deterministic `CONFLICT`. The proof harness's
+independent Docker absence query was also moved from a direct child-process invocation to the
+existing `ProcessSupervisor`, without making the query dependent on the Docker backend under test.
+
+## Permanent regressions and verification
+
+- Policy: naked allow rejected, real allow accepted, deny rejected, approval-required blocked for
+  governed approval, expiry rejected at issuance and at the final post-await dispatch edge, exact
+  request snapshot bound, caller authority-key downgrade rejected, immutable catalog
+  risk/evidence/resource data preserved.
+- Resources: semantic wall-clock/output ceilings cannot be weakened by looser sandbox/backend
+  settings; per-workspace interlock remains stricter than catalog concurrency limits.
+- Docker identity/lifecycle: punctuation collision, duplicate SandboxId, foreign labels, no foreign
+  removal, concurrent duplicate preparation, execution-vs-cancel/destroy exclusion, cleanup by
+  inspected ID, timeout/cancel/output-flood reconciliation, cleanup survival, and supervised live
+  inspection.
+- State/parsers/proof: degraded redispatch and cancel restoration refused; malformed route/status/
+  mountinfo rejected; extra bind, volume, wrong workspace source, wrong ownership, relaxed network/
+  read-only state, Docker socket, and malformed inspect JSON rejected.
+
+Exact verification on the repaired working tree:
+
+- Focused Task 1: **177 passing / 2 skipped / 8 todo (187 total)** across **14 passing + 1 skipped
+  files (15 total)**.
+- `packages/infrastructure/tests/supervised-processes.test.ts`: **9 passing** outside the command
+  sandbox. (Inside that wrapper, process-group signals are denied; the identical suite passes on
+  the real host execution boundary.)
+- Non-mandatory proof harness: **2 passing**; reference/static behavior passed and Docker isolation
+  was explicitly **NOT PROVEN** because no digest-pinned image was supplied. Mandatory Docker mode
+  was not run.
+- `pnpm check`: exit 0 — lint **378 files**, 0 errors, 9 pre-existing warnings, 1 pre-existing info;
+  typecheck **9/9**; tests **651 passing / 16 skipped / 8 todo (675 total)** across **118 passing + 5
+  skipped files (123 total)**.
+- `pnpm build`: **9/9 successful**. `git diff --check`: clean.
+- Exactly 19 semantic operations; no model-facing `git.worktree`; no dependency, lockfile,
+  `allowBuilds`, adapter-protocol-1.0, public runtime-API-1.0, or public v1 tool-status change; no
+  Task-2 implementation.
+
+## Remaining hard-gate blocker (unchanged)
+
+The mandatory target-host Docker proof has deliberately not been run in this implementation repair.
+The final read-only prerequisite inspection found a Windows Docker CLI shim on `PATH`, WSL2, no
+`/var/run/docker.sock`, no `V31M4_SANDBOX_IMAGE`, and `docker version` reporting that Docker is
+unavailable until Docker Desktop WSL integration is enabled. This inspection created no container
+and is not sandbox proof.
+Until it independently observes a real digest-pinned container satisfying every isolation and
+cleanup assertion, **Task 1 remains INCOMPLETE, Task 2 remains forbidden, and no sandbox backend is
+promoted**.

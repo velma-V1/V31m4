@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +6,7 @@ import {
   type AuthorizedSemanticExecutionPlan,
   createOperationContext,
   type OperationContext,
+  type PolicyEnginePort,
   type SandboxHandle,
   SandboxIsolationPolicy,
 } from "@v31m4/application";
@@ -15,6 +15,8 @@ import {
   buildDockerRunArguments,
   containerNameFor,
   DirectDockerSandbox,
+  HOST_CLIENT_ENVIRONMENT,
+  ProcessSupervisor,
   ReferenceSandboxBackend,
   SandboxSupervisor,
   WorkspaceExecutionInterlock,
@@ -63,6 +65,16 @@ const budget = ResourceBudget.create({
   maxRamBytes: 512 * 1024 * 1024,
 });
 const policy = SandboxIsolationPolicy.create({ maxCpuMillisPerSecond: 1_000, maxPids: 128 });
+const allowPolicy: PolicyEnginePort = {
+  async evaluate() {
+    return {
+      decision: "allow",
+      policyId: "policy:phase1-target-host",
+      reasons: [],
+      requiredApprovalScopes: [],
+    };
+  },
+};
 
 function context(): OperationContext {
   return createOperationContext({
@@ -77,14 +89,40 @@ function report(line: string): void {
   process.stdout.write(`[phase1-proof] ${line}\n`);
 }
 
-/** Asks Docker directly, so container absence is not attested by the code under test. */
-function containerExists(name: string): boolean {
-  const listed = execFileSync(
-    dockerExecutable,
-    ["ps", "--all", "--quiet", "--filter", `name=^${name}$`],
-    { encoding: "utf8" },
-  );
-  return listed.trim().length > 0;
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(path)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for live-container marker: ${path}`);
+}
+
+/** Asks Docker independently of the backend while retaining the Layer 8 process boundary. */
+async function containerExists(name: string): Promise<boolean> {
+  const supervisor = new ProcessSupervisor({
+    command: dockerExecutable,
+    args: ["ps", "--all", "--quiet", "--filter", `name=^${name}$`],
+    inheritEnvironment: HOST_CLIENT_ENVIRONMENT,
+    stderrLimitBytes: 4_096,
+    maxCombinedOutputBytes: 4_096,
+    shutdownTimeoutMs: 2_000,
+  });
+  const child = await supervisor.start();
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const code = await new Promise<number | null>((resolve) => {
+    child.once("close", (exitCode) => resolve(exitCode));
+  });
+  if (code !== 0 || supervisor.terminationReason !== undefined) {
+    throw new Error(`Independent Docker absence check failed: ${stderr}`);
+  }
+  return stdout.trim().length > 0;
 }
 
 realTest("real workspace, catalog, and sandbox boundary on this host", async () => {
@@ -94,7 +132,7 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
   const directory = join(root, workspace.id);
   writeFileSync(join(directory, "target.ts"), "export const value = 1;\n", "utf8");
 
-  const boundary = createSemanticAuthorizationBoundary();
+  const boundary = createSemanticAuthorizationBoundary({ policy: allowPolicy });
   const authorizeSemanticExecution = boundary.authorize;
   const sandboxes = new SandboxSupervisor({
     backend: new ReferenceSandboxBackend(),
@@ -108,18 +146,20 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
   report(`prepared reference sandbox ${sandbox.id} on real workspace ${workspace.id}`);
 
   const inspect = (path: string) =>
-    authorizeSemanticExecution({
-      operationId: "code.inspect",
-      role: "executor",
-      policyDecision: "allow",
-      taskId,
-      jobId,
-      workspace,
-      sandbox,
-      parameters: { pathScope: [path] },
-    });
+    authorizeSemanticExecution(
+      {
+        operationId: "code.inspect",
+        role: "executor",
+        taskId,
+        jobId,
+        workspace,
+        sandbox,
+        parameters: { pathScope: [path] },
+      },
+      context(),
+    );
 
-  const inspected = await sandboxes.execute(sandbox, inspect("target.ts"), context());
+  const inspected = await sandboxes.execute(sandbox, await inspect("target.ts"), context());
   expect(inspected.status).toBe("completed");
   const fingerprints = inspected.metadata["fingerprints"] as Record<string, string>;
   expect(fingerprints["target.ts"]).toMatch(/^[a-f0-9]{64}$/u);
@@ -127,35 +167,39 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
 
   // A real path escape attempt against the real filesystem must be refused.
   await expect(
-    sandboxes.execute(sandbox, inspect("../../etc/passwd"), context()),
+    sandboxes.execute(sandbox, await inspect("../../etc/passwd"), context()),
   ).rejects.toBeInstanceOf(ApplicationError);
 
   // A harmless operation cannot carry a foreign executable, and an effect has no path without
   // a sandbox.
-  expect(() =>
-    authorizeSemanticExecution({
-      operationId: "git.status",
-      role: "executor",
-      policyDecision: "allow",
-      taskId,
-      jobId,
-      workspace,
-      sandbox,
-      parameters: { executable: "touch", arguments: [join(directory, "smuggled.txt")] },
-    }),
-  ).toThrow(ApplicationError);
-  expect(() =>
-    authorizeSemanticExecution({
-      operationId: "command.run",
-      role: "executor",
-      policyDecision: "allow",
-      taskId,
-      jobId,
-      workspace,
-      sandbox: null,
-      parameters: { executable: "/bin/true", arguments: [] },
-    }),
-  ).toThrow(ApplicationError);
+  await expect(
+    authorizeSemanticExecution(
+      {
+        operationId: "git.status",
+        role: "executor",
+        taskId,
+        jobId,
+        workspace,
+        sandbox,
+        parameters: { executable: "touch", arguments: [join(directory, "smuggled.txt")] },
+      },
+      context(),
+    ),
+  ).rejects.toThrow(ApplicationError);
+  await expect(
+    authorizeSemanticExecution(
+      {
+        operationId: "command.run",
+        role: "executor",
+        taskId,
+        jobId,
+        workspace,
+        sandbox: null,
+        parameters: { executable: "/bin/true", arguments: [] },
+      },
+      context(),
+    ),
+  ).rejects.toThrow(ApplicationError);
 
   await sandboxes.destroy(sandbox.id, context());
   report("reference-backend boundary proof: PASS");
@@ -204,7 +248,7 @@ realTest(
     const workspaces = new WorkspaceExecutionInterlock(new LocalWorkspaceManager(root));
     const workspace = await workspaces.create(projectId, "tool_execution", context());
     const directory = join(root, workspace.id);
-    const boundary = createSemanticAuthorizationBoundary();
+    const boundary = createSemanticAuthorizationBoundary({ policy: allowPolicy });
     const authorizeSemanticExecution = boundary.authorize;
     const sandboxes = new SandboxSupervisor({
       backend: docker,
@@ -231,17 +275,22 @@ realTest(
     }
 
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-    const run = (script: string, sandboxHandle: SandboxHandle): AuthorizedSemanticExecutionPlan =>
-      authorizeSemanticExecution({
-        operationId: "command.run",
-        role: "executor",
-        policyDecision: "allow",
-        taskId,
-        jobId,
-        workspace,
-        sandbox: sandboxHandle,
-        parameters: { executable: "/bin/sh", arguments: ["-c", script] },
-      });
+    const run = (
+      script: string,
+      sandboxHandle: SandboxHandle,
+    ): Promise<AuthorizedSemanticExecutionPlan> =>
+      authorizeSemanticExecution(
+        {
+          operationId: "command.run",
+          role: "executor",
+          taskId,
+          jobId,
+          workspace,
+          sandbox: sandboxHandle,
+          parameters: { executable: "/bin/sh", arguments: ["-c", script] },
+        },
+        context(),
+      );
 
     // The argv actually used, asserted against the running configuration.
     const argv = buildDockerRunArguments(
@@ -265,7 +314,7 @@ realTest(
     ]);
     report(`effective mounts: ${argv.filter((v) => v.startsWith("type=bind")).join(" | ")}`);
 
-    const uid = await sandboxes.execute(sandbox, run("id -u", sandbox), context());
+    const uid = await sandboxes.execute(sandbox, await run("id -u", sandbox), context());
     expect(uid.status).toBe("completed");
     const effectiveUid = String(uid.metadata["stdout"]).trim();
     expect(effectiveUid).not.toBe("0");
@@ -277,14 +326,14 @@ realTest(
     // be a false positive.
     const mountinfo = await sandboxes.execute(
       sandbox,
-      run("cat /proc/self/mountinfo", sandbox),
+      await run("cat /proc/self/mountinfo", sandbox),
       context(),
     );
     expect(mountinfo.status).toBe("completed");
     const rootMount = assertReadOnlyRootFilesystem(String(mountinfo.metadata["stdout"]));
     const readOnlyRoot = await sandboxes.execute(
       sandbox,
-      run("touch /v31m4-root-probe", sandbox),
+      await run("touch /v31m4-root-probe", sandbox),
       context(),
     );
     expect(readOnlyRoot.status).toBe("failed");
@@ -295,7 +344,7 @@ realTest(
 
     const socket = await sandboxes.execute(
       sandbox,
-      run("test -S /var/run/docker.sock", sandbox),
+      await run("test -S /var/run/docker.sock", sandbox),
       context(),
     );
     expect(socket.status).toBe("failed");
@@ -310,7 +359,7 @@ realTest(
       // Shell globbing rather than `ls`, so the observation does not depend on which userspace
       // tools the image happens to ship.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: `${i##*/}` is POSIX shell parameter expansion sent to the container, not a JS template placeholder.
-      run('for i in /sys/class/net/*; do echo "${i##*/}"; done', sandbox),
+      await run('for i in /sys/class/net/*; do echo "${i##*/}"; done', sandbox),
       context(),
     );
     expect(interfaceListing.status).toBe("completed");
@@ -318,7 +367,7 @@ realTest(
 
     const routeTable = await sandboxes.execute(
       sandbox,
-      run("cat /proc/net/route", sandbox),
+      await run("cat /proc/net/route", sandbox),
       context(),
     );
     expect(routeTable.status).toBe("completed");
@@ -332,13 +381,13 @@ realTest(
     // fail, because a success would contradict the kernel observations above.
     const connectProbe = await sandboxes.execute(
       sandbox,
-      run("command -v wget >/dev/null 2>&1", sandbox),
+      await run("command -v wget >/dev/null 2>&1", sandbox),
       context(),
     );
     if (connectProbe.status === "completed") {
       const egress = await sandboxes.execute(
         sandbox,
-        run("wget -q -T 3 -O /dev/null http://1.1.1.1/", sandbox),
+        await run("wget -q -T 3 -O /dev/null http://1.1.1.1/", sandbox),
         context(),
       );
       expect(egress.status, "a numeric-IP connection must not succeed under --network none").toBe(
@@ -351,14 +400,14 @@ realTest(
 
     const outsideWorkspace = await sandboxes.execute(
       sandbox,
-      run("touch /etc/v31m4-probe", sandbox),
+      await run("touch /etc/v31m4-probe", sandbox),
       context(),
     );
     expect(outsideWorkspace.status).toBe("failed");
 
     const write = await sandboxes.execute(
       sandbox,
-      run("printf 'from-container' > /workspace/produced.txt", sandbox),
+      await run("printf 'from-container' > /workspace/produced.txt", sandbox),
       context(),
     );
     expect(write.status).toBe("completed");
@@ -367,11 +416,15 @@ realTest(
 
     // Ephemeral internal scratch: HOME and TMPDIR must resolve to in-container tmpfs that maps
     // no host storage, and must be writable so build/test tooling is not broken by isolation.
-    const home = await sandboxes.execute(sandbox, run('printf "%s" "$HOME"', sandbox), context());
+    const home = await sandboxes.execute(
+      sandbox,
+      await run('printf "%s" "$HOME"', sandbox),
+      context(),
+    );
     expect(String(home.metadata["stdout"]).trim()).toBe("/home/sandbox");
     const temporaryDir = await sandboxes.execute(
       sandbox,
-      run('printf "%s" "$TMPDIR"', sandbox),
+      await run('printf "%s" "$TMPDIR"', sandbox),
       context(),
     );
     expect(String(temporaryDir.metadata["stdout"]).trim()).toBe("/tmp");
@@ -382,7 +435,7 @@ realTest(
 
     const mounts = await sandboxes.execute(
       sandbox,
-      run("cat /proc/self/mounts", sandbox),
+      await run("cat /proc/self/mounts", sandbox),
       context(),
     );
     const mountTable = String(mounts.metadata["stdout"]);
@@ -401,7 +454,7 @@ realTest(
 
     const scratchWritable = await sandboxes.execute(
       sandbox,
-      run("touch /tmp/probe && touch /home/sandbox/probe", sandbox),
+      await run("touch /tmp/probe && touch /home/sandbox/probe", sandbox),
       context(),
     );
     expect(scratchWritable.status).toBe("completed");
@@ -410,7 +463,7 @@ realTest(
     // running container. Docker argv states intent; /proc/self/status is the evidence.
     const status = await sandboxes.execute(
       sandbox,
-      run("cat /proc/self/status", sandbox),
+      await run("cat /proc/self/status", sandbox),
       context(),
     );
     expect(status.status).toBe("completed");
@@ -420,10 +473,29 @@ realTest(
         `CapBnd=${privileges.capabilitiesBounding} NoNewPrivs=${privileges.noNewPrivileges}`,
     );
 
+    // Complement the in-container /proc observations with a supervised daemon-side inspection
+    // of this exact live V31M4 container. Intended argv is not evidence of effective mounts.
+    const inspectionMarker = join(directory, "docker-inspect-ready");
+    const liveExecution = sandboxes.execute(
+      sandbox,
+      await run("touch /workspace/docker-inspect-ready && sleep 5", sandbox),
+      context(),
+    );
+    await waitForFile(inspectionMarker);
+    const effective = await docker.inspectActiveSandbox(sandbox.id, context());
+    expect(effective.labels["v31m4.sandbox"]).toBe(sandbox.id);
+    expect(effective.mounts.filter((mount) => mount.type === "bind")).toHaveLength(1);
+    expect(effective.mounts.some((mount) => mount.type === "volume")).toBe(false);
+    expect((await liveExecution).status).toBe("completed");
+    report(
+      `docker inspect: owned container, network=${effective.networkMode}, ` +
+        `readOnlyRoot=${effective.readOnlyRootFilesystem}, effectiveMounts=${effective.mounts.length}`,
+    );
+
     // Destruction must actually prove the container is gone.
     await sandboxes.destroy(sandbox.id, context());
     expect(await sandboxes.inspect(sandbox.id, context())).toBeNull();
-    expect(containerExists(containerNameFor(sandbox.id))).toBe(false);
+    expect(await containerExists(containerNameFor(sandbox.id))).toBe(false);
     report(`container ${containerNameFor(sandbox.id)} removed and absence independently verified`);
 
     // Real wall-clock timeout: a bounded long-running container must be reconciled, reported as
@@ -452,12 +524,12 @@ realTest(
     );
     const timedOut = await timeoutSandboxes.execute(
       timeoutSandbox,
-      run("sleep 300", timeoutSandbox),
+      await run("sleep 300", timeoutSandbox),
       context(),
     );
     expect(timedOut.status).toBe("unknown");
     expect((await timeoutSandboxes.inspect(timeoutSandbox.id, context()))?.status).toBe("degraded");
-    expect(containerExists(containerNameFor(timeoutSandbox.id))).toBe(false);
+    expect(await containerExists(containerNameFor(timeoutSandbox.id))).toBe(false);
     report("real timeout: container force-removed and absence independently verified");
 
     report("direct-Docker container assertions: PASS");

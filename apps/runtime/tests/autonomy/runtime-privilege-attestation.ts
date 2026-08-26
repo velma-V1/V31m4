@@ -13,16 +13,22 @@ export interface RuntimePrivilegeAttestation {
 }
 
 const ALL_CAPABILITIES_DROPPED = "0000000000000000";
+const CANONICAL_CAPABILITY_HEX = /^[a-f0-9]{16}$/u;
+const CANONICAL_BOOLEAN_TOKEN = /^[01]$/u;
 
 function field(procStatus: string, name: string): string | undefined {
+  let seen = false;
+  let found: string | undefined;
   for (const line of procStatus.split("\n")) {
     const separator = line.indexOf(":");
     if (separator === -1) continue;
     if (line.slice(0, separator).trim() !== name) continue;
+    if (seen) throw new Error(`Runtime privilege attestation repeats ${name}.`);
+    seen = true;
     const value = line.slice(separator + 1).trim();
-    return value.length === 0 ? undefined : value;
+    found = value.length === 0 ? undefined : value;
   }
-  return undefined;
+  return found;
 }
 
 /**
@@ -43,10 +49,20 @@ export function parseRuntimePrivilegeAttestation(procStatus: string): RuntimePri
     throw new Error(`Runtime privilege attestation is missing ${missing.join(", ")}.`);
   }
 
-  const noNewPrivileges = Number(rawNoNewPrivileges);
-  if (!Number.isInteger(noNewPrivileges)) {
-    throw new Error(`NoNewPrivs is not an integer: ${String(rawNoNewPrivileges)}`);
+  if (!CANONICAL_CAPABILITY_HEX.test(capabilitiesEffective as string)) {
+    throw new Error(
+      `CapEff is not canonical expected-width lowercase hex: ${capabilitiesEffective}`,
+    );
   }
+  if (!CANONICAL_CAPABILITY_HEX.test(capabilitiesBounding as string)) {
+    throw new Error(
+      `CapBnd is not canonical expected-width lowercase hex: ${capabilitiesBounding}`,
+    );
+  }
+  if (!CANONICAL_BOOLEAN_TOKEN.test(rawNoNewPrivileges as string)) {
+    throw new Error(`NoNewPrivs is not a canonical 0 or 1 token: ${String(rawNoNewPrivileges)}`);
+  }
+  const noNewPrivileges = Number(rawNoNewPrivileges);
   return {
     capabilitiesEffective: capabilitiesEffective as string,
     capabilitiesBounding: capabilitiesBounding as string,
@@ -89,17 +105,40 @@ export function parseRootFilesystemMountState(mountinfo: string): RootFilesystem
   for (const line of mountinfo.split("\n")) {
     if (line.trim().length === 0) continue;
     const fields = line.trim().split(/\s+/u);
-    if (fields.length < 7) {
+    const separator = fields.indexOf("-", 6);
+    if (
+      fields.length < 10 ||
+      separator < 6 ||
+      separator !== fields.lastIndexOf("-") ||
+      fields.length - separator - 1 < 3 ||
+      !/^\d+$/u.test(fields[0] ?? "") ||
+      !/^\d+$/u.test(fields[1] ?? "") ||
+      !/^\d+:\d+$/u.test(fields[2] ?? "") ||
+      !(fields[3] ?? "").startsWith("/") ||
+      !(fields[4] ?? "").startsWith("/") ||
+      (fields[5] ?? "").length === 0 ||
+      (fields[separator + 1] ?? "").length === 0 ||
+      (fields[separator + 2] ?? "").length === 0 ||
+      (fields[separator + 3] ?? "").length === 0
+    ) {
       throw new Error(`Malformed mountinfo record: ${line.trim()}`);
     }
-    if (fields[4] !== "/") continue;
     const mountOptions = (fields[5] ?? "").split(",").filter((option) => option.length > 0);
     if (mountOptions.length === 0) {
       throw new Error(`Mountinfo record for / has no mount options: ${line.trim()}`);
     }
-    const separator = fields.indexOf("-", 6);
-    const superOptions =
-      separator === -1 ? [] : (fields[separator + 3] ?? "").split(",").filter((o) => o.length > 0);
+    const superOptions = (fields[separator + 3] ?? "")
+      .split(",")
+      .filter((option) => option.length > 0);
+    if (
+      mountOptions.length === 0 ||
+      superOptions.length === 0 ||
+      (mountOptions.includes("ro") && mountOptions.includes("rw")) ||
+      (superOptions.includes("ro") && superOptions.includes("rw"))
+    ) {
+      throw new Error(`Malformed mountinfo record: ${line.trim()}`);
+    }
+    if (fields[4] !== "/") continue;
     found = {
       mountOptions,
       superOptions,

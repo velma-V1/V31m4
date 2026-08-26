@@ -23,6 +23,7 @@ export * from "./rpc/json-rpc-client.js";
 export * from "./rpc/json-rpc-framer.js";
 export * from "./sandbox/direct-docker-sandbox.js";
 export * from "./sandbox/docker-sandbox-configuration.js";
+export * from "./sandbox/docker-sandbox-inspection.js";
 export * from "./sandbox/reference-sandbox.js";
 export * from "./sandbox/sandbox-supervisor.js";
 export * from "./sandbox/workspace-execution-interlock.js";

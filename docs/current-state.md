@@ -138,9 +138,45 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     live numeric-IP connection attempt remains supplemental and is skipped when no such tool
     exists, so correctness never depends on an optional utility. The proof no longer prints an
     egress claim unless those kernel observations pass.
-  - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
-    (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
-    disabled for this distro, and no digest-pinned image has been supplied. A non-empty
+  - **Final implementation review of `bf5ef96`, repair resumed from its preserved interrupted
+    worktree.** Five findings were reproduced and repaired without starting Task 2:
+    1. Caller-supplied `policyDecision: "allow"` no longer authorizes anything. The canonical
+       boundary snapshots the exact request, calls `PolicyEnginePort`, rejects deny and
+       approval-required decisions, binds policy ID/expiry plus catalog risk,
+       evidence-precondition ID, and resource ceilings into the issuer-bound capability, and
+       rechecks expiry at the final synchronous dispatch edge after asynchronous workspace
+       validation. Docker execution uses the stricter wall-clock and output
+       ceiling; the existing workspace interlock is stricter than every catalog concurrency
+       ceiling. This binds the evidence-policy identifier only; it does not implement the later
+       EvidenceRecord/Ledger engine.
+    2. Docker names now hash the complete `SandboxId`, duplicate authoritative IDs are refused,
+       all four sandbox/task/job/workspace ownership labels are inspected, and destructive
+       cleanup uses the observed full container ID only after exact ownership and name checks.
+       A foreign same-name container is never removed.
+    3. Ordinary effects dispatch only from authoritative `ready`; `running`, `degraded`, and
+       `stopped` fail closed. Cancel cleanup cannot promote an indeterminate degraded sandbox to
+       ready. Execution claims `running` before its first asynchronous pre-dispatch read, while
+       cancel/destroy claim `stopped`, so sandbox execution and lifecycle cleanup cannot race or
+       erase authoritative state. Task 1 still has no Ledger reconciler.
+    4. Route, capability/`NoNewPrivs`, and mountinfo parsers now reject malformed and ambiguous
+       observations instead of accepting partial numeric coercions or incomplete records.
+    5. The target-host proof retains its in-container kernel checks and now supervises a live
+       `docker inspect` of the exact running V31M4 container. It verifies ownership, canonical
+       workspace source, the sole host bind at `/workspace`, no volume/extra bind/socket, approved
+       `/tmp` and HOME tmpfs, read-only root, non-root user, dropped capabilities,
+       no-new-privileges, and network mode `none` before the proof can proceed. Its independent
+       named-container absence challenger also uses the existing process supervisor.
+  - Current repair verification: focused Task 1 suites **177 passing / 2 skipped / 8 todo (187
+    total) across 14 passing + 1 skipped files (15 total)**; supervised processes **9/9**;
+    `pnpm check` exit 0 — lint 378 files with 9 pre-existing warnings and 1 pre-existing info,
+    typecheck 9/9, **651 passing / 16 skipped / 8 todo (675 total) across 118 passing + 5 skipped
+    files (123 total)**; `pnpm build` 9/9. The non-mandatory proof passed its two reference/static
+    checks and explicitly reported direct-Docker isolation **NOT PROVEN** because no digest-pinned
+    image was supplied. This is implementation readiness evidence only, not a passed Task 1 gate.
+  - **Still BLOCKED — the required target-host Docker proof.** A Windows Docker CLI shim is on
+    this WSL2 distro's `PATH`, but invoking `docker version` reports that Docker is unavailable in
+    the distro and asks for Docker Desktop WSL integration; `/var/run/docker.sock` is absent and no
+    digest-pinned image has been supplied. A non-empty
     `V31M4_SANDBOX_IMAGE` is **not** a pinned image; the proof validates the digest syntax and the
     backend refuses to construct itself without one. Therefore non-root execution, read-only root,
     absent Docker socket, blocked egress, workspace-only write, and verified container cleanup are

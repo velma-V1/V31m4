@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ApplicationError, type ApplicationJsonObject } from "@v31m4/application";
 import type { SandboxExecutionSpec } from "./sandbox-supervisor.js";
 
@@ -122,7 +123,7 @@ export function assertValidDockerSandboxSettings(settings: DockerSandboxSettings
 }
 
 export function containerNameFor(sandboxId: string): string {
-  return `v31m4-sandbox-${sandboxId.replace(/[^A-Za-z0-9_.-]/gu, "-")}`;
+  return `v31m4-sandbox-${createHash("sha256").update(sandboxId, "utf8").digest("hex")}`;
 }
 
 /**
@@ -184,6 +185,12 @@ export function buildDockerRunArguments(
     "TMPDIR=/tmp",
     "--label",
     `v31m4.sandbox=${spec.sandboxId}`,
+    "--label",
+    `v31m4.task=${spec.taskId}`,
+    "--label",
+    `v31m4.job=${spec.jobId}`,
+    "--label",
+    `v31m4.workspace=${spec.workspaceId}`,
     "--name",
     containerNameFor(spec.sandboxId),
     "--stop-timeout",

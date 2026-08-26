@@ -152,12 +152,24 @@ describe("semantic execution capabilities", () => {
       contract: {
         operationId: "code.patch",
         effectClass: "workspace_write",
+        riskClass: "high",
         sandboxRequirement: "required",
         allowedRoles: ["executor"],
+        evidencePreconditionPolicyId: "evidence.patch_requires_current_target.v1",
+        resourcePolicy: {
+          maxWallClockMs: 900_000,
+          maxOutputBytes: 4_194_304,
+          maxConcurrent: 1,
+        },
         allowsCallerSuppliedCommand: false,
       },
       role: "executor",
-      policyDecision: "allow",
+      policyGrant: {
+        decision: "allow",
+        policyId: "policy:test-semantic-execution",
+        reasons: [],
+        requiredApprovalScopes: [],
+      },
       taskId,
       jobId,
       workspace,
@@ -241,8 +253,11 @@ describe("semantic execution capabilities", () => {
     const issuer = authority();
     const cases: ReadonlyArray<readonly [string, Partial<SemanticExecutionAuthorizationInput>]> = [
       ["role not allowed", { role: "auditor" }],
-      ["policy denied", { policyDecision: "deny" as const }],
-      ["approval required", { policyDecision: "require_approval" as const }],
+      ["policy denied", { policyGrant: { ...input().policyGrant, decision: "deny" as const } }],
+      [
+        "approval required",
+        { policyGrant: { ...input().policyGrant, decision: "require_approval" as const } },
+      ],
       ["workspace no longer active", { workspace: { ...workspace, status: "sealed" as const } }],
       ["no prepared sandbox", { sandbox: null }],
       ["sandbox bound to another workspace", { sandbox: { ...sandbox, workspaceId: "other" } }],
@@ -252,6 +267,8 @@ describe("semantic execution capabilities", () => {
       ],
       ["sandbox bound to another job", { sandbox: { ...sandbox, jobId: JobId.parse("job:x") } }],
       ["sandbox already stopped", { sandbox: { ...sandbox, status: "stopped" as const } }],
+      ["sandbox degraded", { sandbox: { ...sandbox, status: "degraded" as const } }],
+      ["sandbox running", { sandbox: { ...sandbox, status: "running" as const } }],
       ["empty executable", { command: { executable: "", arguments: [] } }],
     ];
     for (const [label, override] of cases) {

@@ -3,8 +3,11 @@ import {
   ApplicationError,
   type ApplicationJsonObject,
   type AuthorizedSemanticExecutionPlan,
+  cloneAndFreezeApplicationJson,
   createSemanticExecutionAuthority,
-  type PolicyDecision,
+  type OperationContext,
+  type PolicyEnginePort,
+  type PolicyResult,
   type SandboxCommand,
   type SandboxHandle,
   type SemanticExecutionCapabilityVerifier,
@@ -55,6 +58,24 @@ const RESERVED_EXECUTION_KEYS = Object.freeze([
   "privileged",
   "network",
 ]);
+const RESERVED_AUTHORITY_KEYS = Object.freeze([
+  "effectClass",
+  "riskClass",
+  "sandboxRequirement",
+  "allowedRoles",
+  "evidencePreconditionPolicyId",
+  "resourcePolicy",
+  "maxWallClockMs",
+  "maxOutputBytes",
+  "maxConcurrent",
+  "policyDecision",
+  "policyId",
+  "expiresAt",
+  "taskId",
+  "jobId",
+  "workspaceId",
+  "sandboxId",
+]);
 
 const GIT = "git";
 const MAX_PATH_SCOPE = 64;
@@ -64,7 +85,6 @@ const DEFAULT_HISTORY_LIMIT = 20;
 export interface SemanticExecutionRequest {
   readonly operationId: string;
   readonly role: SemanticOperationRole;
-  readonly policyDecision: PolicyDecision;
   readonly taskId: TaskId;
   readonly jobId: JobId;
   readonly workspace: WorkspaceHandle;
@@ -91,46 +111,66 @@ const ESCAPE_HATCH = "command.run";
  * that executes it. The mint itself is never exposed.
  */
 export interface SemanticAuthorizationBoundary {
-  authorize(request: SemanticExecutionRequest): AuthorizedSemanticExecutionPlan;
+  authorize(
+    request: SemanticExecutionRequest,
+    context: OperationContext,
+  ): Promise<AuthorizedSemanticExecutionPlan>;
   readonly capabilities: SemanticExecutionCapabilityVerifier;
 }
 
 export interface SemanticAuthorizationBoundaryOptions {
+  readonly policy: PolicyEnginePort;
   readonly generateExecutionPlanId?: () => string;
   readonly now?: () => string;
 }
 
 export function createSemanticAuthorizationBoundary(
-  options: SemanticAuthorizationBoundaryOptions = {},
+  options: SemanticAuthorizationBoundaryOptions,
 ): SemanticAuthorizationBoundary {
   const authority = createSemanticExecutionAuthority({
     generateExecutionPlanId: options.generateExecutionPlanId ?? (() => `plan:${randomUUID()}`),
     now: options.now ?? (() => new Date().toISOString()),
   });
   return Object.freeze({
-    authorize(request: SemanticExecutionRequest): AuthorizedSemanticExecutionPlan {
-      const definition = getSemanticOperation(request.operationId);
+    async authorize(
+      request: SemanticExecutionRequest,
+      context: OperationContext,
+    ): Promise<AuthorizedSemanticExecutionPlan> {
+      // Snapshot before the first asynchronous boundary. Policy must evaluate the exact immutable
+      // request later sealed into the capability; caller mutation during `evaluate` cannot create
+      // a check-then-use authority gap.
+      const trustedRequest = snapshotRequest(request);
+      const definition = getSemanticOperation(trustedRequest.operationId);
       assertEscapeHatchIsExclusive(definition);
-      assertNoSmuggledExecution(definition, request.parameters);
-      assertRequiredParameters(definition, request.parameters);
-      const derived = deriveTrustedExecution(definition, request);
+      assertNoSmuggledExecution(definition, trustedRequest.parameters);
+      assertRequiredParameters(definition, trustedRequest.parameters);
+      const derived = deriveTrustedExecution(definition, trustedRequest);
+      const policyGrant = await evaluateCanonicalPolicy(
+        options.policy,
+        definition,
+        trustedRequest,
+        context,
+      );
       return authority.mint({
         // Read from the canonical catalog, never from the request.
         contract: {
           operationId: definition.operationId,
           effectClass: definition.effectClass,
+          riskClass: definition.riskClass,
           sandboxRequirement: definition.sandboxRequirement,
           allowedRoles: definition.allowedRoles,
+          evidencePreconditionPolicyId: definition.evidencePreconditionPolicyId,
+          resourcePolicy: definition.resourcePolicy,
           allowsCallerSuppliedCommand: definition.allowsCallerSuppliedCommand,
         },
-        role: request.role,
-        policyDecision: request.policyDecision,
-        taskId: request.taskId,
-        jobId: request.jobId,
-        workspace: request.workspace,
-        sandbox: request.sandbox,
+        role: trustedRequest.role,
+        policyGrant,
+        taskId: trustedRequest.taskId,
+        jobId: trustedRequest.jobId,
+        workspace: trustedRequest.workspace,
+        sandbox: trustedRequest.sandbox,
         command: derived.command,
-        parameters: request.parameters,
+        parameters: trustedRequest.parameters,
         fingerprints: derived.fingerprints,
         currencyPrecondition: derived.currencyPrecondition,
       });
@@ -139,6 +179,79 @@ export function createSemanticAuthorizationBoundary(
       verify: (plan: unknown) => authority.verify(plan),
       consume: (plan: AuthorizedSemanticExecutionPlan) => authority.consume(plan),
     }),
+  });
+}
+
+function snapshotRequest(request: SemanticExecutionRequest): SemanticExecutionRequest {
+  return Object.freeze({
+    operationId: request.operationId,
+    role: request.role,
+    taskId: request.taskId,
+    jobId: request.jobId,
+    workspace: Object.freeze({ ...request.workspace }),
+    sandbox: request.sandbox === null ? null : Object.freeze({ ...request.sandbox }),
+    parameters: cloneAndFreezeApplicationJson(request.parameters) as ApplicationJsonObject,
+    ...(request.observedTargetFingerprint === undefined
+      ? {}
+      : { observedTargetFingerprint: request.observedTargetFingerprint }),
+  });
+}
+
+async function evaluateCanonicalPolicy(
+  policy: PolicyEnginePort,
+  definition: SemanticOperationDefinition,
+  request: SemanticExecutionRequest,
+  context: OperationContext,
+): Promise<PolicyResult> {
+  const result = await policy.evaluate(
+    {
+      action: `semantic.${definition.operationId}`,
+      resourceType: "semantic_operation",
+      resourceId: definition.operationId,
+      actor: context.actor,
+      attributes: {
+        role: request.role,
+        taskId: request.taskId,
+        jobId: request.jobId,
+        workspaceId: request.workspace.id,
+        sandboxId: request.sandbox?.id ?? null,
+        effectClass: definition.effectClass,
+        riskClass: definition.riskClass,
+        evidencePreconditionPolicyId: definition.evidencePreconditionPolicyId,
+        resourcePolicy: { ...definition.resourcePolicy },
+        parameters: request.parameters,
+      },
+    },
+    context,
+  );
+  if (result.decision === "require_approval") {
+    throw new ApplicationError(
+      "APPROVAL_REQUIRED",
+      "The semantic operation requires the existing governed approval flow.",
+      {
+        details: {
+          operationId: definition.operationId,
+          policyId: result.policyId,
+          requiredScopes: [...result.requiredApprovalScopes],
+        },
+      },
+    );
+  }
+  if (result.decision !== "allow") {
+    throw new ApplicationError("POLICY_REJECTED", "Policy denied the semantic operation.", {
+      details: {
+        operationId: definition.operationId,
+        policyId: result.policyId,
+        reasons: [...result.reasons],
+      },
+    });
+  }
+  return Object.freeze({
+    decision: "allow" as const,
+    policyId: result.policyId,
+    reasons: Object.freeze([...result.reasons]),
+    requiredApprovalScopes: Object.freeze([...result.requiredApprovalScopes]),
+    ...(result.expiresAt === undefined ? {} : { expiresAt: result.expiresAt }),
   });
 }
 
@@ -161,8 +274,10 @@ function assertNoSmuggledExecution(
   definition: SemanticOperationDefinition,
   parameters: ApplicationJsonObject,
 ): void {
-  if (definition.allowsCallerSuppliedCommand) return;
-  for (const key of RESERVED_EXECUTION_KEYS) {
+  const rejectedKeys = definition.allowsCallerSuppliedCommand
+    ? RESERVED_AUTHORITY_KEYS
+    : [...RESERVED_EXECUTION_KEYS, ...RESERVED_AUTHORITY_KEYS];
+  for (const key of rejectedKeys) {
     if (parameters[key] !== undefined) {
       throw new ApplicationError(
         "PERMISSION_DENIED",

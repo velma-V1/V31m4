@@ -61,7 +61,33 @@ describe("runtime privilege attestation", () => {
 
   it("rejects a non-integer NoNewPrivs", () => {
     const malformed = HARDENED.replace("NoNewPrivs:\t1", "NoNewPrivs:\tyes");
-    expect(() => assertHardenedRuntimePrivileges(malformed)).toThrow(/not an integer/u);
+    expect(() => assertHardenedRuntimePrivileges(malformed)).toThrow(/canonical/u);
+    expect(() =>
+      parseRuntimePrivilegeAttestation(HARDENED.replace("NoNewPrivs:\t1", "NoNewPrivs:\t1.0")),
+    ).toThrow(/canonical/u);
+  });
+
+  it("requires canonical expected-width capability hex", () => {
+    for (const malformed of ["0", "00000000000000000", "000000000000000G", "ABCDEF0123456789"]) {
+      expect(() =>
+        parseRuntimePrivilegeAttestation(
+          HARDENED.replace("CapEff:\t0000000000000000", `CapEff:\t${malformed}`),
+        ),
+      ).toThrow(/CapEff.*canonical/u);
+    }
+  });
+
+  it("rejects duplicated privilege fields instead of accepting an ambiguous value", () => {
+    for (const field of [
+      "CapEff:\t0000000000000000",
+      "CapBnd:\t0000000000000000",
+      "NoNewPrivs:\t1",
+    ]) {
+      expect(() => parseRuntimePrivilegeAttestation(`${HARDENED}${field}\n`), field).toThrow(
+        /repeats/u,
+      );
+    }
+    expect(() => parseRuntimePrivilegeAttestation(`CapEff:\t\n${HARDENED}`)).toThrow(/repeats/u);
   });
 });
 
@@ -100,6 +126,12 @@ describe("root filesystem mount attestation", () => {
 
   it("rejects a malformed record rather than skipping it", () => {
     expect(() => assertReadOnlyRootFilesystem("23 1 0:20 /\n")).toThrow(/Malformed mountinfo/u);
+    expect(() =>
+      assertReadOnlyRootFilesystem("23 1 0:20 / / ro,relatime overlay overlay ro\n"),
+    ).toThrow(/Malformed mountinfo/u);
+    expect(() => assertReadOnlyRootFilesystem("23 1 0:20 / / ro - overlay\n")).toThrow(
+      /Malformed mountinfo/u,
+    );
   });
 
   it("uses the last root record, because a later mount shadows an earlier one", () => {

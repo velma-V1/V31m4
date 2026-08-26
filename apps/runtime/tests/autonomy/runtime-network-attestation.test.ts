@@ -93,5 +93,18 @@ describe("routing table attestation", () => {
     expect(() => assertNoExternalRoutes(`${ROUTE_HEADER}\neth0\t00000000\n`)).toThrow(
       /Malformed routing table record/u,
     );
+    expect(() => assertNoExternalRoutes("Iface Destination Gateway\n")).toThrow(/header/u);
+    expect(() =>
+      assertNoExternalRoutes(
+        `${ROUTE_HEADER}\n\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n`,
+      ),
+    ).toThrow(/Malformed/u);
+    for (const malformed of ["0000000", "0000000G", "000000000"]) {
+      expect(() =>
+        assertNoExternalRoutes(
+          `${ROUTE_HEADER}\nlo\t${malformed}\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n`,
+        ),
+      ).toThrow(/Malformed/u);
+    }
   });
 });

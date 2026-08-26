@@ -19,6 +19,7 @@ import {
   SandboxIsolationPolicy,
   type SemanticExecutionAuthority,
   type SemanticExecutionAuthorizationInput,
+  type SemanticResourcePolicy,
   type WorkspaceHandle,
   type WorkspaceManagerPort,
 } from "@v31m4/application";
@@ -56,6 +57,47 @@ const budget = ResourceBudget.create({
 const policy = SandboxIsolationPolicy.create({ maxCpuMillisPerSecond: 500, maxPids: 64 });
 const ALLOWED_OPERATIONS = ["code.inspect", "code.patch", "build.check", "command.run"] as const;
 const PINNED_IMAGE = `docker.io/library/alpine@sha256:${"c".repeat(64)}`;
+const READ_OPERATION_CONTRACT = Object.freeze({
+  operationId: "code.inspect",
+  effectClass: "read" as const,
+  riskClass: "low" as const,
+  sandboxRequirement: "none" as const,
+  allowedRoles: Object.freeze(["executor"]),
+  evidencePreconditionPolicyId: "evidence.none.v1",
+  resourcePolicy: Object.freeze({
+    maxWallClockMs: 30_000,
+    maxOutputBytes: 1_048_576,
+    maxConcurrent: 4,
+  }),
+  allowsCallerSuppliedCommand: false,
+});
+const ALLOW_POLICY_GRANT = Object.freeze({
+  decision: "allow" as const,
+  policyId: "policy:test-semantic-execution",
+  reasons: Object.freeze([]),
+  requiredApprovalScopes: Object.freeze([]),
+});
+const PATCH_OPERATION_CONTRACT = Object.freeze({
+  ...READ_OPERATION_CONTRACT,
+  operationId: "code.patch",
+  effectClass: "workspace_write" as const,
+  riskClass: "high" as const,
+  sandboxRequirement: "required" as const,
+  evidencePreconditionPolicyId: "evidence.patch_requires_current_target.v1",
+  resourcePolicy: Object.freeze({
+    maxWallClockMs: 900_000,
+    maxOutputBytes: 4_194_304,
+    maxConcurrent: 1,
+  }),
+});
+const COMMAND_OPERATION_CONTRACT = Object.freeze({
+  ...PATCH_OPERATION_CONTRACT,
+  operationId: "command.run",
+  effectClass: "process_execute" as const,
+  riskClass: "critical" as const,
+  evidencePreconditionPolicyId: "evidence.command_run_escape_hatch.v1",
+  allowsCallerSuppliedCommand: true,
+});
 
 function context(signal?: OperationContext["signal"]): OperationContext {
   return createOperationContext({
@@ -150,10 +192,12 @@ let planCounter = 0;
  * point of the pairing is identity: a supervisor accepts only the authority it was configured
  * with, which is exactly what `newAuthority()` below is used to disprove.
  */
-function newAuthority(): SemanticExecutionAuthority {
+function newAuthority(
+  now: () => string = () => "2026-08-25T00:00:00.000Z",
+): SemanticExecutionAuthority {
   return createSemanticExecutionAuthority({
     generateExecutionPlanId: () => `plan:${++planCounter}`,
-    now: () => "2026-08-25T00:00:00.000Z",
+    now,
   });
 }
 
@@ -188,15 +232,9 @@ function readPlan(
   issuer: SemanticExecutionAuthority = authority,
 ): AuthorizedSemanticExecutionPlan {
   return issuer.mint({
-    contract: {
-      operationId: "code.inspect",
-      effectClass: "read",
-      sandboxRequirement: "none",
-      allowedRoles: ["executor"],
-      allowsCallerSuppliedCommand: false,
-    },
+    contract: READ_OPERATION_CONTRACT,
     role: "executor",
-    policyDecision: "allow",
+    policyGrant: ALLOW_POLICY_GRANT,
     taskId,
     jobId,
     workspace: activeHandle,
@@ -233,6 +271,79 @@ describe("SandboxSupervisor workspace authority", () => {
     await expect(
       supervised.prepare(taskId, jobId, forged, budget, policy, context()),
     ).rejects.toBeInstanceOf(ApplicationError);
+  });
+
+  it("refuses to overwrite authoritative state when an ID generator repeats a SandboxId", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend(), [
+      "sandbox:duplicate",
+      "sandbox:duplicate",
+    ]);
+    await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+
+    await expect(
+      supervised.prepare(taskId, jobId, activeHandle, budget, policy, context()),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("reserves a generated SandboxId while asynchronous preparation is in flight", async () => {
+    let preparing = false;
+    let releasePrepare: (() => void) | undefined;
+    const prepareGate = new Promise<void>((resolve) => {
+      releasePrepare = resolve;
+    });
+    const backend: SandboxBackend = {
+      id: "blocking-prepare",
+      async prepare() {
+        preparing = true;
+        await prepareGate;
+      },
+      async execute() {
+        throw new Error("not used");
+      },
+      async cancel() {},
+      async destroy() {},
+    };
+    const supervised = supervisor(backend, ["sandbox:duplicate", "sandbox:duplicate"]);
+    const first = supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    await vi.waitUntil(() => preparing);
+
+    try {
+      await expect(
+        supervised.prepare(taskId, jobId, activeHandle, budget, policy, context()),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+    } finally {
+      releasePrepare?.();
+    }
+    expect((await first).id).toBe("sandbox:duplicate");
+  });
+
+  it("canonicalizes the workspace root before handing host mount authority to a backend", async () => {
+    const alias = join(root, "workspace-alias");
+    symlinkSync(root, alias, "dir");
+    let preparedRoot: string | undefined;
+    const backend: SandboxBackend = {
+      id: "capture-root",
+      async prepare(specification) {
+        preparedRoot = specification.workspaceRoot;
+      },
+      async execute() {
+        throw new Error("not used");
+      },
+      async cancel() {},
+      async destroy() {},
+    };
+    const supervised = new SandboxSupervisor({
+      backend,
+      workspaces,
+      allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: authority,
+      resolveWorkspaceRoot: async () => alias,
+      generateSandboxId: () => "sandbox:canonical-root",
+    });
+
+    await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+
+    expect(preparedRoot).toBe(root);
   });
 });
 
@@ -279,11 +390,8 @@ describe("sandbox execution is bound to an issued authorization", () => {
     for (const operationId of ["git.worktree", "shell.exec", "docker.run"]) {
       const plan = readPlan(handle, {
         contract: {
+          ...READ_OPERATION_CONTRACT,
           operationId,
-          effectClass: "read",
-          sandboxRequirement: "none",
-          allowedRoles: ["executor"],
-          allowsCallerSuppliedCommand: false,
         },
       });
       await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
@@ -306,6 +414,45 @@ describe("sandbox execution is bound to an issued authorization", () => {
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const result = await supervised.execute(handle, readPlan(handle), context());
     expect(result.status).toBe("unknown");
+    expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
+  });
+
+  it("refuses every fresh ordinary effect after an indeterminate effect degraded the sandbox", async () => {
+    let dispatches = 0;
+    const indeterminate: SandboxBackend = {
+      id: "indeterminate",
+      async prepare() {},
+      async execute() {
+        dispatches += 1;
+        throw new SandboxIndeterminateEffectError("effect state is unknown");
+      },
+      async cancel() {},
+      async destroy() {},
+    };
+    const supervised = supervisor(indeterminate);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    expect((await supervised.execute(handle, readPlan(handle), context())).status).toBe("unknown");
+
+    await expect(supervised.execute(handle, readPlan(handle), context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    expect(dispatches).toBe(1);
+  });
+
+  it("does not turn a degraded sandbox back to ready merely because cancel cleanup returned", async () => {
+    const indeterminate: SandboxBackend = {
+      id: "indeterminate",
+      async prepare() {},
+      async execute() {
+        throw new SandboxIndeterminateEffectError("effect state is unknown");
+      },
+      async cancel() {},
+      async destroy() {},
+    };
+    const supervised = supervisor(indeterminate);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    expect((await supervised.execute(handle, readPlan(handle), context())).status).toBe("unknown");
+    await supervised.cancel(handle.id, context());
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
   });
 });
@@ -332,10 +479,8 @@ describe("execution capabilities are issuer-bound and single-use", () => {
       handle,
       {
         contract: {
+          ...READ_OPERATION_CONTRACT,
           operationId: "git.status",
-          effectClass: "read",
-          sandboxRequirement: "none",
-          allowedRoles: ["executor"],
           allowsCallerSuppliedCommand: true,
         },
         command: { executable: "touch", arguments: ["/etc/probe"] },
@@ -370,13 +515,7 @@ describe("execution capabilities are issuer-bound and single-use", () => {
 describe("workspace currency is re-verified at the sink", () => {
   function patchPlan(sandbox: SemanticExecutionAuthorizationInput["sandbox"], fingerprint: string) {
     return readPlan(sandbox, {
-      contract: {
-        operationId: "code.patch",
-        effectClass: "workspace_write",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: false,
-      },
+      contract: PATCH_OPERATION_CONTRACT,
       parameters: { pathScope: ["target.ts"], patch: "--- a\n+++ b\n" },
       currencyPrecondition: {
         path: "target.ts",
@@ -526,6 +665,112 @@ describe("dispatch re-reads the authoritative workspace", () => {
       code: "CONFLICT",
     });
     expect(dispatched).toBe(false);
+  });
+
+  it("rechecks policy expiry after asynchronous workspace validation at the dispatch edge", async () => {
+    let now = "2026-08-25T00:00:00.000Z";
+    let rootResolutions = 0;
+    const expiringAuthority = newAuthority(() => now);
+    const supervised = new SandboxSupervisor({
+      backend: watching,
+      workspaces,
+      allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: expiringAuthority,
+      resolveWorkspaceRoot: async () => {
+        rootResolutions += 1;
+        if (rootResolutions === 2) now = "2026-08-25T00:00:01.000Z";
+        return root;
+      },
+      generateSandboxId: () => "sandbox:1",
+    });
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const plan = readPlan(
+      handle,
+      {
+        policyGrant: {
+          ...ALLOW_POLICY_GRANT,
+          expiresAt: "2026-08-25T00:00:01.000Z",
+        },
+      },
+      expiringAuthority,
+    );
+
+    await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    expect(dispatched).toBe(false);
+  });
+
+  it("does not let destroy erase lifecycle authority while execution is entering dispatch", async () => {
+    let releaseRoot: (() => void) | undefined;
+    let rootResolutions = 0;
+    const rootGate = new Promise<void>((resolve) => {
+      releaseRoot = resolve;
+    });
+    const supervised = new SandboxSupervisor({
+      backend: watching,
+      workspaces,
+      allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: authority,
+      resolveWorkspaceRoot: async () => {
+        rootResolutions += 1;
+        if (rootResolutions === 2) await rootGate;
+        return root;
+      },
+      generateSandboxId: () => "sandbox:1",
+    });
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const execution = supervised.execute(handle, readPlan(handle), context());
+    await vi.waitUntil(() => rootResolutions === 2);
+
+    let destroyError: unknown;
+    try {
+      await supervised.destroy(handle.id, context());
+    } catch (error) {
+      destroyError = error;
+    } finally {
+      releaseRoot?.();
+    }
+
+    expect(destroyError).toMatchObject({ code: "CONFLICT" });
+    expect((await execution).status).toBe("completed");
+    expect((await supervised.inspect(handle.id, context()))?.status).toBe("ready");
+  });
+
+  it("does not let cancel race an execution that is entering dispatch", async () => {
+    let releaseRoot: (() => void) | undefined;
+    let rootResolutions = 0;
+    const rootGate = new Promise<void>((resolve) => {
+      releaseRoot = resolve;
+    });
+    const supervised = new SandboxSupervisor({
+      backend: watching,
+      workspaces,
+      allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: authority,
+      resolveWorkspaceRoot: async () => {
+        rootResolutions += 1;
+        if (rootResolutions === 2) await rootGate;
+        return root;
+      },
+      generateSandboxId: () => "sandbox:1",
+    });
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const execution = supervised.execute(handle, readPlan(handle), context());
+    await vi.waitUntil(() => rootResolutions === 2);
+
+    let cancelError: unknown;
+    try {
+      await supervised.cancel(handle.id, context());
+    } catch (error) {
+      cancelError = error;
+    } finally {
+      releaseRoot?.();
+    }
+
+    expect(cancelError).toMatchObject({ code: "CONFLICT" });
+    expect((await execution).status).toBe("completed");
+    expect((await supervised.inspect(handle.id, context()))?.status).toBe("ready");
   });
 
   it("refuses to seal or discard a workspace while an effect is entering dispatch", async () => {
@@ -717,13 +962,7 @@ describe("guarded workspace writes", () => {
     const supervised = supervisor(new ReferenceSandboxBackend());
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const plan = readPlan(handle, {
-      contract: {
-        operationId: "code.patch",
-        effectClass: "workspace_write",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: false,
-      },
+      contract: PATCH_OPERATION_CONTRACT,
     });
     await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
@@ -757,13 +996,7 @@ describe("guarded workspace writes", () => {
     const supervised = supervisor(writer);
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const plan = readPlan(handle, {
-      contract: {
-        operationId: "code.patch",
-        effectClass: "workspace_write",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: false,
-      },
+      contract: PATCH_OPERATION_CONTRACT,
       currencyPrecondition: {
         path: "target.ts",
         expectedFingerprint: fingerprint,
@@ -801,13 +1034,7 @@ describe("guarded workspace writes", () => {
     const supervised = supervisor(racing);
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const plan = readPlan(handle, {
-      contract: {
-        operationId: "code.patch",
-        effectClass: "workspace_write",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: false,
-      },
+      contract: PATCH_OPERATION_CONTRACT,
       currencyPrecondition: {
         path: "target.ts",
         expectedFingerprint: fingerprint,
@@ -976,13 +1203,7 @@ describe("ReferenceSandboxBackend", () => {
     const supervised = supervisor(new ReferenceSandboxBackend());
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const patch = readPlan(handle, {
-      contract: {
-        operationId: "code.patch",
-        effectClass: "workspace_write",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: false,
-      },
+      contract: PATCH_OPERATION_CONTRACT,
       parameters: { pathScope: ["target.ts"], patch: "--- a\n+++ b\n" },
     });
     // The reference backend does not declare workspace-write support, so the supervisor refuses
@@ -1000,6 +1221,11 @@ describe("direct Docker sandbox configuration validation", () => {
     dockerExecutable: "docker",
     userSpec: "65534:65534",
   };
+
+  it("derives collision-resistant names from the complete SandboxId", () => {
+    expect(containerNameFor("sandbox:a-b")).not.toBe(containerNameFor("sandbox:a:b"));
+    expect(containerNameFor("sandbox:a:b")).toMatch(/^v31m4-sandbox-[a-f0-9]{64}$/u);
+  });
 
   it("refuses an unpinned image, a root user, or a missing runtime before anything runs", () => {
     for (const invalid of [
@@ -1161,17 +1387,12 @@ describe("direct Docker sandbox container lifecycle", () => {
   function commandPlan(
     sandbox: SemanticExecutionAuthorizationInput["sandbox"],
     command: { executable: string; arguments: readonly string[] },
+    resourcePolicy: SemanticResourcePolicy = COMMAND_OPERATION_CONTRACT.resourcePolicy,
   ): AuthorizedSemanticExecutionPlan {
     return authority.mint({
-      contract: {
-        operationId: "command.run",
-        effectClass: "process_execute",
-        sandboxRequirement: "required",
-        allowedRoles: ["executor"],
-        allowsCallerSuppliedCommand: true,
-      },
+      contract: { ...COMMAND_OPERATION_CONTRACT, resourcePolicy },
       role: "executor",
-      policyDecision: "allow",
+      policyGrant: ALLOW_POLICY_GRANT,
       taskId,
       jobId,
       workspace: activeHandle,
@@ -1203,6 +1424,38 @@ describe("direct Docker sandbox container lifecycle", () => {
   beforeEach(() => {
     stubDir = mkdtempSync(join(tmpdir(), "v31m4-docker-stub-"));
     stubDocker = join(stubDir, "docker");
+    const inspection = (sandboxId: string, containerId: string) =>
+      JSON.stringify({
+        Id: containerId,
+        Name: `/${containerNameFor("sandbox:1")}`,
+        Config: {
+          User: "65534:65534",
+          Labels: {
+            "v31m4.sandbox": sandboxId,
+            "v31m4.task": "task:root",
+            "v31m4.job": "job:1",
+            "v31m4.workspace": "workspace-1",
+          },
+          Env: ["HOME=/home/sandbox", "TMPDIR=/tmp"],
+        },
+        HostConfig: {
+          ReadonlyRootfs: true,
+          NetworkMode: "none",
+          CapDrop: ["ALL"],
+          SecurityOpt: ["no-new-privileges"],
+          Tmpfs: {
+            "/tmp": "rw,noexec,nosuid,nodev,size=64m",
+            "/home/sandbox": "rw,noexec,nosuid,nodev,size=16m",
+          },
+        },
+        Mounts: [
+          { Type: "bind", Source: root, Destination: "/workspace", RW: true },
+          { Type: "tmpfs", Source: "", Destination: "/tmp", RW: true },
+          { Type: "tmpfs", Source: "", Destination: "/home/sandbox", RW: true },
+        ],
+      });
+    const ownedInspection = inspection("sandbox:1", "d".repeat(64));
+    const foreignInspection = inspection("sandbox:foreign", "f".repeat(64));
     writeFileSync(
       stubDocker,
       [
@@ -1224,8 +1477,13 @@ describe("direct Docker sandbox container lifecycle", () => {
         "         done; sleep 5;",
         "       fi;",
         '       if [ -f "$DIR/hang" ]; then sleep 30; fi; exit 0 ;;',
+        '  inspect) if [ -f "$DIR/foreign-owner" ]; then',
+        `             echo '${foreignInspection}';`,
+        "           else",
+        `             echo '${ownedInspection}';`,
+        "           fi; exit 0 ;;",
         "  rm) exit 0 ;;",
-        '  ps) if [ -f "$DIR/still-present" ]; then echo deadbeefcafe; fi; exit 0 ;;',
+        '  ps) if [ -f "$DIR/still-present" ] || [ -f "$DIR/foreign-owner" ]; then echo deadbeefcafe; fi; exit 0 ;;',
         "esac",
         "exit 0",
         "",
@@ -1269,10 +1527,28 @@ describe("direct Docker sandbox container lifecycle", () => {
     // The docker client was killed, so the effect is unknown — never a silent retry.
     expect(result.status).toBe("unknown");
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
-    const name = containerNameFor("sandbox:1");
-    expect(calls()).toContain(`rm --force ${name}`);
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
     expect(calls().some((line) => line.startsWith("ps --all --quiet"))).toBe(true);
   }, 30_000);
+
+  it("cannot weaken the catalog wall-clock ceiling with a looser sandbox budget", async () => {
+    mark("hang");
+    const sandbox = new DirectDockerSandbox(stubSettings());
+    const supervised = shortBudgetSupervisor(sandbox);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const result = await supervised.execute(
+      handle,
+      commandPlan(
+        handle,
+        { executable: "/bin/sleep", arguments: ["30"] },
+        { ...COMMAND_OPERATION_CONTRACT.resourcePolicy, maxWallClockMs: 200 },
+      ),
+      context(),
+    );
+
+    expect(result.status).toBe("unknown");
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
+  }, 10_000);
 
   it("reconciles the container when the supervisor kills the client on an output limit", async () => {
     mark("flood");
@@ -1295,8 +1571,27 @@ describe("direct Docker sandbox container lifecycle", () => {
     // The client was killed by the Layer 8 supervisor; the container's fate is unproven.
     expect(result.status).toBe("unknown");
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
-    expect(calls()).toContain(`rm --force ${containerNameFor("sandbox:1")}`);
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
     expect(calls().some((line) => line.startsWith("ps --all --quiet"))).toBe(true);
+  }, 30_000);
+
+  it("cannot weaken the catalog output ceiling with a looser backend setting", async () => {
+    mark("flood");
+    const sandbox = new DirectDockerSandbox({ ...stubSettings(), maxOutputBytes: 1_048_576 });
+    const supervised = shortBudgetSupervisor(sandbox);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const result = await supervised.execute(
+      handle,
+      commandPlan(
+        handle,
+        { executable: "/bin/true", arguments: [] },
+        { ...COMMAND_OPERATION_CONTRACT.resourcePolicy, maxOutputBytes: 2_048 },
+      ),
+      context(),
+    );
+
+    expect(result.status).toBe("unknown");
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
   }, 30_000);
 
   it("treats a docker client error exit as an unproven container, not a command failure", async () => {
@@ -1312,7 +1607,7 @@ describe("direct Docker sandbox container lifecycle", () => {
     // Exit 125 is docker's own failure; the container's fate is unknown.
     expect(result.status).toBe("unknown");
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
-    expect(calls()).toContain(`rm --force ${containerNameFor("sandbox:1")}`);
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
   });
 
   it("reports an ordinary failure only once the container lifecycle is proven finished", async () => {
@@ -1362,7 +1657,7 @@ describe("direct Docker sandbox container lifecycle", () => {
     );
     expect(result.status).toBe("unknown");
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
-    expect(calls()).toContain(`rm --force ${containerNameFor("sandbox:1")}`);
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
   }, 30_000);
 
   it("force-removes the container on cancellation", async () => {
@@ -1370,7 +1665,7 @@ describe("direct Docker sandbox container lifecycle", () => {
     const supervised = shortBudgetSupervisor(sandbox);
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     await supervised.cancel(handle.id, context());
-    expect(calls()).toContain(`rm --force ${containerNameFor("sandbox:1")}`);
+    expect(calls()).toContain(`rm --force ${"d".repeat(64)}`);
   });
 
   it("surfaces a cleanup failure and keeps the sandbox reconcilable", async () => {
@@ -1384,6 +1679,31 @@ describe("direct Docker sandbox container lifecycle", () => {
     const retained = await supervised.inspect(handle.id, context());
     expect(retained).not.toBeNull();
     expect(retained?.status).toBe("degraded");
+  });
+
+  it("never removes a same-name container whose ownership labels are foreign", async () => {
+    mark("foreign-owner");
+    const sandbox = new DirectDockerSandbox(stubSettings());
+    const supervised = shortBudgetSupervisor(sandbox);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+
+    await expect(supervised.destroy(handle.id, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    expect(calls().some((line) => line.startsWith("rm --force"))).toBe(false);
+    expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
+  });
+
+  it("observes and validates the live daemon-side configuration through supervision", async () => {
+    const sandbox = new DirectDockerSandbox(stubSettings());
+    const supervised = shortBudgetSupervisor(sandbox);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+
+    const observation = await sandbox.inspectActiveSandbox(handle.id, context());
+
+    expect(observation.labels["v31m4.sandbox"]).toBe(handle.id);
+    expect(observation.mounts.filter((mount) => mount.type === "bind")).toHaveLength(1);
+    expect(calls()).toContain(`inspect --format {{json .}} ${containerNameFor("sandbox:1")}`);
   });
 
   it("refuses to invent a container command for an operation with no trusted binding", async () => {

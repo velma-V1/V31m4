@@ -65,14 +65,14 @@ packages/
     │       └── internal/deterministic.ts # private deterministic helpers (not exported)
     │   └── use-cases/                    # Layer 6: 21 canonical + 2 approval-lifecycle entrypoints
     └── tests/                            # Layer 4–6 verification
-├── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event-replay store + sandbox/ (SandboxPort supervisor, reference + direct-Docker backends)
+├── infrastructure/                      # L7 persistence + L8 processes/rpc/scheduling/secrets/adapters/logging + L9 gateways/policy/paths/plugins + L10 event replay + sandbox/ (ready-only, lifecycle-exclusive supervisor; reference backend; owned/supervised direct-Docker challenger and live inspection)
 └── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
 
 adapters/
 └── local-supervised/                    # Optional dynamic Ollama/OpenAI-compatible model, contained kernel, and verifier JSON-RPC children
 
 apps/
-├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local execution composition; src/autonomy/ owns the semantic operation catalog
+├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local composition; src/autonomy/ owns the 19-operation catalog and canonical policy-backed capability authorizer
 └── departments-integration/             # Post-core: independence-matrix integration tests (core-only / both departments / after removal)
 
 plugins/

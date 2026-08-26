@@ -15,6 +15,12 @@ import {
   type DockerSandboxSettings,
   HOST_CLIENT_ENVIRONMENT,
 } from "./docker-sandbox-configuration.js";
+import {
+  assertDockerContainerOwnership,
+  assertDockerRuntimeObservation,
+  type DockerInspectObservation,
+  parseDockerInspectObservation,
+} from "./docker-sandbox-inspection.js";
 
 /**
  * What the run actually proved. A non-zero docker exit is not by itself evidence about the
@@ -147,6 +153,7 @@ export class DirectDockerSandbox implements SandboxBackend {
   readonly #settings: DockerSandboxSettings;
   /** Explicit supervised lifecycle state: which container name belongs to which sandbox. */
   readonly #containers = new Map<string, string>();
+  readonly #specs = new Map<string, SandboxExecutionSpec>();
   #availability: Promise<boolean> | undefined;
 
   constructor(settings: DockerSandboxSettings) {
@@ -170,6 +177,7 @@ export class DirectDockerSandbox implements SandboxBackend {
   async prepare(spec: SandboxExecutionSpec, _context: OperationContext): Promise<void> {
     await this.#assertAvailable(spec);
     this.#containers.set(spec.sandboxId, containerNameFor(spec.sandboxId));
+    this.#specs.set(spec.sandboxId, spec);
   }
 
   async execute(
@@ -192,8 +200,11 @@ export class DirectDockerSandbox implements SandboxBackend {
     const result = await runSupervised(
       this.#settings.dockerExecutable,
       args,
-      spec.budget.maxWallClockMs,
-      this.#settings.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      Math.min(spec.budget.maxWallClockMs, plan.resourcePolicy.maxWallClockMs),
+      Math.min(
+        this.#settings.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+        plan.resourcePolicy.maxOutputBytes,
+      ),
       context.signal,
     ).catch((error: unknown) => {
       if (error instanceof ApplicationError) throw error;
@@ -287,6 +298,23 @@ export class DirectDockerSandbox implements SandboxBackend {
   async destroy(spec: SandboxExecutionSpec, _context: OperationContext): Promise<void> {
     await this.#removeContainer(spec);
     this.#containers.delete(spec.sandboxId);
+    this.#specs.delete(spec.sandboxId);
+  }
+
+  /**
+   * Proof challenger: observes the live daemon-side container through the same Layer 8 process
+   * authority as every other Docker client call, then validates effective state rather than argv.
+   */
+  async inspectActiveSandbox(
+    sandboxId: string,
+    context: OperationContext,
+  ): Promise<DockerInspectObservation> {
+    const spec = this.#specFor(sandboxId);
+    const observation = await this.#inspectContainer(spec, context);
+    return assertDockerRuntimeObservation(observation, {
+      ...identityFor(spec),
+      workspaceRoot: spec.workspaceRoot,
+    });
   }
 
   /**
@@ -302,18 +330,30 @@ export class DirectDockerSandbox implements SandboxBackend {
       );
     }
     const name = this.#containers.get(spec.sandboxId) ?? containerNameFor(spec.sandboxId);
-    // `rm --force` exits non-zero when the container is already gone, which is the state we
-    // want; absence is established by the explicit check below, not by this exit code.
-    await runSupervised(
+    let observation: DockerInspectObservation;
+    try {
+      observation = await this.#inspectContainer(spec);
+    } catch (error) {
+      // `docker inspect` exits non-zero for an already-removed `--rm` container as well as for
+      // daemon failures. Only an independent name query may distinguish proven absence.
+      if (await this.#containerIsAbsent(spec)) return;
+      throw error;
+    }
+    assertDockerContainerOwnership(observation, identityFor(spec));
+    const removed = await runSupervised(
       this.#settings.dockerExecutable,
-      ["rm", "--force", name],
+      ["rm", "--force", observation.containerId],
       CLEANUP_TIMEOUT_MS,
       4_096,
-    ).catch(() => undefined);
-
+    );
+    if (removed.code !== 0 || removed.termination !== "exited") {
+      throw new ApplicationError("DEPENDENCY_FAILURE", "Sandbox container removal failed.", {
+        details: { sandboxId: spec.sandboxId, container: name, stderr: removed.stderr },
+      });
+    }
     const listed = await runSupervised(
       this.#settings.dockerExecutable,
-      ["ps", "--all", "--quiet", "--filter", `name=^${name}$`],
+      ["ps", "--all", "--quiet", "--filter", `id=${observation.containerId}`],
       CLEANUP_TIMEOUT_MS,
       4_096,
     );
@@ -333,6 +373,52 @@ export class DirectDockerSandbox implements SandboxBackend {
     }
   }
 
+  async #inspectContainer(
+    spec: SandboxExecutionSpec,
+    context?: OperationContext,
+  ): Promise<DockerInspectObservation> {
+    const name = this.#containers.get(spec.sandboxId) ?? containerNameFor(spec.sandboxId);
+    const inspected = await runSupervised(
+      this.#settings.dockerExecutable,
+      ["inspect", "--format", "{{json .}}", name],
+      CLEANUP_TIMEOUT_MS,
+      64 * 1024,
+      context?.signal,
+    );
+    if (inspected.code !== 0 || inspected.termination !== "exited") {
+      throw new ApplicationError(
+        "DEPENDENCY_FAILURE",
+        "Docker container ownership could not be inspected before cleanup.",
+        { details: { sandboxId: spec.sandboxId, container: name, stderr: inspected.stderr } },
+      );
+    }
+    const observation = parseDockerInspectObservation(inspected.stdout);
+    if (observation.name !== `/${name}`) {
+      throw new ApplicationError(
+        "INTEGRITY_FAILURE",
+        "Docker inspect returned a container whose name does not match the requested sandbox.",
+        {
+          details: {
+            sandboxId: spec.sandboxId,
+            expectedName: name,
+            observedName: observation.name,
+          },
+        },
+      );
+    }
+    return observation;
+  }
+
+  #specFor(sandboxId: string): SandboxExecutionSpec {
+    const spec = this.#specs.get(sandboxId);
+    if (spec === undefined) {
+      throw new ApplicationError("NOT_FOUND", "The Docker sandbox is not prepared.", {
+        details: { sandboxId },
+      });
+    }
+    return spec;
+  }
+
   async #assertAvailable(spec: SandboxExecutionSpec): Promise<void> {
     if (await this.available()) return;
     throw new ApplicationError(
@@ -341,4 +427,13 @@ export class DirectDockerSandbox implements SandboxBackend {
       { details: { sandboxId: spec.sandboxId, executable: this.#settings.dockerExecutable } },
     );
   }
+}
+
+function identityFor(spec: SandboxExecutionSpec) {
+  return {
+    sandboxId: spec.sandboxId,
+    taskId: spec.taskId,
+    jobId: spec.jobId,
+    workspaceId: spec.workspaceId,
+  };
 }
