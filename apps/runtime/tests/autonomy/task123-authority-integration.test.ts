@@ -995,6 +995,192 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     ]);
   });
 
+  /**
+   * Privileged logic must not reach through writable class or prototype members.
+   *
+   * TypeScript `private` is erased at runtime, so `requireCanonicalAuthority` was an ordinary
+   * writable static and `projection`/`intentFingerprintFor`/`observeReconciledState` were ordinary
+   * writable prototype members. Each one, replaced after construction, redirected a different
+   * security decision. They are now module-private free functions; the public members that remain
+   * are wrappers nothing privileged calls.
+   */
+  describe("post-construction method patching cannot redirect privileged decisions", () => {
+    type Patch = readonly [target: object, key: string, value: unknown];
+
+    /** Applies patches, runs the body, and always restores exactly what was there. */
+    async function withPatches(
+      patches: readonly Patch[],
+      body: () => Promise<void>,
+    ): Promise<void> {
+      const saved = patches.map(
+        ([target, key]) => [target, key, Object.getOwnPropertyDescriptor(target, key)] as const,
+      );
+      for (const [target, key, value] of patches) {
+        Object.defineProperty(target, key, { value, configurable: true, writable: true });
+      }
+      try {
+        await body();
+      } finally {
+        for (const [target, key, descriptor] of saved) {
+          if (descriptor === undefined) Reflect.deleteProperty(target, key);
+          else Object.defineProperty(target, key, descriptor);
+        }
+      }
+    }
+
+    const ReconcilerClass = () =>
+      Object.getPrototypeOf(reconciler).constructor as unknown as Record<string, unknown>;
+    const ReconcilerProto = () => Object.getPrototypeOf(reconciler) as object;
+
+    it("ignores a no-op patched authority check", async () => {
+      const foreign = await inspectPlan(otherSurface().surface);
+      probeCalls = 0;
+      await withPatches(
+        [[ReconcilerClass() as object, "requireCanonicalAuthority", () => undefined]],
+        async () => {
+          await expect(
+            reconciler.runGovernedEffect(
+              { taskId, sandbox, plan: foreign, probe: countedApplied },
+              context,
+            ),
+          ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+        },
+      );
+      expect(await ledgerKinds()).toEqual([]);
+      expect(probeCalls).toBe(0);
+      expect(backendExecutions).toBe(0);
+    });
+
+    it("ignores a patched intent fingerprint, so duplicates stay blocked", async () => {
+      await ambiguousAttempt();
+      const before = await ledgerKinds();
+      let n = 0;
+      const changingFingerprint = () => {
+        n += 1;
+        return `${"f".repeat(63)}${n % 10}`;
+      };
+      await withPatches(
+        [[ReconcilerProto(), "intentFingerprintFor", changingFingerprint]],
+        async () => {
+          await expect(
+            reconciler.runGovernedEffect(
+              { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+              context,
+            ),
+          ).rejects.toMatchObject({ code: "CONFLICT" });
+        },
+      );
+      expect(await ledgerKinds()).toEqual(before);
+      expect(backendExecutions).toBe(1);
+    });
+
+    it("ignores a patched projection, so a blocking attempt still blocks", async () => {
+      await ambiguousAttempt();
+      const before = await ledgerKinds();
+      await withPatches(
+        [
+          [
+            ReconcilerProto(),
+            "projection",
+            async () => ({
+              attempts: [],
+              invalidatedEntryIds: new Set<string>(),
+              validityNodes: new Map(),
+            }),
+          ],
+        ],
+        async () => {
+          await expect(
+            reconciler.runGovernedEffect(
+              { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+              context,
+            ),
+          ).rejects.toMatchObject({ code: "CONFLICT" });
+        },
+      );
+      expect(await ledgerKinds()).toEqual(before);
+      expect(backendExecutions).toBe(1);
+    });
+
+    it("follows the real probe, not a patched observer", async () => {
+      const attemptEntryId = await ambiguousAttempt();
+      await withPatches(
+        [
+          [
+            ReconcilerProto(),
+            "observeReconciledState",
+            async () => ({ kind: "applied", facts: [] }),
+          ],
+        ],
+        async () => {
+          // The real probe proves non-application; the patch claims the opposite.
+          const settled = await reconciler.reconcileAttempt(
+            { taskId, attemptEntryId, probe: notApplied },
+            context,
+          );
+          expect(settled.outcome).toBe("not_applied");
+          expect(settled.outcomeKind).toBe("effect_nonapplication");
+        },
+      );
+      expect(backendExecutions).toBe(1);
+    });
+
+    it("is unchanged with every mutable helper patched at once", async () => {
+      const attemptEntryId = await ambiguousAttempt();
+      const foreign = await inspectPlan(otherSurface().surface);
+      probeCalls = 0;
+      await withPatches(
+        [
+          [ReconcilerClass() as object, "requireCanonicalAuthority", () => undefined],
+          [ReconcilerProto(), "intentFingerprintFor", () => "0".repeat(64)],
+          [
+            ReconcilerProto(),
+            "projection",
+            async () => ({
+              attempts: [],
+              invalidatedEntryIds: new Set<string>(),
+              validityNodes: new Map(),
+            }),
+          ],
+          [
+            ReconcilerProto(),
+            "observeReconciledState",
+            async () => ({ kind: "applied", facts: [] }),
+          ],
+        ],
+        async () => {
+          // Execution: foreign capability still refused, nothing written or dispatched.
+          await expect(
+            reconciler.runGovernedEffect(
+              { taskId, sandbox, plan: foreign, probe: countedApplied },
+              context,
+            ),
+          ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+          // Duplicate intent still blocked.
+          await expect(
+            reconciler.runGovernedEffect(
+              { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+              context,
+            ),
+          ).rejects.toMatchObject({ code: "CONFLICT" });
+          // Reconciliation still follows the real probe.
+          const settled = await reconciler.reconcileAttempt(
+            { taskId, attemptEntryId, probe: notApplied },
+            context,
+          );
+          expect(settled.outcome).toBe("not_applied");
+        },
+      );
+      expect(probeCalls).toBe(0);
+      expect(backendExecutions).toBe(1);
+      expect(await ledgerKinds()).toEqual([
+        "effect_attempt",
+        "reconciliation_indeterminate",
+        "effect_nonapplication",
+      ]);
+    });
+  });
+
   it("refuses a foreign authority's capability before any ledger write, probe, or backend", async () => {
     const plan = await inspectPlan(otherSurface().surface);
 

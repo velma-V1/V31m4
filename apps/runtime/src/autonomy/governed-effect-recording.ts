@@ -1,12 +1,17 @@
 import {
   ApplicationError,
+  type AuthorizedSemanticExecutionPlan,
   appendExecutionLedgerEntry,
   type ExecutionLedgerRepositoryPort,
   type OperationContext,
   type SandboxExecutionResult,
   type UnitOfWorkPort,
 } from "@v31m4/application";
-import { ExecutionLedgerEntry, type ExecutionLedgerEntry as LedgerEntry } from "@v31m4/domain";
+import {
+  type ContentHash,
+  ExecutionLedgerEntry,
+  type ExecutionLedgerEntry as LedgerEntry,
+} from "@v31m4/domain";
 import type {
   EffectPostState,
   GovernedEffectOutcome,
@@ -129,5 +134,23 @@ export async function recordOutcome(
     outcomeEntryId: entry.id,
     outcomeKind,
     result,
+  });
+}
+
+/**
+ * The deterministic identity of the effect a plan would perform, excluding everything that varies
+ * between tries so a repeat is recognisable as a repeat.
+ *
+ * A module-private free function, not a method: duplicate-intent protection rests entirely on this
+ * value, and a writable prototype member could be replaced after construction to hand identical
+ * effects different fingerprints and defeat it.
+ */
+export function intentFingerprintOf(plan: AuthorizedSemanticExecutionPlan): ContentHash {
+  return ExecutionLedgerEntry.intentFingerprint({
+    taskId: plan.taskId,
+    operationId: plan.operationId,
+    workspaceId: plan.workspaceId,
+    command: plan.command,
+    parameters: plan.parameters as never,
   });
 }

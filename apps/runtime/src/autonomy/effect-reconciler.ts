@@ -6,7 +6,6 @@ import {
   decideRetry,
   type LedgerProjection,
   type OperationContext,
-  reconcileExecutionEffect,
   type SandboxExecutionResult,
   type UnitOfWorkTransaction,
 } from "@v31m4/application";
@@ -20,15 +19,12 @@ import {
   type GovernedSandboxLifecycle,
 } from "./authority-capture.js";
 import type {
-  EffectPostState,
   EffectReconcilerDependencies,
-  EffectReconciliationProbe,
   EffectReconciliationRequest,
   EffectReconciliationResult,
   GovernedEffectOutcome,
   GovernedEffectRequest,
   GovernedExecutionSurfaceOptions,
-  ReconciliationAttemptDescriptor,
 } from "./effect-reconciler-contracts.js";
 import {
   LEDGER_KIND_FOR_POST_STATE,
@@ -36,10 +32,16 @@ import {
 } from "./effect-reconciler-contracts.js";
 import {
   assertScopedIdentity,
+  intentFingerprintOf,
   observePostState,
   recordOutcome,
 } from "./governed-effect-recording.js";
-import { describeAttempt, requireReconcilableAttempt } from "./reconciliation-attempt-lookup.js";
+import {
+  describeAttempt,
+  observeReconciledState,
+  projectionFor,
+  requireReconcilableAttempt,
+} from "./reconciliation-attempt-lookup.js";
 import {
   createSemanticAuthorizationBoundary,
   type SemanticAuthorizationBoundary,
@@ -166,31 +168,30 @@ export class EffectReconciler {
    * them: the canonical scan follows the ledger's cursor to exhaustion rather than deciding
    * against whatever fits in one page.
    */
+  /**
+   * The current folded history for a task.
+   *
+   * A convenience wrapper for callers and tests. Privileged code never routes through it — it is
+   * a writable prototype member, so a patched version could hide a blocking attempt — and calls
+   * the module-private `projectionFor` directly instead.
+   */
   async projection(
     taskId: TaskId,
     context: OperationContext,
     transaction?: UnitOfWorkTransaction,
   ): Promise<LedgerProjection> {
-    return reconcileExecutionEffect(
-      requireReconcilerState(this).dependencies,
-      taskId,
-      context,
-      transaction,
-    );
+    return projectionFor(requireReconcilerState(this).dependencies, taskId, context, transaction);
   }
 
   /**
-   * The deterministic identity of the effect this plan would perform, excluding everything that
-   * varies between tries so a repeat is recognisable as a repeat.
+   * The deterministic identity of the effect this plan would perform.
+   *
+   * A convenience wrapper, for the same reason as `projection`: duplicate-intent protection rests
+   * on this value, so privileged code calls the module-private `intentFingerprintOf` instead of a
+   * member that could be replaced.
    */
   intentFingerprintFor(plan: AuthorizedSemanticExecutionPlan): ContentHash {
-    return ExecutionLedgerEntry.intentFingerprint({
-      taskId: plan.taskId,
-      operationId: plan.operationId,
-      workspaceId: plan.workspaceId,
-      command: plan.command,
-      parameters: plan.parameters as never,
-    });
+    return intentFingerprintOf(plan);
   }
 
   /**
@@ -209,13 +210,6 @@ export class EffectReconciler {
    * execution authority there would be wrong — and an already-consumed capability stays
    * authentic, which is what lets the attempt it created be settled later.
    */
-  private static requireCanonicalAuthority(
-    surface: SurfaceAuthorityState,
-    plan: AuthorizedSemanticExecutionPlan,
-  ): void {
-    surface.verifyExecutionAuthority(plan);
-  }
-
   async runGovernedEffect(
     request: GovernedEffectRequest,
     context: OperationContext,
@@ -228,9 +222,11 @@ export class EffectReconciler {
     const { plan, sandbox, taskId } = request;
     // Then the capability: before the projection this claim reads, before the attempt is
     // appended, and before anything reaches SandboxPort.
-    EffectReconciler.requireCanonicalAuthority(surface, plan);
+    // The verifier captured from this surface's own boundary at construction — a function
+    // value in module-private state, not a member anyone can replace.
+    surface.verifyExecutionAuthority(plan);
     assertScopedIdentity(request);
-    const intentFingerprint = this.intentFingerprintFor(plan);
+    const intentFingerprint = intentFingerprintOf(plan);
 
     // Claiming the intent is one atomic step, not a check followed by a write. Reading the
     // history, deciding, and appending the attempt all happen inside a single authoritative
@@ -240,7 +236,7 @@ export class EffectReconciler {
     // attempt rather than as silence.
     const attempt = await state.dependencies.unitOfWork.execute(context, async (transaction) => {
       const decision = decideRetry(
-        await this.projection(taskId, context, transaction),
+        await projectionFor(state.dependencies, taskId, context, transaction),
         intentFingerprint,
       );
       if (!decision.allowed) {
@@ -326,13 +322,16 @@ export class EffectReconciler {
     // caller has since attached to it.
     const { dependencies } = requireReconcilerState(this);
     const { taskId, attemptEntryId } = request;
-    const attempt = requireReconcilableAttempt(await this.projection(taskId, context), request);
+    const attempt = requireReconcilableAttempt(
+      await projectionFor(dependencies, taskId, context),
+      request,
+    );
     const descriptor = describeAttempt(attempt);
 
     // Observation happens outside any transaction — it is external execution, and Layer 7 forbids
     // that inside one. The append below re-reads the attempt's committed state, so a racing
     // reconciliation cannot slip a second terminal outcome in behind this probe.
-    const post = await this.observeReconciledState(descriptor, request.probe, context);
+    const post = await observeReconciledState(descriptor, request.probe, context);
     const outcome = OUTCOME_FOR_POST_STATE[post.kind];
 
     if (!canTransitionAttemptOutcome(attempt.outcome, outcome)) {
@@ -379,22 +378,6 @@ export class EffectReconciler {
       outcomeKind,
       reason: null,
     });
-  }
-
-  /** A probe that cannot observe is not proof of anything; it leaves the attempt unproven. */
-  private async observeReconciledState(
-    attempt: ReconciliationAttemptDescriptor,
-    probe: EffectReconciliationProbe,
-    context: OperationContext,
-  ): Promise<EffectPostState> {
-    try {
-      return await probe(attempt, context);
-    } catch (error) {
-      return Object.freeze({
-        kind: "unknown" as const,
-        reason: error instanceof Error ? error.message : "the post-state could not be observed",
-      });
-    }
   }
 }
 
@@ -471,12 +454,8 @@ export class GovernedExecutionSurface {
   /**
    * Sandbox **lifecycle** for ordinary callers: prepare, inspect, cancel, destroy.
    *
-   * There is no `execute` here and no way to reach one from this object. That is the point: while
-   * this returned a full `SandboxPort`, a caller holding a canonical plan could dispatch straight
-   * into the backend, so an effect could change the environment with no `effect_attempt` durable
-   * anywhere. Task 3 cannot be optional by convention. Every semantic effect now has exactly one
-   * gateway — `EffectReconciler.runGovernedEffect` — and the sink it uses is captured privately,
-   * so patching anything on this façade cannot redirect it either.
+   * Deliberately no `execute`, and no way to reach one from here — see `captureSandboxLifecycle`.
+   * Every semantic effect has exactly one gateway, `EffectReconciler.runGovernedEffect`.
    */
   get sandboxes(): GovernedSandboxLifecycle {
     return requireSurfaceState(this).lifecycle;
