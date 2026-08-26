@@ -1,29 +1,41 @@
 import {
   ApplicationError,
-  type AttemptOutcome,
+  type AttemptState,
   type AuthorizedSemanticExecutionPlan,
   appendExecutionLedgerEntry,
   canTransitionAttemptOutcome,
   decideRetry,
-  type ExecutionLedgerRepositoryPort,
   isTerminalAttemptOutcome,
   type LedgerProjection,
   type OperationContext,
   reconcileExecutionEffect,
   type SandboxExecutionResult,
-  type SandboxHandle,
-  type SandboxPort,
-  type SemanticExecutionCapabilityVerifier,
-  type UnitOfWorkPort,
   type UnitOfWorkTransaction,
 } from "@v31m4/application";
 import {
   type ContentHash,
   ExecutionLedgerEntry,
   type ExecutionLedgerEntry as LedgerEntry,
-  type LedgerResourceFact,
   type TaskId,
 } from "@v31m4/domain";
+import type {
+  EffectPostState,
+  EffectReconcilerDependencies,
+  EffectReconciliationProbe,
+  EffectReconciliationRequest,
+  EffectReconciliationResult,
+  GovernedEffectOutcome,
+  GovernedEffectRequest,
+  PairedExecutionSurface,
+  ReconciliationAttemptDescriptor,
+} from "./effect-reconciler-contracts.js";
+import {
+  EFFECT_RECONCILER_CONSTRUCTION_TOKEN,
+  LEDGER_KIND_FOR_POST_STATE,
+  OUTCOME_FOR_POST_STATE,
+} from "./effect-reconciler-contracts.js";
+
+export * from "./effect-reconciler-contracts.js";
 
 /**
  * The governed effect lifecycle, with the Execution Ledger recording what actually happened.
@@ -49,89 +61,29 @@ import {
  * `SandboxPort`, and `WorkspaceManagerPort` all still apply; the reconciler only decides what to
  * write down.
  */
-export type EffectPostState =
-  | Readonly<{ kind: "applied"; facts: readonly LedgerResourceFact[] }>
-  | Readonly<{ kind: "not_applied"; facts: readonly LedgerResourceFact[] }>
-  | Readonly<{ kind: "unknown"; reason: string }>;
-
-/**
- * Observes the world after a dispatch and reports whether the effect landed. Supplied by the
- * caller because only the caller knows how to verify its own operation. Anything it cannot
- * prove must be reported as `unknown` — guessing here would defeat the ledger.
- */
-export type EffectPostStateProbe = (
-  plan: AuthorizedSemanticExecutionPlan,
-  result: SandboxExecutionResult | null,
-  context: OperationContext,
-) => Promise<EffectPostState>;
-
-export interface EffectReconcilerDependencies {
-  readonly unitOfWork: UnitOfWorkPort;
-  readonly ledger: ExecutionLedgerRepositoryPort;
-  readonly sandboxes: SandboxPort;
-  /**
-   * The verify half of the *same* Task 1 semantic authorization boundary this reconciler's
-   * `SandboxPort` was paired with. Mandatory: the Execution Ledger is authoritative history, so
-   * nothing may write to it — or probe on its behalf — without first proving the capability came
-   * from the canonical issuer. Injecting a different boundary's verifier here than the sandbox
-   * holds would re-open exactly the gap this closes.
-   */
-  readonly capabilities: SemanticExecutionCapabilityVerifier;
-  readonly generateEntryId: () => string;
-  readonly now: () => string;
-}
-
-export interface GovernedEffectRequest {
-  readonly taskId: TaskId;
-  readonly sandbox: SandboxHandle;
-  readonly plan: AuthorizedSemanticExecutionPlan;
-  readonly probe: EffectPostStateProbe;
-}
-
-export type EffectOutcomeKind =
-  | "effect_confirmation"
-  | "effect_nonapplication"
-  | "reconciliation_indeterminate";
-
-export interface GovernedEffectOutcome {
-  readonly attemptEntryId: string;
-  readonly outcomeEntryId: string;
-  readonly outcomeKind: EffectOutcomeKind;
-  readonly result: SandboxExecutionResult | null;
-}
-
-/** Settling an attempt that already happened. There is no sandbox dispatch on this path. */
-export interface EffectReconciliationRequest extends GovernedEffectRequest {
-  readonly attemptEntryId: string;
-}
-
-export interface EffectReconciliationResult {
-  readonly attemptEntryId: string;
-  /** The attempt's state after this reconciliation. */
-  readonly outcome: AttemptOutcome;
-  /** The entry appended, or `null` when reality stayed unprovable and nothing changed. */
-  readonly outcomeEntryId: string | null;
-  readonly outcomeKind: EffectOutcomeKind | null;
-  /** Why nothing was written, when nothing was. */
-  readonly reason: string | null;
-}
-
-const OUTCOME_FOR_POST_STATE: Readonly<Record<EffectPostState["kind"], AttemptOutcome>> =
-  Object.freeze({
-    applied: "confirmed",
-    not_applied: "not_applied",
-    unknown: "indeterminate",
-  });
-
-const LEDGER_KIND_FOR_POST_STATE: Readonly<Record<EffectPostState["kind"], EffectOutcomeKind>> =
-  Object.freeze({
-    applied: "effect_confirmation",
-    not_applied: "effect_nonapplication",
-    unknown: "reconciliation_indeterminate",
-  });
-
 export class EffectReconciler {
-  constructor(private readonly dependencies: EffectReconcilerDependencies) {}
+  readonly #surface: PairedExecutionSurface;
+
+  /**
+   * Not publicly constructible: a governed-execution-surface factory passes the token along with
+   * a surface whose verifier and sandbox provably come from one Task 1 authority. Hand-assembling
+   * a reconciler from a verifier and a `SandboxPort` chosen independently is the mismatch this
+   * refuses, at runtime as well as in the type system.
+   */
+  constructor(
+    token: symbol,
+    surface: PairedExecutionSurface,
+    private readonly dependencies: EffectReconcilerDependencies,
+  ) {
+    if (token !== EFFECT_RECONCILER_CONSTRUCTION_TOKEN) {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "An EffectReconciler is created only by a governed execution surface, so that its Task 1 verifier and its sandbox cannot come from different authorities.",
+        {},
+      );
+    }
+    this.#surface = surface;
+  }
 
   /**
    * The current folded history for a task, read from durable entries alone and from *all* of
@@ -144,6 +96,20 @@ export class EffectReconciler {
     transaction?: UnitOfWorkTransaction,
   ): Promise<LedgerProjection> {
     return reconcileExecutionEffect(this.dependencies, taskId, context, transaction);
+  }
+
+  /** The recorded attempt, as a descriptor built purely from durable history. */
+  private static describe(attempt: AttemptState): ReconciliationAttemptDescriptor {
+    return Object.freeze({
+      attemptEntryId: attempt.attemptEntryId,
+      taskId: attempt.taskId,
+      jobId: attempt.jobId,
+      operationId: attempt.operationId,
+      workspaceId: attempt.workspaceId,
+      sandboxId: attempt.sandboxId,
+      intentFingerprint: attempt.intentFingerprint,
+      outcome: attempt.outcome,
+    });
   }
 
   /**
@@ -177,7 +143,7 @@ export class EffectReconciler {
    * authentic, which is what lets the attempt it created be settled later.
    */
   private requireCanonicalAuthority(plan: AuthorizedSemanticExecutionPlan): void {
-    this.dependencies.capabilities.verify(plan);
+    this.#surface.verifyExecutionAuthority(plan);
   }
 
   /**
@@ -271,7 +237,7 @@ export class EffectReconciler {
     let result: SandboxExecutionResult | null = null;
     let dispatchFailure: string | null = null;
     try {
-      result = await this.dependencies.sandboxes.execute(sandbox, plan, context);
+      result = await this.#surface.sandboxes.execute(sandbox, plan, context);
     } catch (error) {
       // A refused or failed dispatch is not proof that nothing happened; the probe decides.
       dispatchFailure = error instanceof Error ? error.message : "dispatch failed";
@@ -352,10 +318,18 @@ export class EffectReconciler {
    *
    * This is the way out of a blocking-but-unsettled attempt — `unresolved`, `failed`, or
    * `indeterminate`. It **never dispatches**: the effect may already have landed, and running it
-   * again to find out would be the duplicate the ledger exists to prevent. The caller's probe
-   * inspects the world, and only what the probe can actually prove is written down. A process
-   * exit, an exception, or a timeout is not proof of non-application, which is why the probe — not
-   * the dispatch history — decides.
+   * again to find out would be the duplicate the ledger exists to prevent.
+   *
+   * Settling is not executing, and this method is built so the two cannot be confused. It takes
+   * no capability, verifies none, consumes none, and touches neither `SandboxPort` nor a backend.
+   * Everything it needs — job, workspace, sandbox, operation, intent — is read from the durable
+   * `effect_attempt` row. That is what makes an ambiguous effect settleable after the grant that
+   * authorized it has expired, after policy has turned to deny, and after a restart has taken the
+   * issuing authority's in-memory mint registry with it. None of those events changes what
+   * already happened, so none of them may prevent recording it.
+   *
+   * The authority to settle is possession of this object: only a governed execution surface
+   * builds one. There is no passable credential to forge, copy, or mis-pair.
    *
    * When reality is still unprovable, an attempt that has not yet been recorded as indeterminate
    * becomes indeterminate, and one that already is stays exactly as it is: repeating a status is
@@ -365,21 +339,17 @@ export class EffectReconciler {
     request: EffectReconciliationRequest,
     context: OperationContext,
   ): Promise<EffectReconciliationResult> {
-    const { plan, taskId, attemptEntryId } = request;
-    // Authority first: before the ledger is read to authorize this reconciliation, before the
-    // probe observes anything on this plan's behalf, and before any entry is appended.
-    this.requireCanonicalAuthority(plan);
-    this.assertScopedIdentity(request);
-
-    const before = await this.requireReconcilableAttempt(request, context);
+    const { taskId, attemptEntryId } = request;
+    const attempt = await this.requireReconcilableAttempt(request, context);
+    const descriptor = EffectReconciler.describe(attempt);
 
     // Observation happens outside any transaction — it is external execution, and Layer 7 forbids
     // that inside one. The append below re-reads the attempt's committed state, so a racing
     // reconciliation cannot slip a second terminal outcome in behind this probe.
-    const post = await this.observePostState(request, null, context);
+    const post = await this.observeReconciledState(descriptor, request.probe, context);
     const outcome = OUTCOME_FOR_POST_STATE[post.kind];
 
-    if (!canTransitionAttemptOutcome(before, outcome)) {
+    if (!canTransitionAttemptOutcome(attempt.outcome, outcome)) {
       // `requireReconcilableAttempt` already refused every terminal state, and both terminal
       // outcomes are reachable from all three reconcilable ones. So this is exactly one case:
       // still unprovable, and already on record as unprovable. Saying so beats appending a
@@ -387,10 +357,10 @@ export class EffectReconciler {
       return Object.freeze({
         attemptEntryId,
         // The state as this reconciliation observed it; nothing here changed it.
-        outcome: before,
+        outcome: attempt.outcome,
         outcomeEntryId: null,
         outcomeKind: null,
-        reason: post.kind === "unknown" ? post.reason : `already recorded as ${before}`,
+        reason: post.kind === "unknown" ? post.reason : `already recorded as ${attempt.outcome}`,
       });
     }
 
@@ -398,15 +368,16 @@ export class EffectReconciler {
     const entry = ExecutionLedgerEntry.create({
       id: this.dependencies.generateEntryId(),
       taskId,
-      jobId: plan.jobId,
+      // From the recorded attempt, so a reconciliation cannot be filed under another job.
+      jobId: attempt.jobId,
       recordedAt: this.dependencies.now(),
       attemptEntryId,
       kind: outcomeKind,
       facts: post.kind === "unknown" ? [] : post.facts,
       detail:
         post.kind === "unknown"
-          ? `${plan.operationId} still could not be proved applied or unapplied: ${post.reason}`
-          : `${plan.operationId} reconciled as ${post.kind} without re-dispatching`,
+          ? `${attempt.operationId} still could not be proved applied or unapplied: ${post.reason}`
+          : `${attempt.operationId} reconciled as ${post.kind} without re-dispatching`,
     });
     // One transaction: the append path folds the attempt's committed state and validates the
     // transition before writing, so exactly one of two concurrent reconciliations can win and the
@@ -424,15 +395,34 @@ export class EffectReconciler {
     });
   }
 
+  /** A probe that cannot observe is not proof of anything; it leaves the attempt unproven. */
+  private async observeReconciledState(
+    attempt: ReconciliationAttemptDescriptor,
+    probe: EffectReconciliationProbe,
+    context: OperationContext,
+  ): Promise<EffectPostState> {
+    try {
+      return await probe(attempt, context);
+    } catch (error) {
+      return Object.freeze({
+        kind: "unknown" as const,
+        reason: error instanceof Error ? error.message : "the post-state could not be observed",
+      });
+    }
+  }
+
   /**
-   * The attempt must exist in this task's durable history, describe this exact plan's intent, and
-   * still be open to being settled. Anything else is a deterministic conflict before any
-   * observation is made.
+   * The attempt must exist in this task's durable history and still be open to being settled.
+   * Anything else is a deterministic conflict before any observation is made.
+   *
+   * Note what is *not* checked: no capability, no issuer, no policy grant. Task ownership comes
+   * from the ledger scan itself, which reads only this task's history, so an attempt belonging to
+   * another task is simply not found.
    */
   private async requireReconcilableAttempt(
     request: EffectReconciliationRequest,
     context: OperationContext,
-  ): Promise<AttemptOutcome> {
+  ): Promise<AttemptState> {
     const projection = await this.projection(request.taskId, context);
     const attempt = projection.attempts.find(
       (candidate) => candidate.attemptEntryId === request.attemptEntryId,
@@ -444,15 +434,24 @@ export class EffectReconciler {
         { details: { taskId: request.taskId, attemptEntryId: request.attemptEntryId } },
       );
     }
-    if (attempt.intentFingerprint !== this.intentFingerprintFor(request.plan)) {
+    if (attempt.taskId !== request.taskId) {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "The recorded attempt belongs to a different task than the one being reconciled.",
+        { details: { attemptEntryId: request.attemptEntryId, attemptTaskId: attempt.taskId } },
+      );
+    }
+    if (
+      request.expectedIntentFingerprint !== undefined &&
+      attempt.intentFingerprint !== request.expectedIntentFingerprint
+    ) {
       throw new ApplicationError(
         "INVALID_APPLICATION_INPUT",
-        "The attempt being reconciled describes a different effect than this authorization.",
+        "The attempt being reconciled describes a different effect than the caller observed.",
         {
           details: {
             attemptEntryId: request.attemptEntryId,
             attemptOperationId: attempt.operationId,
-            planOperationId: request.plan.operationId,
           },
         },
       );
@@ -464,6 +463,6 @@ export class EffectReconciler {
         { details: { attemptEntryId: request.attemptEntryId, outcome: attempt.outcome } },
       );
     }
-    return attempt.outcome;
+    return attempt;
   }
 }

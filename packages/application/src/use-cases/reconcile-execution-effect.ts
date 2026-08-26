@@ -25,10 +25,22 @@ export type AttemptOutcome =
   | "indeterminate"
   | "failed";
 
+/**
+ * One effect attempt as authoritative history records it.
+ *
+ * Every identity field here is read from the durable `effect_attempt` row, never from a caller.
+ * That is what lets an effect be settled long after the process that ran it is gone: the record
+ * of what was attempted outlives the capability that authorized it, and settling is a statement
+ * about that record rather than a fresh request to act.
+ */
 export interface AttemptState {
   readonly attemptEntryId: LedgerEntryId;
+  readonly taskId: TaskId;
+  readonly jobId: string;
   readonly intentFingerprint: ContentHash;
   readonly operationId: string;
+  readonly workspaceId: string;
+  readonly sandboxId: string | null;
   readonly outcome: AttemptOutcome;
 }
 
@@ -167,8 +179,12 @@ function foldLedgerPage(fold: LedgerFold, entries: readonly ExecutionLedgerEntry
     if (entry.kind === "effect_attempt") {
       attempts.set(entry.id, {
         attemptEntryId: entry.id,
+        taskId: entry.taskId,
+        jobId: entry.jobId,
         intentFingerprint: entry.intentFingerprint,
         operationId: entry.operationId,
+        workspaceId: entry.workspaceId,
+        sandboxId: entry.sandboxId,
         outcome: "unresolved",
       });
     }
@@ -451,8 +467,12 @@ export async function attemptOutcomeState(
         if (entry.kind === "effect_attempt" && entry.id === attemptEntryId) {
           attempts.set(entry.id, {
             attemptEntryId: entry.id,
+            taskId: entry.taskId,
+            jobId: entry.jobId,
             intentFingerprint: entry.intentFingerprint,
             operationId: entry.operationId,
+            workspaceId: entry.workspaceId,
+            sandboxId: entry.sandboxId,
             outcome: "unresolved",
           });
           continue;

@@ -8,6 +8,7 @@ import {
   isEntryStillValid,
   type PolicyEnginePort,
   projectLedger,
+  type SandboxExecutionResult,
   type SandboxHandle,
   SandboxIsolationPolicy,
   type SandboxPort,
@@ -25,17 +26,18 @@ import {
 } from "@v31m4/domain";
 import {
   ReferenceSandboxBackend,
-  SandboxSupervisor,
   type SqliteRuntimeDatabase,
   WorkspaceExecutionInterlock,
 } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteExecutionLedgerRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
-import {
-  type EffectPostState,
-  type EffectPostStateProbe,
+import type {
+  EffectPostState,
+  EffectPostStateProbe,
   EffectReconciler,
+  EffectReconciliationProbe,
 } from "../../src/autonomy/effect-reconciler.js";
+import { GovernedExecutionSurface } from "../../src/autonomy/governed-execution-surface.js";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
@@ -79,29 +81,30 @@ let databasePath: string;
 let root: string;
 let ledger: SqliteExecutionLedgerRepository;
 let reconciler: EffectReconciler;
-let sandboxes: SandboxSupervisor;
-let boundary: ReturnType<typeof createSemanticAuthorizationBoundary>;
+let surface: GovernedExecutionSurface;
+let sandboxes: SandboxPort;
 let workspace: WorkspaceHandle;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
 let dispatches = 0;
 
 /**
- * Counts what actually reached the sandbox. Several invariants here are about *dispatch*
+ * Counts what actually reached the environment. Several invariants here are about *dispatch*
  * multiplicity, which the ledger alone cannot prove — a second attempt that never ran and a
  * second attempt that ran twice leave different marks in the environment, not in the record.
+ *
+ * The count is taken at the backend rather than at `SandboxPort.execute`, because those are not
+ * the same question: the supervisor can accept a call and still refuse it before anything runs.
+ * Only the backend reaching its work means an effect could have happened.
  */
-function countingSandboxes(inner: SandboxSupervisor): SandboxPort {
-  return {
-    prepare: (...args) => inner.prepare(...args),
-    execute: (...args) => {
-      dispatches += 1;
-      return inner.execute(...args);
-    },
-    inspect: (...args) => inner.inspect(...args),
-    cancel: (...args) => inner.cancel(...args),
-    destroy: (...args) => inner.destroy(...args),
-  };
+class CountingReferenceBackend extends ReferenceSandboxBackend {
+  override async execute(
+    spec: Parameters<ReferenceSandboxBackend["execute"]>[0],
+    plan: Parameters<ReferenceSandboxBackend["execute"]>[1],
+  ): Promise<SandboxExecutionResult> {
+    dispatches += 1;
+    return super.execute(spec, plan);
+  }
 }
 
 class FixedWorkspaces {
@@ -123,23 +126,21 @@ class FixedWorkspaces {
 
 async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   ledger = new SqliteExecutionLedgerRepository(db);
-  boundary = createSemanticAuthorizationBoundary({ policy: semanticPolicy });
-  const workspaces = new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace));
-  sandboxes = new SandboxSupervisor({
-    backend: new ReferenceSandboxBackend(),
-    workspaces,
+  // One factory builds the Task 1 boundary, the sandbox it governs, and the reconciler that
+  // records them. There is no way to hand any of the three a foreign authority.
+  surface = GovernedExecutionSurface.create({
+    policy: semanticPolicy,
+    backend: new CountingReferenceBackend(),
+    workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
-    capabilities: boundary.capabilities,
     resolveWorkspaceRoot: async () => root,
     generateSandboxId: () => "sandbox:1",
   });
+  sandboxes = surface.sandboxes;
   sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context);
-  reconciler = new EffectReconciler({
+  reconciler = surface.createEffectReconciler({
     unitOfWork: db.unitOfWork,
     ledger,
-    sandboxes: countingSandboxes(sandboxes),
-    // The same Task 1 boundary the sandbox was paired with — not a second authority.
-    capabilities: boundary.capabilities,
     generateEntryId: () => `ledger:${++entryCounter}`,
     now: () => "2026-08-26T00:00:00.000Z",
   });
@@ -168,7 +169,7 @@ afterEach(() => {
 });
 
 async function inspectPlan() {
-  return boundary.authorize(
+  return surface.authorize(
     {
       operationId: "code.inspect",
       role: "executor",
@@ -621,13 +622,9 @@ describe("reconciling an attempt without re-dispatching", () => {
     return { attemptEntryId: outcome.attemptEntryId, plan };
   }
 
-  async function reconcile(attemptEntryId: string, probe: EffectPostStateProbe) {
-    // A fresh capability for the same intent: reconciliation is about the recorded attempt, not
-    // about spending an authorization to run anything.
-    return reconciler.reconcileAttempt(
-      { taskId, sandbox, plan: await inspectPlan(), attemptEntryId, probe },
-      context,
-    );
+  function reconcile(attemptEntryId: string, probe: EffectReconciliationProbe) {
+    // No capability and no sandbox: reconciliation is a statement about the recorded attempt.
+    return reconciler.reconcileAttempt({ taskId, attemptEntryId, probe }, context);
   }
 
   it("settles an indeterminate attempt as confirmed, dispatching nothing", async () => {
@@ -708,7 +705,7 @@ describe("reconciling an attempt without re-dispatching", () => {
     });
 
     const { attemptEntryId } = await attemptOnce(unknownProbe);
-    const otherPlan = await boundary.authorize(
+    const otherPlan = await surface.authorize(
       {
         operationId: "code.inspect",
         role: "executor",
@@ -723,7 +720,14 @@ describe("reconciling an attempt without re-dispatching", () => {
     );
     await expect(
       reconciler.reconcileAttempt(
-        { taskId, sandbox, plan: otherPlan, attemptEntryId, probe: appliedProbe },
+        {
+          taskId,
+          attemptEntryId,
+          // The optional integrity assertion: this caller believes it observed a different
+          // effect than the one this attempt records.
+          expectedIntentFingerprint: reconciler.intentFingerprintFor(otherPlan),
+          probe: appliedProbe,
+        },
         context,
       ),
     ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
@@ -734,16 +738,11 @@ describe("reconciling an attempt without re-dispatching", () => {
     const before = await ledger.listForTask(taskId, { limit: 500 }, context);
     await expect(
       reconciler.reconcileAttempt(
-        {
-          taskId: TaskId.parse("task:other"),
-          sandbox,
-          plan: await inspectPlan(),
-          attemptEntryId,
-          probe: appliedProbe,
-        },
+        { taskId: TaskId.parse("task:other"), attemptEntryId, probe: appliedProbe },
         context,
       ),
-    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // The attempt is simply not in that task's history, so there is nothing to settle.
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
     const after = await ledger.listForTask(taskId, { limit: 500 }, context);
     expect(after.items).toHaveLength(before.items.length);
     expect(dispatches).toBe(1);
@@ -1413,13 +1412,7 @@ describe("decisions read the whole ledger", () => {
     expect((await ledger.listForTask(taskId, { limit: 500 }, context)).nextCursor).toBe("500");
 
     const settled = await reconciler.reconcileAttempt(
-      {
-        taskId,
-        sandbox,
-        plan: await inspectPlan(),
-        attemptEntryId: outcome.attemptEntryId,
-        probe: appliedProbe,
-      },
+      { taskId, attemptEntryId: outcome.attemptEntryId, probe: appliedProbe },
       context,
     );
     expect(settled.outcome).toBe("confirmed");
@@ -1514,6 +1507,8 @@ describe("restart recovery", () => {
     const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
     database = new SqliteRuntimeDatabase(databasePath);
     await wire(database);
+    // The pre-restart effect really did reach the backend. What must be zero is everything after.
+    dispatches = 0;
 
     const projection = await reconciler.projection(taskId, context);
     expect(projection.attempts[0]?.outcome).toBe("unresolved");
@@ -1596,6 +1591,13 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
       probeCalls += 1;
       return inner(...args);
     };
+  /** The reconciliation probe takes the durable descriptor, not a plan and a dispatch result. */
+  const countingReconciliationProbe =
+    (inner: () => Promise<EffectPostState>): EffectReconciliationProbe =>
+    async () => {
+      probeCalls += 1;
+      return inner();
+    };
 
   beforeEach(() => {
     probeCalls = 0;
@@ -1633,33 +1635,25 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
       expect(dispatches).toBe(0);
       expect(probeCalls).toBe(0);
     });
-
-    for (const [outcomeLabel, probe] of [
-      ["applied", appliedProbe],
-      ["not_applied", notAppliedProbe],
-    ] as const) {
-      it(`refuses ${label} on reconcileAttempt (${outcomeLabel}) before the probe runs`, async () => {
-        const attemptEntryId = await indeterminateAttempt();
-        const before = await ledgerKinds();
-        const dispatchesBefore = dispatches;
-        probeCalls = 0;
-
-        await expect(
-          reconciler.reconcileAttempt(
-            { taskId, sandbox, plan: await mint(), attemptEntryId, probe: countingProbe(probe) },
-            context,
-          ),
-        ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
-
-        expect(probeCalls).toBe(0);
-        expect(dispatches).toBe(dispatchesBefore);
-        expect(await ledgerKinds()).toEqual(before);
-        // The attempt is exactly as it was, and still reconcilable by its rightful authority.
-        const projection = await reconciler.projection(taskId, context);
-        expect(projection.attempts[0]?.outcome).toBe("indeterminate");
-      });
-    }
   }
+
+  /**
+   * There is no reconcile-path equivalent of the three forgeries above, and that is the repair:
+   * `reconcileAttempt` accepts no capability at all, so a foreign, copied, or prototype-forged
+   * plan has nowhere to be passed. Handing one to it is a compile error rather than a runtime
+   * check that could be got wrong. What remains testable is that settling still refuses to touch
+   * an attempt it has no business touching.
+   */
+  it("settles from the recorded attempt alone, with no capability anywhere in the request", async () => {
+    const attemptEntryId = await indeterminateAttempt();
+    const settled = await reconciler.reconcileAttempt(
+      { taskId, attemptEntryId, probe: countingReconciliationProbe(appliedProbe) },
+      context,
+    );
+    expect(settled.outcome).toBe("confirmed");
+    expect(probeCalls).toBe(1);
+    expect(dispatches).toBe(1);
+  });
 
   it("still runs the whole normal lifecycle for the canonical issuer", async () => {
     const outcome = await reconciler.runGovernedEffect(
@@ -1690,8 +1684,9 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
       code: "PERMISSION_DENIED",
     });
 
+    // Settling needs no capability at all — spent, unspent, or never issued.
     const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan, attemptEntryId: outcome.attemptEntryId, probe: appliedProbe },
+      { taskId, attemptEntryId: outcome.attemptEntryId, probe: appliedProbe },
       context,
     );
     expect(settled.outcome).toBe("confirmed");
@@ -1699,20 +1694,10 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
     expect(dispatches).toBe(1);
   });
 
-  it("accepts a fresh canonical authorization for the same intent, scope, and issuer", async () => {
-    const attemptEntryId = await indeterminateAttempt();
-    const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan: await inspectPlan(), attemptEntryId, probe: appliedProbe },
-      context,
-    );
-    expect(settled.outcome).toBe("confirmed");
-    expect(dispatches).toBe(1);
-  });
-
-  it("refuses a canonical capability whose intent is not the attempt's, writing nothing", async () => {
+  it("refuses an intent assertion that is not the attempt's, writing nothing", async () => {
     const attemptEntryId = await indeterminateAttempt();
     const before = await ledgerKinds();
-    const otherIntent = await boundary.authorize(
+    const otherIntent = await surface.authorize(
       {
         operationId: "code.inspect",
         role: "executor",
@@ -1726,7 +1711,12 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
     );
     await expect(
       reconciler.reconcileAttempt(
-        { taskId, sandbox, plan: otherIntent, attemptEntryId, probe: appliedProbe },
+        {
+          taskId,
+          attemptEntryId,
+          expectedIntentFingerprint: reconciler.intentFingerprintFor(otherIntent),
+          probe: appliedProbe,
+        },
         context,
       ),
     ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });

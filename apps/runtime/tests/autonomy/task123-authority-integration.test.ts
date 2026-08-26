@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ApplicationError,
   type AuthorizedSemanticExecutionPlan,
   type PolicyDecision,
   type PolicyEnginePort,
@@ -23,14 +24,17 @@ import {
 import {
   ReferenceSandboxBackend,
   type SandboxExecutionSpec,
-  SandboxSupervisor,
   SqliteRuntimeDatabase,
   WorkspaceExecutionInterlock,
 } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteExecutionLedgerRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
-import { type EffectPostState, EffectReconciler } from "../../src/autonomy/effect-reconciler.js";
-import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
+import type {
+  EffectPostState,
+  EffectReconciler,
+  ReconciliationAttemptDescriptor,
+} from "../../src/autonomy/effect-reconciler.js";
+import { GovernedExecutionSurface } from "../../src/autonomy/governed-execution-surface.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
 
@@ -62,7 +66,7 @@ const T0 = "2026-08-26T00:00:00.000Z";
 const GRANT_EXPIRY = "2026-08-26T00:01:00.000Z";
 const AFTER_EXPIRY = "2026-08-26T00:02:00.000Z";
 
-type Boundary = ReturnType<typeof createSemanticAuthorizationBoundary>;
+type Surface = GovernedExecutionSurface;
 
 /** A real policy engine whose answer and grant lifetime a test can change between calls. */
 let decision: PolicyDecision;
@@ -80,10 +84,6 @@ const policyEngine: PolicyEnginePort = {
     };
   },
 };
-
-function newBoundary(): Boundary {
-  return createSemanticAuthorizationBoundary({ policy: policyEngine, now: () => clock });
-}
 
 /**
  * Fails one dispatch on demand, so a test can drive the sandbox into `degraded`, and counts how
@@ -114,9 +114,9 @@ let root: string;
 let workspace: WorkspaceHandle;
 let ledger: SqliteExecutionLedgerRepository;
 let reconciler: EffectReconciler;
-let sandboxes: SandboxSupervisor;
+let surface: Surface;
+let sandboxes: SandboxPort;
 let backend: FlakyReferenceBackend;
-let boundary: Boundary;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
 let dispatches = 0;
@@ -140,51 +140,31 @@ class FixedWorkspaces {
   async discard(): Promise<void> {}
 }
 
-function counting(inner: SandboxSupervisor): SandboxPort {
-  return {
-    prepare: (...args) => inner.prepare(...args),
-    execute: (...args) => {
-      dispatches += 1;
-      return inner.execute(...args);
-    },
-    inspect: (...args) => inner.inspect(...args),
-    cancel: (...args) => inner.cancel(...args),
-    destroy: (...args) => inner.destroy(...args),
-  };
-}
-
-/**
- * Composes one governed execution surface. `reconcilerVerifier` is deliberately separate so a
- * test can hand the reconciler a *different* Task 1 authority than the sandbox holds — which the
- * current independently-injected dependency shape permits.
- */
-async function wire(
-  db: SqliteRuntimeDatabase,
-  options: { readonly reconcilerBoundary?: Boundary } = {},
-): Promise<void> {
+async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   ledger = new SqliteExecutionLedgerRepository(db);
-  boundary = newBoundary();
   backend = new FlakyReferenceBackend();
-  sandboxes = new SandboxSupervisor({
+  // One factory, one authority: the boundary, the sandbox it governs, and the reconciler that
+  // records them are built together and cannot be recombined with foreign parts.
+  surface = GovernedExecutionSurface.create({
+    policy: policyEngine,
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
-    capabilities: boundary.capabilities,
     resolveWorkspaceRoot: async () => root,
     generateSandboxId: () => "sandbox:1",
+    now: () => clock,
   });
+  sandboxes = surface.sandboxes;
   sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, isolation, context);
-  reconciler = new EffectReconciler({
+  reconciler = surface.createEffectReconciler({
     unitOfWork: db.unitOfWork,
     ledger,
-    sandboxes: counting(sandboxes),
-    capabilities: (options.reconcilerBoundary ?? boundary).capabilities,
     generateEntryId: () => `ledger:${++entryCounter}`,
     now: () => clock,
   });
 }
 
-async function inspectPlan(from: Boundary = boundary, scope = "target.ts") {
+async function inspectPlan(from: Surface = surface, scope = "target.ts") {
   return from.authorize(
     {
       operationId: "code.inspect",
@@ -298,18 +278,18 @@ describe("A: an expired execution grant must not block settling history", () => 
   it("still settles the ambiguous attempt after the grant expires", async () => {
     expiresAt = GRANT_EXPIRY;
     const attemptEntryId = await ambiguousAttempt();
-    const plan = await inspectPlan();
     clock = AFTER_EXPIRY;
 
     // Settling is not executing. An expired *execution* grant is the correct answer to "may I run
-    // this again"; it is the wrong answer to "what already happened".
+    // this again"; it is the wrong answer to "what already happened". Nothing about this request
+    // touches execution authority, so the expiry has nothing to act on.
     const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan, attemptEntryId, probe: applied },
+      { taskId, attemptEntryId, probe: applied },
       context,
     );
     expect(settled.outcome).toBe("confirmed");
     expect(settled.outcomeKind).toBe("effect_confirmation");
-    expect(dispatches).toBe(1);
+    expect(backendExecutions).toBe(1);
     expect(await ledgerKinds()).toEqual([
       "effect_attempt",
       "reconciliation_indeterminate",
@@ -353,8 +333,10 @@ describe("B: a current deny must not erase settleable history", () => {
     await expect(inspectPlan()).rejects.toMatchObject({ code: "POLICY_REJECTED" });
 
     // The retained capability, however, still settles the attempt.
+    // Settling needs neither that capability nor any other.
+    expect(retained.taskId).toBe(taskId);
     const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan: retained, attemptEntryId, probe: notApplied },
+      { taskId, attemptEntryId, probe: notApplied },
       context,
     );
     expect(settled.outcome).toBe("not_applied");
@@ -391,73 +373,181 @@ describe("C: settlement survives a restart without process-local authority", () 
 
   it("settles the reloaded attempt from durable history alone", async () => {
     const attemptEntryId = await ambiguousAttempt();
-    // The only capability that ever existed for this attempt. After a restart the authority that
-    // minted it is gone, and its mint registry with it.
-    const originalPlan = await inspectPlan();
     database.close();
 
+    // A brand-new process: a new database handle, a new Task 1 authority whose mint registry is
+    // empty, and — deliberately — no sandbox prepared for the reloaded attempt.
     database = new SqliteRuntimeDatabase(databasePath);
-    await wire(database);
-    dispatches = 0;
+    ledger = new SqliteExecutionLedgerRepository(database);
+    const restarted = GovernedExecutionSurface.create({
+      policy: policyEngine,
+      backend: new FlakyReferenceBackend(),
+      workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
+      allowedOperations: SEMANTIC_OPERATION_IDS,
+      resolveWorkspaceRoot: async () => root,
+      generateSandboxId: () => "sandbox:1",
+      now: () => clock,
+    });
+    reconciler = restarted.createEffectReconciler({
+      unitOfWork: database.unitOfWork,
+      ledger,
+      generateEntryId: () => `ledger:${++entryCounter}`,
+      now: () => clock,
+    });
+    backendExecutions = 0;
 
-    // Settlement must depend on the durable attempt, not on a process-local capability that no
-    // longer verifies anywhere.
+    // No capability, no sandbox, no fresh authorization — only the durable attempt.
     const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan: originalPlan, attemptEntryId, probe: applied },
+      { taskId, attemptEntryId, probe: applied },
       context,
     );
     expect(settled.outcome).toBe("confirmed");
-    expect(dispatches).toBe(0);
+    expect(settled.outcomeKind).toBe("effect_confirmation");
+    expect(backendExecutions).toBe(0);
+  });
+
+  /**
+   * Property 4. If the probe still demanded an execution plan, restart safety would be cosmetic:
+   * the caller could not build one after a restart without fabricating execution authority for an
+   * effect it must never run. The probe receives the durable descriptor and nothing else.
+   */
+  it("RECONCILIATION_PROBE_HAS_NO_EXECUTION_PLAN — the probe sees only durable ledger facts", async () => {
+    const attemptEntryId = await ambiguousAttempt();
+    let seen: ReconciliationAttemptDescriptor | undefined;
+    let extraArguments = 0;
+
+    await reconciler.reconcileAttempt(
+      {
+        taskId,
+        attemptEntryId,
+        probe: async (...args) => {
+          seen = args[0];
+          // `context` is the second argument; anything beyond that would be smuggled input.
+          extraArguments = args.length - 2;
+          return applied();
+        },
+      },
+      context,
+    );
+
+    expect(extraArguments).toBe(0);
+    expect(seen).toEqual({
+      attemptEntryId,
+      taskId,
+      jobId,
+      operationId: "code.inspect",
+      workspaceId: workspace.id,
+      sandboxId: sandbox.id,
+      intentFingerprint: expect.any(String),
+      outcome: "indeterminate",
+    });
+    // Every field is a durable ledger fact. Nothing plan-shaped or handle-shaped is present.
+    const keys = Object.keys(seen ?? {});
+    expect(keys).not.toContain("executionPlanId");
+    expect(keys).not.toContain("policyGrant");
+    expect(keys).not.toContain("command");
+    expect(keys).not.toContain("status");
+    expect(keys).not.toContain("backendId");
   });
 });
 
 // ===========================================================================
 // D — mismatched execution composition
 // ===========================================================================
-describe("D: a reconciler and a sandbox from different authorities must not compose", () => {
-  it("refuses an effect whose capability the sandbox's own authority would reject", async () => {
-    const reconcilerBoundary = newBoundary();
-    await wire(database, { reconcilerBoundary });
-    // Minted by the reconciler's authority; the sandbox's authority never saw it.
-    const plan = await inspectPlan(reconcilerBoundary);
+describe("D: a reconciler and a sandbox from different authorities cannot compose", () => {
+  /**
+   * The repair is that this pairing has no representation. `EffectReconciler` no longer accepts a
+   * `SandboxPort` and a verifier chosen independently; both arrive from one
+   * `GovernedExecutionSurface`, which builds the Task 1 boundary and the sandbox it governs
+   * together. There is no configuration of the factory that yields verifier A over sandbox B.
+   */
+  it("cannot be assembled: the reconciler constructor refuses anything but its own surface", async () => {
+    const foreignSurface = GovernedExecutionSurface.create({
+      policy: policyEngine,
+      backend: new FlakyReferenceBackend(),
+      workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
+      allowedOperations: SEMANTIC_OPERATION_IDS,
+      resolveWorkspaceRoot: async () => root,
+      generateSandboxId: () => "sandbox:2",
+      now: () => clock,
+    });
+    // A hand-rolled surface pairing this sandbox with a *foreign* authority's verifier — the exact
+    // object the old dependency shape accepted.
+    const mispaired = {
+      sandboxes,
+      verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
+        foreignSurface.verifyExecutionAuthority(plan),
+    };
+    const ReconcilerClass = Object.getPrototypeOf(reconciler).constructor as new (
+      token: symbol,
+      surface: unknown,
+      dependencies: unknown,
+    ) => EffectReconciler;
+
+    for (const token of [
+      Symbol("v31m4.effect-reconciler"),
+      Symbol.for("v31m4.effect-reconciler"),
+    ]) {
+      expect(
+        () =>
+          new ReconcilerClass(token, mispaired, {
+            unitOfWork: database.unitOfWork,
+            ledger,
+            generateEntryId: () => "ledger:forged",
+            now: () => clock,
+          }),
+      ).toThrow(ApplicationError);
+    }
+    // Nothing was written by the attempt to build one.
+    expect(await ledgerKinds()).toEqual([]);
+    expect(backendExecutions).toBe(0);
+  });
+
+  it("refuses a foreign authority's capability before any ledger write, probe, or backend", async () => {
+    const foreignSurface = GovernedExecutionSurface.create({
+      policy: policyEngine,
+      backend: new FlakyReferenceBackend(),
+      workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
+      allowedOperations: SEMANTIC_OPERATION_IDS,
+      resolveWorkspaceRoot: async () => root,
+      generateSandboxId: () => "sandbox:2",
+      now: () => clock,
+    });
+    const plan = await inspectPlan(foreignSurface);
 
     await expect(
       reconciler.runGovernedEffect({ taskId, sandbox, plan, probe: countedApplied }, context),
     ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
-    // The supervisor refuses this capability before the backend, so no effect can have happened.
-    // Today the reconciler nonetheless records an authoritative outcome for it.
     expect(backendExecutions).toBe(0);
     expect(await ledgerKinds()).toEqual([]);
     expect(probeCalls).toBe(0);
   });
 
-  it("refuses a reconciliation whose capability the sandbox's own authority would reject", async () => {
+  /**
+   * The reconciliation half of D no longer has an attack surface: `reconcileAttempt` accepts no
+   * capability, so there is nothing for a foreign authority to supply. What is proved instead is
+   * that settling still refuses an attempt this task does not own.
+   */
+  it("refuses to settle an attempt that this task's history does not contain", async () => {
     const attemptEntryId = await ambiguousAttempt();
-    const reconcilerBoundary = newBoundary();
-    const previous = await ledgerKinds();
-    reconciler = new EffectReconciler({
-      unitOfWork: database.unitOfWork,
-      ledger,
-      sandboxes: counting(sandboxes),
-      capabilities: reconcilerBoundary.capabilities,
-      generateEntryId: () => `ledger:${++entryCounter}`,
-      now: () => clock,
-    });
-    const plan = await inspectPlan(reconcilerBoundary);
+    const before = await ledgerKinds();
 
-    const backendBefore = backendExecutions;
     await expect(
       reconciler.reconcileAttempt(
-        { taskId, sandbox, plan, attemptEntryId, probe: countedApplied },
+        { taskId: TaskId.parse("task:other"), attemptEntryId, probe: countedApplied },
         context,
       ),
-    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
-    // Reconciliation never dispatches, so zero backend executions proves nothing about authority
-    // here — the point is that a capability this sandbox's authority would reject can still drive
-    // an authoritative terminal settlement.
-    expect(backendExecutions).toBe(backendBefore);
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      reconciler.reconcileAttempt(
+        { taskId, attemptEntryId: "ledger:forged", probe: countedApplied },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
     expect(probeCalls).toBe(0);
-    expect(await ledgerKinds()).toEqual(previous);
+    expect(await ledgerKinds()).toEqual(before);
+    expect(backendExecutions).toBe(1);
   });
 });
 
@@ -477,7 +567,7 @@ describe("E: a degraded sandbox reached through a stale handle", () => {
 
     // A second, genuinely different intent, authorized against that stale handle.
     const second = await reconciler.runGovernedEffect(
-      { taskId, sandbox, plan: await inspectPlan(boundary, "other.ts"), probe: notApplied },
+      { taskId, sandbox, plan: await inspectPlan(surface, "other.ts"), probe: notApplied },
       context,
     );
     const projection = await reconciler.projection(taskId, context);
