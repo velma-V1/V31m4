@@ -557,6 +557,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
 
     // A genuine surface is still the one thing that works, and it is self-paired.
     expect(authorityB.createEffectReconciler(deps)).toBeDefined();
+    expect(GovernedExecutionSurface.isGenuine(authorityB)).toBe(true);
 
     // Nothing was written, probed, or dispatched by any of it.
     expect(await ledgerKinds()).toEqual([]);
@@ -568,21 +569,122 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     // Both halves real, but taken from *different* authorities and recombined by hand. Membership
     // in the private registry — not shape, not prototype — is what decides.
     const authorityB = otherSurface();
-    expect(() =>
-      GovernedExecutionSurface.assertGenuine({
+    expect(
+      GovernedExecutionSurface.isGenuine({
         sandboxes: authorityB.sandboxes,
         verifyExecutionAuthority: surface.verifyExecutionAuthority.bind(surface),
       }),
-    ).toThrow(ApplicationError);
-    expect(() =>
-      GovernedExecutionSurface.assertGenuine(Object.create(GovernedExecutionSurface.prototype)),
-    ).toThrow(ApplicationError);
-    expect(() => GovernedExecutionSurface.assertGenuine(Object.create(surface))).toThrow(
-      ApplicationError,
-    );
-    // The genuine article passes.
-    expect(() => GovernedExecutionSurface.assertGenuine(surface)).not.toThrow();
+    ).toBe(false);
+    expect(
+      GovernedExecutionSurface.isGenuine(Object.create(GovernedExecutionSurface.prototype)),
+    ).toBe(false);
+    expect(GovernedExecutionSurface.isGenuine(Object.create(surface))).toBe(false);
+    expect(GovernedExecutionSurface.isGenuine(surface)).toBe(true);
     expect(await ledgerKinds()).toEqual([]);
+    expect(backendExecutions).toBe(0);
+  });
+
+  /**
+   * P0-1. `Object.create(EffectReconciler.prototype)` never runs the constructor, and the
+   * reconciliation path reads only the ordinary `dependencies` property — so copying that one
+   * field off a genuine reconciler would otherwise hand an attacker authoritative settlement over
+   * recorded history without any surface, credential, or registration.
+   */
+  it("refuses a constructor-bypassed reconciler, however completely it is dressed", async () => {
+    const attemptEntryId = await ambiguousAttempt();
+    const before = await ledgerKinds();
+    const backendBefore = backendExecutions;
+    probeCalls = 0;
+
+    // Every own and inherited ordinary field the genuine object has, copied onto forgeries.
+    const genuineFields = Object.getOwnPropertyDescriptors(reconciler);
+    const forgeries: EffectReconciler[] = [
+      Object.defineProperties(
+        Object.create(Object.getPrototypeOf(reconciler)),
+        genuineFields,
+      ) as EffectReconciler,
+      // Inherits from the real instance: every property resolves, identity does not.
+      Object.create(reconciler) as EffectReconciler,
+      Object.defineProperties(Object.create(Object.getPrototypeOf(reconciler)), {
+        dependencies: {
+          value: {
+            unitOfWork: database.unitOfWork,
+            ledger,
+            generateEntryId: () => "ledger:forged",
+            now: () => clock,
+          },
+        },
+      }) as EffectReconciler,
+    ];
+
+    for (const forged of forgeries) {
+      await expect(
+        forged.reconcileAttempt({ taskId, attemptEntryId, probe: countedApplied }, context),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(
+        forged.runGovernedEffect(
+          { taskId, sandbox, plan: await inspectPlan(), probe: countedApplied },
+          context,
+        ),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    }
+
+    expect(probeCalls).toBe(0);
+    expect(await ledgerKinds()).toEqual(before);
+    expect(backendExecutions).toBe(backendBefore);
+    // The genuine reconciler still works, so the guard is not simply refusing everything.
+    expect(
+      (await reconciler.reconcileAttempt({ taskId, attemptEntryId, probe: applied }, context))
+        .outcome,
+    ).toBe("confirmed");
+  });
+
+  /**
+   * P0-2. The security decision must not live in a writable property of an exported class. With
+   * the public diagnostic replaced by a no-op, `createEffectReconciler` — which holds the real
+   * module-private credential — must still refuse a cross-authority surface.
+   */
+  it("refuses a forged surface even with the public validator monkey-patched away", async () => {
+    const authorityB = otherSurface();
+    const crossAuthorityFake = {
+      sandboxes: authorityB.sandboxes,
+      verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
+        surface.verifyExecutionAuthority(plan),
+    };
+    const deps = {
+      unitOfWork: database.unitOfWork,
+      ledger,
+      generateEntryId: () => "ledger:forged",
+      now: () => clock,
+    };
+    const original = GovernedExecutionSurface.isGenuine;
+    // The attacker's patch: everything now reports as authentic.
+    Object.defineProperty(GovernedExecutionSurface, "isGenuine", {
+      value: () => true,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      expect(GovernedExecutionSurface.isGenuine(crossAuthorityFake)).toBe(true); // the lie lands
+      expect(() =>
+        GovernedExecutionSurface.prototype.createEffectReconciler.call(crossAuthorityFake, deps),
+      ).toThrow(ApplicationError);
+      expect(() =>
+        GovernedExecutionSurface.prototype.createEffectReconciler.call(
+          Object.create(GovernedExecutionSurface.prototype),
+          deps,
+        ),
+      ).toThrow(ApplicationError);
+    } finally {
+      Object.defineProperty(GovernedExecutionSurface, "isGenuine", {
+        value: original,
+        configurable: true,
+        writable: true,
+      });
+    }
+    expect(GovernedExecutionSurface.isGenuine(crossAuthorityFake)).toBe(false);
+    expect(await ledgerKinds()).toEqual([]);
+    expect(probeCalls).toBe(0);
     expect(backendExecutions).toBe(0);
   });
 

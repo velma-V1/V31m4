@@ -1,11 +1,9 @@
 import {
   ApplicationError,
-  type AttemptState,
   type AuthorizedSemanticExecutionPlan,
   appendExecutionLedgerEntry,
   canTransitionAttemptOutcome,
   decideRetry,
-  isTerminalAttemptOutcome,
   type LedgerProjection,
   type OperationContext,
   reconcileExecutionEffect,
@@ -36,6 +34,7 @@ import {
   observePostState,
   recordOutcome,
 } from "./governed-effect-recording.js";
+import { describeAttempt, requireReconcilableAttempt } from "./reconciliation-attempt-lookup.js";
 import {
   createSemanticAuthorizationBoundary,
   type SemanticAuthorizationBoundary,
@@ -52,6 +51,52 @@ export * from "./effect-reconciler-contracts.js";
  * prevent. A credential that any caller can obtain is not a credential.
  */
 const RECONCILER_CONSTRUCTION: unique symbol = Symbol("v31m4.effect-reconciler");
+
+/**
+ * Runtime authenticity for the two objects that carry authority here.
+ *
+ * Both registries and both predicates are module-private: not exported, not re-exported, not
+ * reachable from any public value. That is the whole security property, and it is deliberately
+ * *not* delegated to anything a caller can reach or replace.
+ *
+ * Two earlier revisions failed here in different ways. One exported the construction credential,
+ * so a caller could import it and wrap a hand-assembled surface. The other routed the check
+ * through a public static method — a writable property on an exported class — so replacing that
+ * method with a no-op let a forged surface reach the real credential inside
+ * `createEffectReconciler`. A security decision that any caller can rewrite is not a decision.
+ *
+ * Membership, not shape, prototype, `instanceof`, `Object.freeze`, or a TypeScript brand, is what
+ * these answer — none of the others survives `Object.create`.
+ */
+const genuineSurfaces = new WeakSet<object>();
+const genuineReconcilers = new WeakSet<object>();
+
+function requireGenuineSurface(candidate: unknown): asserts candidate is GovernedExecutionSurface {
+  if (typeof candidate !== "object" || candidate === null || !genuineSurfaces.has(candidate)) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "A governed execution surface must be one this runtime created, so that its Task 1 verifier and the sandbox it governs are provably the same authority.",
+      {},
+    );
+  }
+}
+
+/**
+ * Proves `this` is a reconciler whose constructor actually ran against a genuine surface.
+ *
+ * Without this, `Object.create(EffectReconciler.prototype)` skips the constructor entirely, and
+ * because the reconciliation path reads only the ordinary `dependencies` property, assigning that
+ * one field would hand an attacker authoritative settlement over recorded history.
+ */
+function requireGenuineReconciler(candidate: unknown): void {
+  if (typeof candidate !== "object" || candidate === null || !genuineReconcilers.has(candidate)) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "Only an EffectReconciler created by a governed execution surface may read or write authoritative Execution Ledger history.",
+      {},
+    );
+  }
+}
 
 /**
  * The governed effect lifecycle, with the Execution Ledger recording what actually happened.
@@ -103,8 +148,11 @@ export class EffectReconciler {
         {},
       );
     }
-    GovernedExecutionSurface.assertGenuine(surface);
+    // The module-private predicate, never the exported diagnostic: a public static is a writable
+    // property on an exported class, so routing the decision through one would let it be replaced.
+    requireGenuineSurface(surface);
     this.#surface = surface;
+    genuineReconcilers.add(this);
   }
 
   /**
@@ -118,20 +166,6 @@ export class EffectReconciler {
     transaction?: UnitOfWorkTransaction,
   ): Promise<LedgerProjection> {
     return reconcileExecutionEffect(this.dependencies, taskId, context, transaction);
-  }
-
-  /** The recorded attempt, as a descriptor built purely from durable history. */
-  private static describe(attempt: AttemptState): ReconciliationAttemptDescriptor {
-    return Object.freeze({
-      attemptEntryId: attempt.attemptEntryId,
-      taskId: attempt.taskId,
-      jobId: attempt.jobId,
-      operationId: attempt.operationId,
-      workspaceId: attempt.workspaceId,
-      sandboxId: attempt.sandboxId,
-      intentFingerprint: attempt.intentFingerprint,
-      outcome: attempt.outcome,
-    });
   }
 
   /**
@@ -172,9 +206,12 @@ export class EffectReconciler {
     request: GovernedEffectRequest,
     context: OperationContext,
   ): Promise<GovernedEffectOutcome> {
+    // This object first: a constructor-bypassed instance has no authority at all, however many
+    // ordinary properties it carries.
+    requireGenuineReconciler(this);
     const { plan, sandbox, taskId } = request;
-    // Authority first: before the projection this claim reads, before the attempt is appended,
-    // and before anything reaches SandboxPort.
+    // Then the capability: before the projection this claim reads, before the attempt is
+    // appended, and before anything reaches SandboxPort.
     this.requireCanonicalAuthority(plan);
     assertScopedIdentity(request);
     const intentFingerprint = this.intentFingerprintFor(plan);
@@ -267,9 +304,13 @@ export class EffectReconciler {
     request: EffectReconciliationRequest,
     context: OperationContext,
   ): Promise<EffectReconciliationResult> {
+    // Before the ledger read that authorizes this settlement, before the probe, before any
+    // append. Settling recorded history is authority, and only a canonically created reconciler
+    // holds it.
+    requireGenuineReconciler(this);
     const { taskId, attemptEntryId } = request;
-    const attempt = await this.requireReconcilableAttempt(request, context);
-    const descriptor = EffectReconciler.describe(attempt);
+    const attempt = requireReconcilableAttempt(await this.projection(taskId, context), request);
+    const descriptor = describeAttempt(attempt);
 
     // Observation happens outside any transaction — it is external execution, and Layer 7 forbids
     // that inside one. The append below re-reads the attempt's committed state, so a racing
@@ -338,61 +379,6 @@ export class EffectReconciler {
       });
     }
   }
-
-  /**
-   * The attempt must exist in this task's durable history and still be open to being settled.
-   * Anything else is a deterministic conflict before any observation is made.
-   *
-   * Note what is *not* checked: no capability, no issuer, no policy grant. Task ownership comes
-   * from the ledger scan itself, which reads only this task's history, so an attempt belonging to
-   * another task is simply not found.
-   */
-  private async requireReconcilableAttempt(
-    request: EffectReconciliationRequest,
-    context: OperationContext,
-  ): Promise<AttemptState> {
-    const projection = await this.projection(request.taskId, context);
-    const attempt = projection.attempts.find(
-      (candidate) => candidate.attemptEntryId === request.attemptEntryId,
-    );
-    if (attempt === undefined) {
-      throw new ApplicationError(
-        "NOT_FOUND",
-        "There is no such effect attempt in this task's history.",
-        { details: { taskId: request.taskId, attemptEntryId: request.attemptEntryId } },
-      );
-    }
-    if (attempt.taskId !== request.taskId) {
-      throw new ApplicationError(
-        "PERMISSION_DENIED",
-        "The recorded attempt belongs to a different task than the one being reconciled.",
-        { details: { attemptEntryId: request.attemptEntryId, attemptTaskId: attempt.taskId } },
-      );
-    }
-    if (
-      request.expectedIntentFingerprint !== undefined &&
-      attempt.intentFingerprint !== request.expectedIntentFingerprint
-    ) {
-      throw new ApplicationError(
-        "INVALID_APPLICATION_INPUT",
-        "The attempt being reconciled describes a different effect than the caller observed.",
-        {
-          details: {
-            attemptEntryId: request.attemptEntryId,
-            attemptOperationId: attempt.operationId,
-          },
-        },
-      );
-    }
-    if (isTerminalAttemptOutcome(attempt.outcome)) {
-      throw new ApplicationError(
-        "CONFLICT",
-        "This effect attempt has already settled and cannot be reconciled again.",
-        { details: { attemptEntryId: request.attemptEntryId, outcome: attempt.outcome } },
-      );
-    }
-    return attempt;
-  }
 }
 
 /**
@@ -412,8 +398,6 @@ export class EffectReconciler {
  * produces an object that passes it — which is why membership, not shape or prototype, decides.
  */
 export class GovernedExecutionSurface {
-  static readonly #genuine = new WeakSet<GovernedExecutionSurface>();
-
   readonly #boundary: SemanticAuthorizationBoundary;
   readonly #sandboxes: SandboxPort;
 
@@ -438,22 +422,20 @@ export class GovernedExecutionSurface {
       // The sandbox is paired with this boundary's verifier here and nowhere else.
       new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities }),
     );
-    GovernedExecutionSurface.#genuine.add(surface);
+    genuineSurfaces.add(surface);
     return surface;
   }
 
-  /** Refuses anything this module's own `create` did not produce. */
-  static assertGenuine(candidate: unknown): asserts candidate is GovernedExecutionSurface {
-    if (
-      !(candidate instanceof GovernedExecutionSurface) ||
-      !GovernedExecutionSurface.#genuine.has(candidate)
-    ) {
-      throw new ApplicationError(
-        "PERMISSION_DENIED",
-        "A governed execution surface must be one this runtime created, so that its Task 1 verifier and the sandbox it governs are provably the same authority.",
-        {},
-      );
-    }
+  /**
+   * A **diagnostic** predicate, not the security boundary.
+   *
+   * It reports the same answer as the module-private check, but nothing security-relevant calls
+   * it: it is a public static, so it is a writable property on an exported class and a caller can
+   * replace it. Construction consults `requireGenuineSurface` directly, so monkey-patching this
+   * changes what a caller is told and nothing about what is permitted.
+   */
+  static isGenuine(candidate: unknown): boolean {
+    return typeof candidate === "object" && candidate !== null && genuineSurfaces.has(candidate);
   }
 
   /** Requests an execution capability from this surface's own Task 1 boundary. */
