@@ -33,6 +33,11 @@ export type AdapterId = Brand<string, "AdapterId">;
 export type ModelId = Brand<string, "ModelId">;
 export type ToolId = Brand<string, "ToolId">;
 export type EventId = Brand<string, "EventId">;
+export type TaskId = Brand<string, "TaskId">;
+export type SandboxId = Brand<string, "SandboxId">;
+export type LedgerEntryId = Brand<string, "LedgerEntryId">;
+export type SkillId = Brand<string, "SkillId">;
+export type MemoryId = Brand<string, "MemoryId">;
 
 type DurableId =
   | ProjectId
@@ -63,7 +68,12 @@ type DurableId =
   | AdapterId
   | ModelId
   | ToolId
-  | EventId;
+  | EventId
+  | TaskId
+  | SandboxId
+  | LedgerEntryId
+  | SkillId
+  | MemoryId;
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
@@ -123,3 +133,8 @@ export const AdapterId = createParser<AdapterId>("AdapterId");
 export const ModelId = createParser<ModelId>("ModelId");
 export const ToolId = createParser<ToolId>("ToolId");
 export const EventId = createParser<EventId>("EventId");
+export const TaskId = createParser<TaskId>("TaskId");
+export const SandboxId = createParser<SandboxId>("SandboxId");
+export const LedgerEntryId = createParser<LedgerEntryId>("LedgerEntryId");
+export const SkillId = createParser<SkillId>("SkillId");
+export const MemoryId = createParser<MemoryId>("MemoryId");

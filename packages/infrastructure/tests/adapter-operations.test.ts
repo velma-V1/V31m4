@@ -10,14 +10,32 @@ import {
 
 describe("adapter operations", () => {
   it("rejects registration collisions and restart storms", () => {
-    const registry = new AdapterRegistry();
-    registry.register({ id: "model-a", protocolVersion: "1", capabilities: ["model"] });
+    const registry = new AdapterRegistry({ supportedProtocolVersions: ["1.1.0", "1.0.0"] });
+    registry.register({ id: "model-a", protocolVersion: "1.0.0", capabilities: ["model"] });
     expect(() =>
-      registry.register({ id: "model-a", protocolVersion: "1", capabilities: ["other"] }),
+      registry.register({ id: "model-a", protocolVersion: "1.0.0", capabilities: ["other"] }),
     ).toThrow("already registered");
     const budget = new RestartBudget(2, 1_000);
     expect([budget.consume(1), budget.consume(2), budget.consume(3)]).toEqual([true, true, false]);
     expect(budget.consume(1_002)).toBe(true);
+  });
+
+  it("registers an adapter only under an exactly supported protocol version", () => {
+    const registry = new AdapterRegistry({ supportedProtocolVersions: ["1.1.0", "1.0.0"] });
+    registry.register({ id: "scoped", protocolVersion: "1.1.0", capabilities: ["tool"] });
+    expect(registry.get("scoped")?.protocolVersion).toBe("1.1.0");
+    for (const version of ["1", "1.0", "1.0.1", "1.1.1", "1.1.0-rc.1", "2.0.0", ""]) {
+      expect(() =>
+        registry.register({
+          id: `adapter-${version}`,
+          protocolVersion: version,
+          capabilities: ["x"],
+        }),
+      ).toThrow("Unsupported adapter protocol version");
+    }
+    expect(() => new AdapterRegistry({ supportedProtocolVersions: [] })).toThrow(
+      "at least one supported protocol version",
+    );
   });
 
   it("leases secrets once, expires them, and redacts structured logs", () => {

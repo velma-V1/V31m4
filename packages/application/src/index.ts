@@ -21,6 +21,7 @@ export * from "./ports/practice-repository.port.js";
 export * from "./ports/production-kernel.port.js";
 export * from "./ports/project-repository.port.js";
 export * from "./ports/resource-monitor.port.js";
+export * from "./ports/sandbox.port.js";
 export * from "./ports/scheduler.port.js";
 export * from "./ports/secret-store.port.js";
 export * from "./ports/tool-gateway.port.js";

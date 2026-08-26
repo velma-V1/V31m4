@@ -21,5 +21,7 @@ export * from "./processes/process-supervisor.js";
 export * from "./resources/process-resource-monitor.js";
 export * from "./rpc/json-rpc-client.js";
 export * from "./rpc/json-rpc-framer.js";
+export * from "./sandbox/direct-docker-sandbox.js";
+export * from "./sandbox/sandbox-supervisor.js";
 export * from "./scheduling/bounded-scheduler.js";
 export * from "./secrets/leased-secret-store.js";
