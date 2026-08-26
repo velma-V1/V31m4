@@ -1,13 +1,9 @@
-import {
-  ApplicationError,
-  AuthorizedSemanticExecutionPlan,
-  type SandboxHandle,
-  type WorkspaceHandle,
-} from "@v31m4/application";
+import { ApplicationError, type SandboxHandle, type WorkspaceHandle } from "@v31m4/application";
 import { ContentHash, JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
-  authorizeSemanticExecution,
+  createSemanticAuthorizationBoundary,
+  type SemanticAuthorizationBoundary,
   type SemanticExecutionRequest,
 } from "../../src/autonomy/semantic-execution-authorization.js";
 
@@ -41,6 +37,21 @@ const sandbox: SandboxHandle = Object.freeze({
   backendId: "reference",
   status: "ready" as const,
 });
+
+let boundary: SemanticAuthorizationBoundary;
+let planCounter = 0;
+
+beforeEach(() => {
+  planCounter = 0;
+  boundary = createSemanticAuthorizationBoundary({
+    generateExecutionPlanId: () => `plan:${++planCounter}`,
+    now: () => "2026-08-25T00:00:00.000Z",
+  });
+});
+
+function authorizeSemanticExecution(request: SemanticExecutionRequest) {
+  return boundary.authorize(request);
+}
 
 function request(overrides: Partial<SemanticExecutionRequest> = {}): SemanticExecutionRequest {
   return {
@@ -201,6 +212,7 @@ describe("code.patch is validated at the mandatory execution boundary", () => {
 
   const valid = {
     expectedFingerprint: currentFingerprint,
+    targetPath: "src/index.ts",
     pathScope: ["src/index.ts"],
     patch: "--- a\n+++ b\n",
   };
@@ -211,12 +223,57 @@ describe("code.patch is validated at the mandatory execution boundary", () => {
     expect(plan.command).toBeNull();
     expect(plan.fingerprints["expectedTarget"]).toBe(currentFingerprint);
     expect(plan.fingerprints["observedTarget"]).toBe(currentFingerprint);
+    // The sink re-verifies this precondition immediately before dispatch.
+    expect(plan.currencyPrecondition).toEqual({
+      path: "src/index.ts",
+      expectedFingerprint: currentFingerprint,
+      allowedPathScope: ["src/index.ts"],
+    });
+  });
+
+  it("denies a patch whose target is not inside its own declared path scope", () => {
+    expect(() =>
+      authorizeSemanticExecution(
+        patchRequest(
+          {
+            expectedFingerprint: currentFingerprint,
+            targetPath: "src/other.ts",
+            pathScope: ["src/index.ts"],
+            patch: "x",
+          },
+          currentFingerprint,
+        ),
+      ),
+    ).toThrow(ApplicationError);
+  });
+
+  it("denies a patch with a missing or escaping target path", () => {
+    for (const targetPath of [undefined, "../escape.ts", "/abs.ts", 5]) {
+      expect(
+        () =>
+          authorizeSemanticExecution(
+            patchRequest(
+              {
+                expectedFingerprint: currentFingerprint,
+                pathScope: ["src/index.ts"],
+                patch: "x",
+                ...(targetPath === undefined ? {} : { targetPath }),
+              },
+              currentFingerprint,
+            ),
+          ),
+        String(targetPath),
+      ).toThrow(ApplicationError);
+    }
   });
 
   it("denies a patch with no expected fingerprint", () => {
     expect(() =>
       authorizeSemanticExecution(
-        patchRequest({ pathScope: ["src/index.ts"], patch: "x" }, currentFingerprint),
+        patchRequest(
+          { targetPath: "src/index.ts", pathScope: ["src/index.ts"], patch: "x" },
+          currentFingerprint,
+        ),
       ),
     ).toThrow(ApplicationError);
   });
@@ -264,9 +321,10 @@ describe("code.patch is validated at the mandatory execution boundary", () => {
 });
 
 describe("authorization binding", () => {
-  it("produces an authentic plan bound to this task, job, workspace, and sandbox", () => {
+  it("produces a capability its own boundary accepts, bound to this task, job, workspace, and sandbox", () => {
     const plan = authorizeSemanticExecution(request());
-    expect(AuthorizedSemanticExecutionPlan.isAuthentic(plan)).toBe(true);
+    expect(boundary.capabilities.verify(plan)).toBe(plan);
+    expect(plan.executionPlanId).toBe("plan:1");
     expect(plan.taskId).toBe(taskId);
     expect(plan.jobId).toBe(jobId);
     expect(plan.workspaceId).toBe(workspace.id);

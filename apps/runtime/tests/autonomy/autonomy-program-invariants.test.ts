@@ -1,7 +1,7 @@
 import { ApplicationError, type SandboxHandle, type WorkspaceHandle } from "@v31m4/application";
 import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
-import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 
 /**
@@ -53,6 +53,8 @@ describe("autonomy program invariants", () => {
       backendId: "reference",
       status: "ready" as const,
     });
+    const boundary = createSemanticAuthorizationBoundary();
+    const authorizeSemanticExecution = boundary.authorize;
     const allowed = {
       operationId: "command.run",
       role: "executor" as const,
@@ -63,7 +65,15 @@ describe("autonomy program invariants", () => {
       sandbox,
       parameters: { executable: "/bin/true", arguments: [] },
     };
-    expect(authorizeSemanticExecution(allowed).sandboxId).toBe(sandbox.id);
+    const capability = authorizeSemanticExecution(allowed);
+    expect(capability.sandboxId).toBe(sandbox.id);
+    // Only the paired boundary accepts it, and only once.
+    expect(boundary.capabilities.verify(capability)).toBe(capability);
+    expect(() => createSemanticAuthorizationBoundary().capabilities.verify(capability)).toThrow(
+      ApplicationError,
+    );
+    boundary.capabilities.consume(capability);
+    expect(() => boundary.capabilities.consume(capability)).toThrow(ApplicationError);
 
     for (const missing of [
       { ...allowed, policyDecision: "deny" as const },

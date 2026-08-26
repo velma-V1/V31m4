@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import {
   ApplicationError,
   type ApplicationJsonObject,
-  AuthorizedSemanticExecutionPlan,
+  type AuthorizedSemanticExecutionPlan,
+  createSemanticExecutionAuthority,
   type PolicyDecision,
   type SandboxCommand,
   type SandboxHandle,
+  type SemanticExecutionCapabilityVerifier,
+  type WorkspaceCurrencyPrecondition,
   type WorkspaceHandle,
 } from "@v31m4/application";
 import { type ContentHash, type JobId, SafePath, type TaskId } from "@v31m4/domain";
@@ -22,9 +26,14 @@ import {
  *
  * Authorization and execution used to be separate steps: the sink took an operation name plus
  * free-form JSON, so a caller could name `git.status` while supplying `executable: "touch"`.
- * Now the only way to reach a backend is an `AuthorizedSemanticExecutionPlan` issued here,
- * carrying a command this module derived — not one the caller supplied — for every operation
- * except the explicit `command.run` escape hatch.
+ * Now the only way to reach a backend is a single-use capability minted here.
+ *
+ * Two properties matter and neither is a type-level claim. First, the operation contract is read
+ * from the canonical `SEMANTIC_OPERATION_CATALOG`, never accepted from the caller, so a request
+ * cannot describe itself as a caller-commandable read. Second, minting authority lives in a
+ * closure this module owns: `createSemanticAuthorizationBoundary` hands out `authorize` and a
+ * verifier, and never the mint, so no other caller can produce a capability the paired sandbox
+ * will accept.
  */
 
 /**
@@ -71,33 +80,81 @@ export interface SemanticExecutionRequest {
 interface DerivedExecution {
   readonly command: SandboxCommand | null;
   readonly fingerprints: Readonly<Record<string, string>>;
+  readonly currencyPrecondition: WorkspaceCurrencyPrecondition | null;
 }
 
-export function authorizeSemanticExecution(
-  request: SemanticExecutionRequest,
-): AuthorizedSemanticExecutionPlan {
-  const definition = getSemanticOperation(request.operationId);
-  assertNoSmuggledExecution(definition, request.parameters);
-  assertRequiredParameters(definition, request.parameters);
-  const derived = deriveTrustedExecution(definition, request);
-  return AuthorizedSemanticExecutionPlan.issue({
-    contract: {
-      operationId: definition.operationId,
-      effectClass: definition.effectClass,
-      sandboxRequirement: definition.sandboxRequirement,
-      allowedRoles: definition.allowedRoles,
-      allowsCallerSuppliedCommand: definition.allowsCallerSuppliedCommand,
-    },
-    role: request.role,
-    policyDecision: request.policyDecision,
-    taskId: request.taskId,
-    jobId: request.jobId,
-    workspace: request.workspace,
-    sandbox: request.sandbox,
-    command: derived.command,
-    parameters: request.parameters,
-    fingerprints: derived.fingerprints,
+const ESCAPE_HATCH = "command.run";
+
+/**
+ * The paired halves of one authorization boundary. A composition root creates the boundary,
+ * keeps `authorize` for the callers that request work, and gives `capabilities` to the sandbox
+ * that executes it. The mint itself is never exposed.
+ */
+export interface SemanticAuthorizationBoundary {
+  authorize(request: SemanticExecutionRequest): AuthorizedSemanticExecutionPlan;
+  readonly capabilities: SemanticExecutionCapabilityVerifier;
+}
+
+export interface SemanticAuthorizationBoundaryOptions {
+  readonly generateExecutionPlanId?: () => string;
+  readonly now?: () => string;
+}
+
+export function createSemanticAuthorizationBoundary(
+  options: SemanticAuthorizationBoundaryOptions = {},
+): SemanticAuthorizationBoundary {
+  const authority = createSemanticExecutionAuthority({
+    generateExecutionPlanId: options.generateExecutionPlanId ?? (() => `plan:${randomUUID()}`),
+    now: options.now ?? (() => new Date().toISOString()),
   });
+  return Object.freeze({
+    authorize(request: SemanticExecutionRequest): AuthorizedSemanticExecutionPlan {
+      const definition = getSemanticOperation(request.operationId);
+      assertEscapeHatchIsExclusive(definition);
+      assertNoSmuggledExecution(definition, request.parameters);
+      assertRequiredParameters(definition, request.parameters);
+      const derived = deriveTrustedExecution(definition, request);
+      return authority.mint({
+        // Read from the canonical catalog, never from the request.
+        contract: {
+          operationId: definition.operationId,
+          effectClass: definition.effectClass,
+          sandboxRequirement: definition.sandboxRequirement,
+          allowedRoles: definition.allowedRoles,
+          allowsCallerSuppliedCommand: definition.allowsCallerSuppliedCommand,
+        },
+        role: request.role,
+        policyDecision: request.policyDecision,
+        taskId: request.taskId,
+        jobId: request.jobId,
+        workspace: request.workspace,
+        sandbox: request.sandbox,
+        command: derived.command,
+        parameters: request.parameters,
+        fingerprints: derived.fingerprints,
+        currencyPrecondition: derived.currencyPrecondition,
+      });
+    },
+    capabilities: Object.freeze({
+      verify: (plan: unknown) => authority.verify(plan),
+      consume: (plan: AuthorizedSemanticExecutionPlan) => authority.consume(plan),
+    }),
+  });
+}
+
+/**
+ * `command.run` is the single declared escape hatch. If any other catalog entry ever claims it
+ * may carry a caller-supplied command, that is a registry defect and execution stops here
+ * rather than honouring it.
+ */
+function assertEscapeHatchIsExclusive(definition: SemanticOperationDefinition): void {
+  if (definition.allowsCallerSuppliedCommand && definition.operationId !== ESCAPE_HATCH) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "Only command.run may carry a caller-supplied command.",
+      { details: { operationId: definition.operationId } },
+    );
+  }
 }
 
 function assertNoSmuggledExecution(
@@ -138,23 +195,19 @@ function deriveTrustedExecution(
   const parameters = request.parameters;
   switch (definition.operationId) {
     case "command.run":
-      return { command: readEscapeHatchCommand(parameters), fingerprints: {} };
+      return plain(readEscapeHatchCommand(parameters));
     case "git.status":
-      return { command: gitCommand(["status", "--porcelain=v1"]), fingerprints: {} };
+      return plain(gitCommand(["status", "--porcelain=v1"]));
     case "git.diff":
-      return {
-        command: gitCommand(["diff", "--no-color", "--", ...readPathScope(parameters)]),
-        fingerprints: {},
-      };
+      return plain(gitCommand(["diff", "--no-color", "--", ...readPathScope(parameters)]));
     case "git.history":
-      return {
-        command: gitCommand(["log", "--no-color", `--max-count=${readHistoryLimit(parameters)}`]),
-        fingerprints: {},
-      };
+      return plain(
+        gitCommand(["log", "--no-color", `--max-count=${readHistoryLimit(parameters)}`]),
+      );
     // Backend-native reads: the backend answers these from the assigned workspace without
     // spawning a process, so there is no command for a caller to influence at all.
     case "code.inspect":
-      return { command: null, fingerprints: {} };
+      return plain(null);
     case "code.patch":
       return derivePatchExecution(request);
     default:
@@ -184,7 +237,17 @@ function derivePatchExecution(request: SemanticExecutionRequest): DerivedExecuti
       expectedTarget: scope.expectedFingerprint,
       observedTarget: request.observedTargetFingerprint,
     }),
+    // Re-verified at the sink: the workspace can still change between here and dispatch.
+    currencyPrecondition: Object.freeze({
+      path: scope.targetPath,
+      expectedFingerprint: scope.expectedFingerprint,
+      allowedPathScope: Object.freeze([...scope.pathScope]),
+    }),
   };
+}
+
+function plain(command: SandboxCommand | null): DerivedExecution {
+  return { command, fingerprints: {}, currencyPrecondition: null };
 }
 
 function gitCommand(args: readonly string[]): SandboxCommand {

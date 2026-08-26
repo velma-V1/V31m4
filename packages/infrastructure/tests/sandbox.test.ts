@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ApplicationError,
-  AuthorizedSemanticExecutionPlan,
+  type AuthorizedSemanticExecutionPlan,
   createOperationContext,
+  createSemanticExecutionAuthority,
   type OperationContext,
   SandboxIsolationPolicy,
+  type SemanticExecutionAuthority,
   type SemanticExecutionAuthorizationInput,
   type WorkspaceHandle,
   type WorkspaceManagerPort,
@@ -93,12 +95,28 @@ class StubWorkspaceManager implements WorkspaceManagerPort {
 let root: string;
 let workspaces: StubWorkspaceManager;
 let activeHandle: WorkspaceHandle;
+let authority: SemanticExecutionAuthority;
+let planCounter = 0;
+
+/**
+ * A test stands in for the runtime's canonical boundary by creating its own authority. The
+ * point of the pairing is identity: a supervisor accepts only the authority it was configured
+ * with, which is exactly what `newAuthority()` below is used to disprove.
+ */
+function newAuthority(): SemanticExecutionAuthority {
+  return createSemanticExecutionAuthority({
+    generateExecutionPlanId: () => `plan:${++planCounter}`,
+    now: () => "2026-08-25T00:00:00.000Z",
+  });
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "v31m4-sandbox-"));
   writeFileSync(join(root, "target.ts"), "export const value = 1;\n", "utf8");
   workspaces = new StubWorkspaceManager();
   activeHandle = workspaces.add("workspace-1", "active");
+  planCounter = 0;
+  authority = newAuthority();
 });
 
 function supervisor(backend: SandboxBackend, ids = ["sandbox:1", "sandbox:2"]): SandboxSupervisor {
@@ -107,6 +125,7 @@ function supervisor(backend: SandboxBackend, ids = ["sandbox:1", "sandbox:2"]): 
     backend,
     workspaces,
     allowedOperations: ALLOWED_OPERATIONS,
+    capabilities: authority,
     resolveWorkspaceRoot: async (workspaceId) => {
       if (workspaceId !== activeHandle.id) throw new Error("unexpected workspace");
       return root;
@@ -118,8 +137,9 @@ function supervisor(backend: SandboxBackend, ids = ["sandbox:1", "sandbox:2"]): 
 function readPlan(
   sandbox: SemanticExecutionAuthorizationInput["sandbox"],
   overrides: Partial<SemanticExecutionAuthorizationInput> = {},
+  issuer: SemanticExecutionAuthority = authority,
 ): AuthorizedSemanticExecutionPlan {
-  return AuthorizedSemanticExecutionPlan.issue({
+  return issuer.mint({
     contract: {
       operationId: "code.inspect",
       effectClass: "read",
@@ -169,7 +189,7 @@ describe("SandboxSupervisor workspace authority", () => {
 });
 
 describe("sandbox execution is bound to an issued authorization", () => {
-  it("refuses a structurally forged authorization that never passed the gate", async () => {
+  it("refuses a structurally forged authorization that no authority minted", async () => {
     const supervised = supervisor(new ReferenceSandboxBackend());
     const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
     const forged = {
@@ -239,6 +259,146 @@ describe("sandbox execution is bound to an issued authorization", () => {
     const result = await supervised.execute(handle, readPlan(handle), context());
     expect(result.status).toBe("unknown");
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
+  });
+});
+
+describe("execution capabilities are issuer-bound and single-use", () => {
+  it("refuses a capability minted by any other authority", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    // Structurally identical, genuinely an AuthorizedSemanticExecutionPlan, correct bindings —
+    // and still refused, because this sandbox is paired with a different boundary.
+    const foreign = readPlan(handle, {}, newAuthority());
+    await expect(supervised.execute(handle, foreign, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("cannot be minted by fabricating an operation contract", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    // The independent-review probe: a "git.status" contract that claims it may carry a command.
+    // Minting still requires the authority the sandbox trusts, so a caller holding only a
+    // request cannot produce this at all — and a foreign authority's version is refused.
+    const fabricated = readPlan(
+      handle,
+      {
+        contract: {
+          operationId: "git.status",
+          effectClass: "read",
+          sandboxRequirement: "none",
+          allowedRoles: ["executor"],
+          allowsCallerSuppliedCommand: true,
+        },
+        command: { executable: "touch", arguments: ["/etc/probe"] },
+      },
+      newAuthority(),
+    );
+    await expect(supervised.execute(handle, fabricated, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("spends a capability exactly once and rejects a replay", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const plan = readPlan(handle);
+    expect((await supervised.execute(handle, plan, context())).status).toBe("completed");
+    await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("gives every capability its own identity", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const first = readPlan(handle);
+    const second = readPlan(handle);
+    expect(first.executionPlanId).not.toBe(second.executionPlanId);
+    expect(first.issuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+  });
+});
+
+describe("workspace currency is re-verified at the sink", () => {
+  function patchPlan(sandbox: SemanticExecutionAuthorizationInput["sandbox"], fingerprint: string) {
+    return readPlan(sandbox, {
+      contract: {
+        operationId: "code.patch",
+        effectClass: "workspace_write",
+        sandboxRequirement: "required",
+        allowedRoles: ["executor"],
+        allowsCallerSuppliedCommand: false,
+      },
+      parameters: { pathScope: ["target.ts"], patch: "--- a\n+++ b\n" },
+      currencyPrecondition: {
+        path: "target.ts",
+        expectedFingerprint: fingerprint,
+        allowedPathScope: ["target.ts"],
+      },
+    });
+  }
+
+  async function currentFingerprint(): Promise<string> {
+    const supervised = supervisor(new ReferenceSandboxBackend(), ["sandbox:probe"]);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const result = await supervised.execute(handle, readPlan(handle), context());
+    return (result.metadata["fingerprints"] as Record<string, string>)["target.ts"] ?? "";
+  }
+
+  it("rejects an execution whose target changed after authorization, before dispatch", async () => {
+    const fingerprint = await currentFingerprint();
+    let reached = false;
+    const watching: SandboxBackend = {
+      id: "watching",
+      async prepare() {},
+      async execute() {
+        reached = true;
+        throw new Error("the backend must not be reached");
+      },
+      async cancel() {},
+      async destroy() {},
+    };
+    const supervised = supervisor(watching);
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const plan = patchPlan(handle, fingerprint);
+
+    // Somebody else edits the workspace between authorization and dispatch.
+    writeFileSync(join(root, "target.ts"), "export const value = 2;\n", "utf8");
+
+    await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(reached).toBe(false);
+  });
+
+  it("rejects a target outside its own declared path scope", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const plan = readPlan(handle, {
+      currencyPrecondition: {
+        path: "target.ts",
+        expectedFingerprint: "a".repeat(64),
+        allowedPathScope: ["other.ts"],
+      },
+    });
+    await expect(supervised.execute(handle, plan, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("rejects a declared scope that escapes the assigned workspace", async () => {
+    const supervised = supervisor(new ReferenceSandboxBackend());
+    const handle = await supervised.prepare(taskId, jobId, activeHandle, budget, policy, context());
+    const plan = readPlan(handle, {
+      currencyPrecondition: {
+        path: "target.ts",
+        expectedFingerprint: "a".repeat(64),
+        allowedPathScope: ["target.ts", "../outside.ts"],
+      },
+    });
+    await expect(supervised.execute(handle, plan, context())).rejects.toBeInstanceOf(
+      ApplicationError,
+    );
   });
 });
 
@@ -346,7 +506,14 @@ describe("direct Docker sandbox configuration validation", () => {
       { ...settings, userSpec: "root:root" },
       { ...settings, userSpec: "" },
       { ...settings, dockerExecutable: "" },
-    ]) {
+      // Legacy/unknown security-sensitive keys must fail loudly, not be silently ignored.
+      { ...settings, containerWorkdir: "/" },
+      { ...settings, containerWorkdir: "/tmp/unsafe" },
+      { ...settings, containerWorkdir: "/workspace" },
+      { ...settings, privileged: true },
+      { ...settings, network: "host" },
+      { ...settings, mounts: ["/:/host"] },
+    ] as DockerSandboxSettings[]) {
       expect(() => assertValidDockerSandboxSettings(invalid), JSON.stringify(invalid)).toThrow(
         ApplicationError,
       );
@@ -469,7 +636,7 @@ describe("direct Docker sandbox container lifecycle", () => {
     sandbox: SemanticExecutionAuthorizationInput["sandbox"],
     command: { executable: string; arguments: readonly string[] },
   ): AuthorizedSemanticExecutionPlan {
-    return AuthorizedSemanticExecutionPlan.issue({
+    return authority.mint({
       contract: {
         operationId: "command.run",
         effectClass: "process_execute",
@@ -493,6 +660,7 @@ describe("direct Docker sandbox container lifecycle", () => {
       backend,
       workspaces,
       allowedOperations: ALLOWED_OPERATIONS,
+      capabilities: authority,
       resolveWorkspaceRoot: async () => root,
       generateSandboxId: () => "sandbox:1",
     });
@@ -517,7 +685,12 @@ describe("direct Docker sandbox container lifecycle", () => {
         'echo "$*" >> "$DIR/calls.log"',
         'case "$1" in',
         '  version) echo "99.0.0-stub"; exit 0 ;;',
-        '  run) if [ -f "$DIR/hang" ]; then sleep 30; fi; exit 0 ;;',
+        '  run) if [ -f "$DIR/flood" ]; then',
+        "         i=0; while [ $i -lt 400 ]; do",
+        '           echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >&2; i=$((i+1));',
+        "         done; sleep 5;",
+        "       fi;",
+        '       if [ -f "$DIR/hang" ]; then sleep 30; fi; exit 0 ;;',
         "  rm) exit 0 ;;",
         '  ps) if [ -f "$DIR/still-present" ]; then echo deadbeefcafe; fi; exit 0 ;;',
         "esac",
@@ -565,6 +738,31 @@ describe("direct Docker sandbox container lifecycle", () => {
     expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
     const name = containerNameFor("sandbox:1");
     expect(calls()).toContain(`rm --force ${name}`);
+    expect(calls().some((line) => line.startsWith("ps --all --quiet"))).toBe(true);
+  }, 30_000);
+
+  it("reconciles the container when the supervisor kills the client on an output limit", async () => {
+    mark("flood");
+    const sandbox = new DirectDockerSandbox({ ...stubSettings(), maxOutputBytes: 2_048 });
+    const supervised = shortBudgetSupervisor(sandbox);
+    const handle = await supervised.prepare(
+      taskId,
+      jobId,
+      activeHandle,
+      // A generous wall clock, so only the output limit can end this run.
+      budget,
+      policy,
+      context(),
+    );
+    const result = await supervised.execute(
+      handle,
+      commandPlan(handle, { executable: "/bin/true", arguments: [] }),
+      context(),
+    );
+    // The client was killed by the Layer 8 supervisor; the container's fate is unproven.
+    expect(result.status).toBe("unknown");
+    expect((await supervised.inspect(handle.id, context()))?.status).toBe("degraded");
+    expect(calls()).toContain(`rm --force ${containerNameFor("sandbox:1")}`);
     expect(calls().some((line) => line.startsWith("ps --all --quiet"))).toBe(true);
   }, 30_000);
 

@@ -63,7 +63,28 @@ function denied(message: string, details: ApplicationJsonObject): ApplicationErr
  * Validates backend settings before anything is probed or executed, so an unsafe
  * configuration can never reach a running container.
  */
+const ALLOWED_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "image",
+  "dockerExecutable",
+  "userSpec",
+  "maxOutputBytes",
+]);
+
 export function assertValidDockerSandboxSettings(settings: DockerSandboxSettings): void {
+  if (typeof settings !== "object" || settings === null) {
+    throw denied("Docker sandbox settings are required.", {});
+  }
+  // Reject anything not explicitly allowed. A legacy or unknown security-sensitive key such as
+  // `containerWorkdir` must fail loudly rather than be silently ignored: a caller that believes
+  // it relocated the workspace target is reasoning about a boundary that no longer exists.
+  for (const key of Object.keys(settings)) {
+    if (!ALLOWED_SETTING_KEYS.has(key)) {
+      throw denied(
+        "Unknown Docker sandbox setting; security-sensitive configuration is strictly allowlisted.",
+        { rejectedSetting: key },
+      );
+    }
+  }
   if (typeof settings.image !== "string" || !DIGEST_PINNED_IMAGE.test(settings.image)) {
     throw denied(
       "A sandbox image must be digest-pinned as <repository>@sha256:<64 lowercase hex>; a floating tag is refused.",
@@ -173,12 +194,17 @@ function formatCpuQuota(maxCpuMillisPerSecond: number): string {
   return Number.isInteger(cpus) ? String(cpus) : String(Number(cpus.toFixed(3)));
 }
 
+/**
+ * How a supervised docker client invocation ended. Everything except `exited` means the client
+ * was killed without reporting the container's fate, so the container may still be running.
+ */
+type ClientTermination = "exited" | "timeout" | "cancelled" | "output_limit" | "supervisor_signal";
+
 interface SupervisedRunResult {
   readonly code: number | null;
   readonly stdout: string;
   readonly stderr: string;
-  readonly timedOut: boolean;
-  readonly cancelled: boolean;
+  readonly termination: ClientTermination;
 }
 
 /**
@@ -221,8 +247,8 @@ async function runSupervised(
 
   let timedOut = false;
   let cancelled = false;
-  const exited = new Promise<number | null>((resolve) => {
-    child.once("close", (code) => resolve(code));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("close", (code, closeSignal) => resolve({ code, signal: closeSignal }));
   });
   const timer = setTimeout(() => {
     timedOut = true;
@@ -235,12 +261,34 @@ async function runSupervised(
   signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const code = await exited;
-    return { code, stdout, stderr, timedOut, cancelled };
+    const closed = await exited;
+    return {
+      code: closed.code,
+      stdout,
+      stderr,
+      termination: classifyTermination(timedOut, cancelled, supervisor, closed.signal),
+    };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
   }
+}
+
+function classifyTermination(
+  timedOut: boolean,
+  cancelled: boolean,
+  supervisor: ProcessSupervisor,
+  closeSignal: NodeJS.Signals | null,
+): ClientTermination {
+  if (timedOut) return "timeout";
+  if (cancelled) return "cancelled";
+  // The Layer 8 supervisor kills the client when its bounded output is exceeded. That is not an
+  // ordinary failure: the container it launched can still be running.
+  if (supervisor.terminationReason === "output_limit") return "output_limit";
+  if (supervisor.terminationReason !== undefined || closeSignal !== null) {
+    return "supervisor_signal";
+  }
+  return "exited";
 }
 
 export class DirectDockerSandbox implements SandboxBackend {
@@ -304,14 +352,13 @@ export class DirectDockerSandbox implements SandboxBackend {
       });
     });
 
-    if (result.timedOut || result.cancelled) {
-      // Killing the docker *client* proves nothing about the container, so remove it by name
-      // and verify it is gone before saying anything about the effect.
+    if (result.termination !== "exited") {
+      // Killing the docker *client* proves nothing about the container. Remove it by name and
+      // verify it is gone; only then report the effect as indeterminate. A cleanup failure
+      // propagates instead, so the supervisor keeps the sandbox reconcilable.
       await this.#removeContainer(spec);
-    }
-    if (result.timedOut) {
       throw new SandboxIndeterminateEffectError(
-        `Sandbox ${spec.sandboxId} exceeded its ${spec.budget.maxWallClockMs}ms budget; its container was force-removed before the effect could be confirmed.`,
+        `Sandbox ${spec.sandboxId} client terminated (${result.termination}) without confirming its container; the container was force-removed and its effect cannot be proven.`,
       );
     }
 
@@ -324,7 +371,7 @@ export class DirectDockerSandbox implements SandboxBackend {
       exitCode: result.code ?? -1,
     });
     return Object.freeze({
-      status: result.cancelled ? ("cancelled" as const) : statusFor(result.code),
+      status: statusFor(result.code),
       outputArtifactIds: Object.freeze([]),
       logArtifactIds: Object.freeze([]),
       metadata,

@@ -18,7 +18,7 @@ import {
 import { ContentHash, JobId, ProjectId, ResourceBudget, TaskId } from "@v31m4/domain";
 import { ReferenceSandboxBackend, SandboxSupervisor } from "@v31m4/infrastructure";
 import { beforeEach, describe, expect, it } from "vitest";
-import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
 
@@ -56,6 +56,13 @@ let workspace: WorkspaceHandle;
 let workspaceDirectory: string;
 let sandboxes: SandboxSupervisor;
 let nextSandbox = 0;
+let boundary: ReturnType<typeof createSemanticAuthorizationBoundary>;
+
+function authorizeSemanticExecution(
+  request: Parameters<ReturnType<typeof createSemanticAuthorizationBoundary>["authorize"]>[0],
+) {
+  return boundary.authorize(request);
+}
 
 beforeEach(async () => {
   workspacesRoot = mkdtempSync(join(tmpdir(), "v31m4-phase1-"));
@@ -64,9 +71,11 @@ beforeEach(async () => {
   workspaceDirectory = join(workspacesRoot, workspace.id);
   writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 1;\n", "utf8");
   nextSandbox = 0;
+  boundary = createSemanticAuthorizationBoundary();
   sandboxes = new SandboxSupervisor({
     backend: new ReferenceSandboxBackend(),
     workspaces,
+    capabilities: boundary.capabilities,
     // The closed set comes from the single V31M4-owned catalog; infrastructure never keeps a
     // second copy of the operation registry.
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -200,6 +209,7 @@ describe("code.patch staleness across a real workspace", () => {
 
     const patchParameters = {
       expectedFingerprint: firstFingerprint,
+      targetPath: "target.ts",
       pathScope: ["target.ts"],
       patch: "--- a/target.ts\n+++ b/target.ts\n",
     };
@@ -252,6 +262,7 @@ describe("code.patch staleness across a real workspace", () => {
       sandbox,
       parameters: {
         expectedFingerprint: fingerprint,
+        targetPath: "target.ts",
         pathScope: ["target.ts"],
         patch: "--- a\n+++ b\n",
       },
@@ -262,6 +273,63 @@ describe("code.patch staleness across a real workspace", () => {
     expect(readFileSync(join(workspaceDirectory, "target.ts"), "utf8")).toBe(
       "export const value = 1;\n",
     );
+  });
+});
+
+describe("capabilities are issuer-bound, single-use, and re-checked at dispatch", () => {
+  it("refuses a capability from a different authorization boundary", async () => {
+    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
+    const foreign = createSemanticAuthorizationBoundary().authorize({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { pathScope: ["target.ts"] },
+    });
+    await expect(sandboxes.execute(sandbox, foreign, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("spends a capability once, so a replay cannot re-run the same authority", async () => {
+    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
+    const plan = inspectPlan(sandbox, "target.ts");
+    expect((await sandboxes.execute(sandbox, plan, context())).status).toBe("completed");
+    await expect(sandboxes.execute(sandbox, plan, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+  });
+
+  it("rejects a patch whose target moved between authorization and dispatch", async () => {
+    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
+    const current = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
+    const fingerprint = ContentHash.parse(fingerprintOf(current.metadata, "target.ts"));
+    const plan = authorizeSemanticExecution({
+      operationId: "code.patch",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: {
+        expectedFingerprint: fingerprint,
+        targetPath: "target.ts",
+        pathScope: ["target.ts"],
+        patch: "--- a\n+++ b\n",
+      },
+      observedTargetFingerprint: fingerprint,
+    });
+
+    // Authorization succeeded against a current target; the workspace then moves on.
+    writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 3;\n", "utf8");
+
+    await expect(sandboxes.execute(sandbox, plan, context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
   });
 });
 

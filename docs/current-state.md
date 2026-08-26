@@ -60,6 +60,27 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     not be 0, and the container workspace target is a backend-owned constant a caller cannot replace.
   - **Finding 4 — repository state falsely advanced the gate.** Corrected here and in the evidence
     file, which retains the original failed evidence alongside the findings and remediation.
+  - **Round 2 (independent re-review of `29f0b55`, verdict FAIL_IMPLEMENTATION).** Five further
+    findings, all reproduced and repaired:
+    1. *The public plan factory recreated the bypass.* `AuthorizedSemanticExecutionPlan.issue` was
+       public and took a caller-supplied contract, so anyone could mint an authentic `git.status`
+       plan carrying `touch`. Minting now lives in a closure: `createSemanticExecutionAuthority`
+       returns a mint/verify pair, `createSemanticAuthorizationBoundary` keeps the mint private and
+       exposes only `authorize` plus a verifier, the contract is read from the canonical catalog,
+       and a sandbox accepts only capabilities its own paired boundary minted.
+    2. *Output-limit termination could strand a container.* `ProcessSupervisor` now reports why it
+       ended a process, and any unconfirmed client termination — timeout, cancel, output limit,
+       supervisor signal — force-removes the container, verifies its absence, and reports an
+       indeterminate effect. The sandbox never returns to `ready` on an unconfirmed termination.
+    3. *Plans could be replayed, and patch currency was checked too early.* Every capability now
+       carries an `executionPlanId` and is spent exactly once, and the sandbox re-reads the
+       authoritative workspace immediately before dispatch — a target that moved after
+       authorization is `CONFLICT` and never reaches the backend.
+    4. *The target-host proof was incomplete.* It now also observes `HOME`/`TMPDIR`, proves `/tmp`
+       and the sandbox HOME are tmpfs mapping no host storage, and exercises a real wall-clock
+       timeout with independent verification that the named container is gone.
+    5. *Unknown config keys were accepted.* Docker settings are strictly allowlisted, so a legacy
+       `containerWorkdir` (or any other unexpected security-sensitive key) is rejected.
   - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
     (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
     disabled for this distro, and no digest-pinned image has been supplied. A non-empty
@@ -76,6 +97,10 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
     With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
   - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
+  - Current gate after round 2: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **577 passing / 16 skipped / 8 todo (601 total) across 114
+    passing + 5 skipped test files (119 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+    is a green regression suite, **not** a passed Task 1 gate.
 
 - **Next action: finish Task 1** — run the target-host Docker proof above once a container runtime
   and a digest-pinned image are available, then submit Task 1 for independent re-review.

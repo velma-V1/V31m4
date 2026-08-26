@@ -447,3 +447,163 @@ engine is not running and WSL integration is disabled for this distro, and no di
 been chosen. Until a real container runs and every isolation property is observed, **Task 1 is
 INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted; the bake-off may still return
 `NO_ACCEPTABLE_BACKEND`.
+
+---
+
+# Independent review round 2 — findings and remediation
+
+**Verifier:** independent Codex re-review of `29f0b55` · **Verdict:** FAIL_IMPLEMENTATION
+**Repair starting HEAD:** `29f0b5580f0d3607ad3915515504cede4d06361d`, clean worktree.
+
+Round 1's repair closed the *shape* of the bypass but left the *capability* open. Each round-2
+finding was reproduced against `29f0b55` before any fix.
+
+## Reproduction
+
+A probe against `29f0b55` printed:
+
+```text
+[probe2 F1] supervisor ACCEPTED a fabricated git.status plan carrying command
+            {"executable":"touch","arguments":["/etc/probe"]} -> status=completed
+[probe2 F3] same plan replayed -> status=completed
+[probe2 F2] stderr-limit kill -> status=failed, sandbox=ready
+[probe2 F5] settings with containerWorkdir:"/" accepted -> direct-docker
+```
+
+Finding 4 is a proof-completeness gap, confirmed by inspection: the target-host test observed no
+HOME/tmpfs behavior and never exercised a real timeout.
+
+## Finding 1 (HIGH) — the public authorization factory recreated the bypass
+
+**Root cause:** `AuthorizedSemanticExecutionPlan.issue` was a public static taking a caller-supplied
+`SemanticOperationContract`. `isAuthentic` proved only "constructed by this class", so a fabricated
+contract (`operationId: "git.status"`, `allowsCallerSuppliedCommand: true`) minted a plan the
+supervisor accepted with an arbitrary command. Structural branding was being used as a security
+capability.
+
+**Repair — capability issuance design:**
+
+- The plan constructor is guarded by a module-private symbol; there is no public factory and no
+  public `isAuthentic`.
+- `createSemanticExecutionAuthority({ generateExecutionPlanId, now })` returns a `mint`/`verify`/
+  `consume` triple sharing a **closure-private `WeakSet`**. Nothing outside that closure can add to
+  it, so authenticity means "minted by *this* authority" — not class identity, not shape.
+- `createSemanticAuthorizationBoundary()` (runtime) creates one authority, keeps `mint` inside its
+  closure, and exposes only `authorize(request)` and `capabilities` (`verify` + `consume`).
+  `SandboxSupervisor` is configured with that verifier, so a sandbox accepts only capabilities from
+  the boundary it is paired with.
+- `authorize` reads the contract — effect class, roles, sandbox requirement,
+  `allowsCallerSuppliedCommand`, trusted command mapping — from `SEMANTIC_OPERATION_CATALOG`, never
+  from the request. `assertEscapeHatchIsExclusive` additionally refuses to honour
+  `allowsCallerSuppliedCommand` on anything but `command.run`.
+
+**Regressions:** foreign-authority capability rejected end to end; a fabricated `git.status` +
+`touch` contract rejected; non-minted objects (`null`, string, number, look-alike) rejected;
+constructor rejects a wrong token and no token; `command.run` is the only catalog entry permitting a
+caller command; the boundary test proves a capability from a second boundary is refused.
+
+## Finding 2 (HIGH) — output-limit termination could strand a container
+
+**Root cause:** `runSupervised` tracked only `timedOut`/`cancelled`. `ProcessSupervisor` also kills a
+process when `stderrLimitBytes` is exceeded, so that kill was reported as an ordinary non-zero exit
+and the sandbox returned to `ready` while the daemon-side container could still be running.
+
+**Repair — process-termination reconciliation:**
+
+- `ProcessSupervisor` gains a `terminationReason` (`output_limit | requested`), set when the
+  supervisor itself ends the process. This extends the existing Layer 8 authority; no competing
+  supervision was introduced.
+- `classifyTermination` maps a run to `exited | timeout | cancelled | output_limit |
+  supervisor_signal`, also treating a close-signal with no known reason as a supervisor signal.
+- **Any** termination other than `exited` force-removes the named container, verifies its absence,
+  and then raises `SandboxIndeterminateEffectError` → internal `unknown` + `degraded`. A cleanup
+  failure propagates instead, so the sandbox stays reconcilable. Execution no longer returns a plain
+  `cancelled` result for an unconfirmed client death.
+
+**Regressions:** a stub docker floods stderr past the limit; the Layer 8 supervisor kills the
+client; `rm --force <name>` and the `ps --all --quiet` absence check are both observed in the stub's
+call log; the result is `unknown` and the sandbox `degraded`.
+
+## Finding 3 (MEDIUM) — plan replay and non-atomic patch currency
+
+**Root cause:** capabilities had no identity, no consumption state, and `code.patch` currency was
+validated only at issuance, leaving a window for the workspace to change before dispatch.
+
+**Repair — replay protection and atomic currency:**
+
+- Every capability carries `executionPlanId` (injected nonce) and `issuedAt`. `consume` spends it
+  once; a replay is `PERMISSION_DENIED`. The supervisor consumes **before** dispatch, so an
+  interrupted attempt cannot be retried on the same authority.
+- Capabilities may carry a `WorkspaceCurrencyPrecondition` (`path`, `expectedFingerprint`,
+  `allowedPathScope`). `assertWorkspaceStillCurrent` runs at the sink immediately before dispatch:
+  it rejects a target outside its own scope, re-verifies every declared path is contained in the
+  assigned workspace, re-reads the authoritative file, recomputes SHA-256, and raises `CONFLICT` on
+  a mismatch. The backend is never reached.
+- `code.patch` now requires an explicit `targetPath` that must be inside `pathScope`, so "the
+  current file the fingerprint describes" is unambiguous and re-checkable.
+
+**Regressions:** same capability executed twice → rejected; distinct capabilities have distinct ids;
+target edited between authorization and dispatch → `CONFLICT` with a backend that records it was
+never called; target outside its declared scope → rejected; declared scope escaping the workspace →
+rejected; `code.patch` missing/escaping/out-of-scope `targetPath` → rejected.
+
+## Finding 4 (MEDIUM) — the target-host proof was incomplete
+
+**Repair — target-host proof expansion.** When real Docker is available the proof now additionally
+observes: `HOME` equals `/home/sandbox`; `TMPDIR` equals `/tmp`; `/proc/self/mounts` shows `/tmp`
+and `/home/sandbox` as `tmpfs`; neither scratch mount maps the host workspace directory; both are
+writable; and a **real wall-clock timeout** on a bounded `sleep 300` yields `unknown` + `degraded`
+with the named container confirmed absent by an `execFileSync` docker query issued **outside** the
+code under test. Container removal after a normal run is verified the same independent way. These
+join the existing non-zero UID, read-only root, absent socket, blocked egress, refusal to write
+outside the workspace, and host-observed workspace write.
+
+## Finding 5 (LOW) — unknown container-workdir inputs were silently accepted
+
+**Repair — strict Docker configuration validation.** `assertValidDockerSandboxSettings` now
+allowlists exactly `image`, `dockerExecutable`, `userSpec`, and `maxOutputBytes`; any other key is
+rejected. `containerWorkdir` in particular fails loudly rather than being ignored, because a caller
+that believes it relocated the workspace target is reasoning about a boundary that no longer exists.
+`CONTAINER_WORKDIR = "/workspace"` remains backend-owned.
+
+**Regressions:** `containerWorkdir` `/`, `/tmp/unsafe`, and even `/workspace` rejected, plus
+`privileged`, `network`, and `mounts`, against both the validator and the constructor.
+
+## Architecture note
+
+`packages/application/src/ports/sandbox.port.ts` reached 532 lines and the existing source-size
+guard failed. The capability machinery moved to
+`packages/application/src/ports/semantic-execution-capability.ts` (238 + 306 lines). The two files
+reference each other only through erased type-only imports, so there is no runtime cycle. The guard
+was not weakened.
+
+## Preserved verified behavior
+
+Unchanged: exactly nineteen semantic operations with `git.worktree` absent; `WorkspaceManagerPort`
+as sole worktree authority; adapter protocol `1.0.0` byte/behavior compatibility with
+`ADAPTER_PROTOCOL_VERSION = "1.0.0"`; additive `1.1.0` with exact-version negotiation; public
+`ToolInvocationResult.status` unchanged; runtime API `1.0.0` unchanged; no dependency, lockfile, or
+`allowBuilds` change; Docker client through `ProcessSupervisor`; pre-abort no-spawn; timeout,
+cancel, and destroy cleanup; failed destroy retaining degraded state; digest-pinned image
+validation; non-zero uid/gid; fixed `/workspace`; `--network none`; read-only root; `--cap-drop
+ALL`; `no-new-privileges`; PID/CPU/memory bounds; no Docker socket; ephemeral internal scratch.
+
+## Round-2 verification
+
+- Focused Task 1 suites (domain IDs, sandbox port, adapter RPC 1.1, infrastructure sandbox, adapter
+  operations, supervised processes, and every `apps/runtime/tests/autonomy` file): **103 passing /
+  2 skipped / 8 todo (113 total) across 10 passing + 1 skipped test files (11 total)**.
+- `pnpm check`: **exit 0** — lint 367 files, 0 errors (9 pre-existing warnings, 1 pre-existing
+  info), typecheck 9/9, **577 passing / 16 skipped / 8 todo (601 total) across 114 passing + 5
+  skipped test files (119 total)**.
+- `pnpm build`: 9/9. `git diff --check`: clean.
+- Static/reference proof: `node scripts/prove-autonomy-phase1-real.mjs` — 2 passing, exit 0, with
+  the container assertions honestly reported as NOT PROVEN.
+- Gate honesty check: `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 node scripts/prove-autonomy-phase1-real.mjs`
+  exits **1**.
+
+## Remaining blocker (unchanged)
+
+The mandatory target-host Docker proof. No container runtime is reachable and no digest-pinned image
+is supplied, so the isolation properties remain unobserved. **Task 1 is INCOMPLETE and Task 2 must
+not begin.** No sandbox backend is promoted.

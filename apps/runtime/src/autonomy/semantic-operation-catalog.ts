@@ -140,6 +140,7 @@ const DEFINITIONS: readonly SemanticOperationDefinition[] = Object.freeze([
   define("code.inspect", "read", "low", "evidence.none.v1", ["pathScope"]),
   define("code.patch", "workspace_write", "high", "evidence.patch_requires_current_target.v1", [
     "expectedFingerprint",
+    "targetPath",
     "pathScope",
     "patch",
   ]),
@@ -204,6 +205,8 @@ export function assertSemanticOperationAllowedForRole(
 
 export interface CodePatchScope {
   readonly expectedFingerprint: ContentHash;
+  /** The exact workspace file the fingerprint describes; must be inside `pathScope`. */
+  readonly targetPath: SafePath;
   readonly pathScope: readonly SafePath[];
 }
 
@@ -242,11 +245,30 @@ export function parseCodePatchScope(parameters: unknown): CodePatchScope {
       });
     }
   }
+  const rawTarget = record["targetPath"];
+  if (typeof rawTarget !== "string") {
+    throw invalid("code.patch requires the target path the expected fingerprint describes.");
+  }
+  let targetPath: SafePath;
+  try {
+    targetPath = SafePath.parse(rawTarget);
+  } catch (error) {
+    throw invalid("The code.patch target path escapes the assigned workspace.", {
+      path: rawTarget,
+      reason: error instanceof Error ? error.message : "invalid path",
+    });
+  }
+  if (!pathScope.includes(targetPath)) {
+    throw invalid("The code.patch target path must be inside the declared path scope.", {
+      targetPath,
+    });
+  }
   if (typeof record["patch"] !== "string" || record["patch"].length === 0) {
     throw invalid("code.patch requires a non-empty patch body.");
   }
   return Object.freeze({
     expectedFingerprint: ContentHash.parse(expected),
+    targetPath,
     pathScope: Object.freeze(pathScope),
   });
 }

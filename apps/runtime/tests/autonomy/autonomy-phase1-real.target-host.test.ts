@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ import {
   SandboxSupervisor,
 } from "@v31m4/infrastructure";
 import { expect, it } from "vitest";
-import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
 
@@ -68,6 +69,16 @@ function report(line: string): void {
   process.stdout.write(`[phase1-proof] ${line}\n`);
 }
 
+/** Asks Docker directly, so container absence is not attested by the code under test. */
+function containerExists(name: string): boolean {
+  const listed = execFileSync(
+    dockerExecutable,
+    ["ps", "--all", "--quiet", "--filter", `name=^${name}$`],
+    { encoding: "utf8" },
+  );
+  return listed.trim().length > 0;
+}
+
 realTest("real workspace, catalog, and sandbox boundary on this host", async () => {
   const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-real-"));
   const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
@@ -75,10 +86,13 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
   const directory = join(root, workspace.id);
   writeFileSync(join(directory, "target.ts"), "export const value = 1;\n", "utf8");
 
+  const boundary = createSemanticAuthorizationBoundary();
+  const authorizeSemanticExecution = boundary.authorize;
   const sandboxes = new SandboxSupervisor({
     backend: new ReferenceSandboxBackend(),
     workspaces,
     allowedOperations: SEMANTIC_OPERATION_IDS,
+    capabilities: boundary.capabilities,
     resolveWorkspaceRoot: async (workspaceId) => join(root, workspaceId),
     generateSandboxId: () => "sandbox:phase1-reference",
   });
@@ -182,10 +196,13 @@ realTest(
     const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
     const workspace = await workspaces.create(projectId, "tool_execution", context());
     const directory = join(root, workspace.id);
+    const boundary = createSemanticAuthorizationBoundary();
+    const authorizeSemanticExecution = boundary.authorize;
     const sandboxes = new SandboxSupervisor({
       backend: docker,
       workspaces,
       allowedOperations: SEMANTIC_OPERATION_IDS,
+      capabilities: boundary.capabilities,
       resolveWorkspaceRoot: async (workspaceId) => join(root, workspaceId),
       generateSandboxId: () => "sandbox:phase1-docker",
     });
@@ -284,10 +301,87 @@ realTest(
     expect(readFileSync(join(directory, "produced.txt"), "utf8")).toBe("from-container");
     report("workspace-only write: verified on the host filesystem");
 
+    // Ephemeral internal scratch: HOME and TMPDIR must resolve to in-container tmpfs that maps
+    // no host storage, and must be writable so build/test tooling is not broken by isolation.
+    const home = await sandboxes.execute(sandbox, run('printf "%s" "$HOME"', sandbox), context());
+    expect(String(home.metadata["stdout"]).trim()).toBe("/home/sandbox");
+    const temporaryDir = await sandboxes.execute(
+      sandbox,
+      run('printf "%s" "$TMPDIR"', sandbox),
+      context(),
+    );
+    expect(String(temporaryDir.metadata["stdout"]).trim()).toBe("/tmp");
+    report(
+      `HOME=${String(home.metadata["stdout"]).trim()} ` +
+        `TMPDIR=${String(temporaryDir.metadata["stdout"]).trim()}`,
+    );
+
+    const mounts = await sandboxes.execute(
+      sandbox,
+      run("cat /proc/self/mounts", sandbox),
+      context(),
+    );
+    const mountTable = String(mounts.metadata["stdout"]);
+    const mountFor = (target: string): string =>
+      mountTable.split("\n").find((line) => line.split(" ")[1] === target) ?? "";
+    expect(mountFor("/tmp").split(" ")[2], `/tmp mount: ${mountFor("/tmp")}`).toBe("tmpfs");
+    expect(
+      mountFor("/home/sandbox").split(" ")[2],
+      `HOME mount: ${mountFor("/home/sandbox")}`,
+    ).toBe("tmpfs");
+    // The workspace bind is the one host-backed mount; scratch must not be.
+    expect(mountFor("/workspace")).not.toBe("");
+    expect(mountFor("/tmp")).not.toContain(directory);
+    expect(mountFor("/home/sandbox")).not.toContain(directory);
+    report("ephemeral scratch: /tmp and HOME are tmpfs, neither maps host storage");
+
+    const scratchWritable = await sandboxes.execute(
+      sandbox,
+      run("touch /tmp/probe && touch /home/sandbox/probe", sandbox),
+      context(),
+    );
+    expect(scratchWritable.status).toBe("completed");
+
     // Destruction must actually prove the container is gone.
     await sandboxes.destroy(sandbox.id, context());
     expect(await sandboxes.inspect(sandbox.id, context())).toBeNull();
-    report(`container ${containerNameFor(sandbox.id)} removed and absence verified`);
+    expect(containerExists(containerNameFor(sandbox.id))).toBe(false);
+    report(`container ${containerNameFor(sandbox.id)} removed and absence independently verified`);
+
+    // Real wall-clock timeout: a bounded long-running container must be reconciled, reported as
+    // an unknown effect, and left with no surviving container.
+    const timeoutSandboxes = new SandboxSupervisor({
+      backend: docker,
+      workspaces,
+      allowedOperations: SEMANTIC_OPERATION_IDS,
+      capabilities: boundary.capabilities,
+      resolveWorkspaceRoot: async (workspaceId) => join(root, workspaceId),
+      generateSandboxId: () => "sandbox:phase1-docker-timeout",
+    });
+    const timeoutSandbox = await timeoutSandboxes.prepare(
+      taskId,
+      jobId,
+      workspace,
+      ResourceBudget.create({
+        maxWallClockMs: 5_000,
+        maxModelInvocations: 0,
+        maxToolInvocations: 1,
+        maxRepairRounds: 0,
+        maxConcurrentWorkers: 1,
+      }),
+      policy,
+      context(),
+    );
+    const timedOut = await timeoutSandboxes.execute(
+      timeoutSandbox,
+      run("sleep 300", timeoutSandbox),
+      context(),
+    );
+    expect(timedOut.status).toBe("unknown");
+    expect((await timeoutSandboxes.inspect(timeoutSandbox.id, context()))?.status).toBe("degraded");
+    expect(containerExists(containerNameFor(timeoutSandbox.id))).toBe(false);
+    report("real timeout: container force-removed and absence independently verified");
+
     report("direct-Docker container assertions: PASS");
   },
   600_000,

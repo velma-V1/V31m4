@@ -2,13 +2,15 @@ import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
 import { ApplicationError } from "../src/application-errors.js";
 import {
-  AuthorizedSemanticExecutionPlan,
   assertPublicToolInvocationStatus,
   type SandboxHandle,
   SandboxIsolationPolicy,
   type SandboxIsolationPolicyInput,
-  type SemanticExecutionAuthorizationInput,
 } from "../src/ports/sandbox.port.js";
+import {
+  createSemanticExecutionAuthority,
+  type SemanticExecutionAuthorizationInput,
+} from "../src/ports/semantic-execution-capability.js";
 import type { WorkspaceHandle } from "../src/ports/workspace-manager.port.js";
 
 /**
@@ -115,7 +117,7 @@ describe("sandbox execution status model", () => {
   });
 });
 
-describe("AuthorizedSemanticExecutionPlan", () => {
+describe("semantic execution capabilities", () => {
   const taskId = TaskId.parse("task:root");
   const jobId = JobId.parse("job:1");
   const workspace: WorkspaceHandle = Object.freeze({
@@ -134,6 +136,14 @@ describe("AuthorizedSemanticExecutionPlan", () => {
     backendId: "reference",
     status: "ready" as const,
   });
+
+  let counter = 0;
+  function authority() {
+    return createSemanticExecutionAuthority({
+      generateExecutionPlanId: () => `plan:${++counter}`,
+      now: () => "2026-08-25T00:00:00.000Z",
+    });
+  }
 
   function input(
     overrides: Partial<SemanticExecutionAuthorizationInput> = {},
@@ -158,22 +168,77 @@ describe("AuthorizedSemanticExecutionPlan", () => {
     };
   }
 
-  it("issues a frozen plan bound to one operation, task, job, workspace, and sandbox", () => {
-    const plan = AuthorizedSemanticExecutionPlan.issue(
-      input({ command: { executable: "git", arguments: ["status"] } }),
-    );
+  it("mints a frozen, uniquely identified capability bound to one execution", () => {
+    const issuer = authority();
+    const plan = issuer.mint(input({ command: { executable: "git", arguments: ["status"] } }));
     expect(plan.operationId).toBe("code.patch");
     expect(plan.taskId).toBe(taskId);
     expect(plan.jobId).toBe(jobId);
     expect(plan.workspaceId).toBe(workspace.id);
     expect(plan.sandboxId).toBe(sandbox.id);
     expect(plan.command).toEqual({ executable: "git", arguments: ["status"] });
+    expect(plan.executionPlanId).toMatch(/^plan:\d+$/u);
+    expect(plan.issuedAt).toBe("2026-08-25T00:00:00.000Z");
     expect(Object.isFrozen(plan)).toBe(true);
     expect(Object.isFrozen(plan.command)).toBe(true);
-    expect(AuthorizedSemanticExecutionPlan.isAuthentic(plan)).toBe(true);
+    expect(issuer.verify(plan)).toBe(plan);
   });
 
-  it("refuses every missing precondition", () => {
+  it("cannot be constructed outside an authority", () => {
+    const issuer = authority();
+    const plan = issuer.mint(input());
+    const PlanClass = plan.constructor as new (...args: unknown[]) => unknown;
+    // Neither a wrong token nor no token at all produces an instance.
+    expect(
+      () => new PlanClass(Symbol("forged"), input(), "plan:x", "2026-08-25T00:00:00.000Z"),
+    ).toThrow(ApplicationError);
+    expect(() => new PlanClass(undefined, input(), "plan:x", "2026-08-25T00:00:00.000Z")).toThrow(
+      ApplicationError,
+    );
+  });
+
+  it("accepts only capabilities its own closure minted", () => {
+    const first = authority();
+    const second = authority();
+    const plan = second.mint(input());
+    // A real, correctly bound plan from a different authority is still refused: authenticity is
+    // issuer identity, not class identity or structural shape.
+    expect(() => first.verify(plan)).toThrow(ApplicationError);
+    expect(() => first.consume(plan)).toThrow(ApplicationError);
+    expect(second.verify(plan)).toBe(plan);
+  });
+
+  it("refuses anything that is not a minted capability", () => {
+    const issuer = authority();
+    for (const value of [
+      null,
+      "plan",
+      42,
+      {
+        operationId: "code.inspect",
+        effectClass: "read",
+        taskId,
+        jobId,
+        workspaceId: workspace.id,
+        sandboxId: sandbox.id,
+        command: { executable: "touch", arguments: ["/etc/probe"] },
+        parameters: {},
+        fingerprints: {},
+      },
+    ]) {
+      expect(() => issuer.verify(value)).toThrow(ApplicationError);
+    }
+  });
+
+  it("spends a capability exactly once", () => {
+    const issuer = authority();
+    const plan = issuer.mint(input());
+    expect(() => issuer.consume(plan)).not.toThrow();
+    expect(() => issuer.consume(plan)).toThrow(ApplicationError);
+  });
+
+  it("refuses to mint when any precondition is missing", () => {
+    const issuer = authority();
     const cases: ReadonlyArray<readonly [string, Partial<SemanticExecutionAuthorizationInput>]> = [
       ["role not allowed", { role: "auditor" }],
       ["policy denied", { policyDecision: "deny" as const }],
@@ -190,26 +255,7 @@ describe("AuthorizedSemanticExecutionPlan", () => {
       ["empty executable", { command: { executable: "", arguments: [] } }],
     ];
     for (const [label, override] of cases) {
-      expect(() => AuthorizedSemanticExecutionPlan.issue(input(override)), label).toThrow(
-        ApplicationError,
-      );
+      expect(() => issuer.mint(input(override)), label).toThrow(ApplicationError);
     }
-  });
-
-  it("does not recognise a structurally forged look-alike", () => {
-    const forged = {
-      operationId: "code.inspect",
-      effectClass: "read",
-      taskId,
-      jobId,
-      workspaceId: workspace.id,
-      sandboxId: sandbox.id,
-      command: { executable: "touch", arguments: ["/etc/probe"] },
-      parameters: {},
-      fingerprints: {},
-    };
-    expect(AuthorizedSemanticExecutionPlan.isAuthentic(forged)).toBe(false);
-    expect(AuthorizedSemanticExecutionPlan.isAuthentic(null)).toBe(false);
-    expect(AuthorizedSemanticExecutionPlan.isAuthentic("plan")).toBe(false);
   });
 });

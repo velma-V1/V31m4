@@ -4,13 +4,14 @@ import { isAbsolute, resolve, sep } from "node:path";
 import {
   ApplicationError,
   type ApplicationJsonObject,
-  AuthorizedSemanticExecutionPlan,
+  type AuthorizedSemanticExecutionPlan,
   type OperationContext,
   type SandboxExecutionResult,
   type SandboxHandle,
   type SandboxIsolationPolicy,
   type SandboxPort,
   type SandboxStatus,
+  type SemanticExecutionCapabilityVerifier,
   type WorkspaceHandle,
   type WorkspaceManagerPort,
 } from "@v31m4/application";
@@ -67,6 +68,11 @@ export interface SandboxSupervisorOptions {
    * second copy of the operation registry inside infrastructure.
    */
   readonly allowedOperations: readonly string[];
+  /**
+   * The verify/consume half of the semantic authorization boundary this sandbox is paired with.
+   * Only capabilities minted by that exact boundary are accepted, and each is spent once.
+   */
+  readonly capabilities: SemanticExecutionCapabilityVerifier;
   /**
    * Resolves the assigned workspace's absolute host directory. Containment against approved
    * roots is the trusted caller's responsibility; the sandbox never derives host paths itself.
@@ -157,13 +163,8 @@ export class SandboxSupervisor implements SandboxPort {
     plan: AuthorizedSemanticExecutionPlan,
     context: OperationContext,
   ): Promise<SandboxExecutionResult> {
-    if (!AuthorizedSemanticExecutionPlan.isAuthentic(plan)) {
-      throw new ApplicationError(
-        "PERMISSION_DENIED",
-        "Sandbox execution requires an authorization issued by the semantic authorization boundary.",
-        { details: { sandboxId: sandbox.id } },
-      );
-    }
+    // Identity, not shape: only a capability this sandbox's paired boundary minted is accepted.
+    const verified = this.#options.capabilities.verify(plan);
     const entry = this.#require(sandbox.id);
     if (entry.handle.status === "stopped") {
       throw new ApplicationError("PERMISSION_DENIED", "The sandbox has been stopped.", {
@@ -173,27 +174,33 @@ export class SandboxSupervisor implements SandboxPort {
     // The authorization is bound to one sandbox, task, job, and workspace. A plan issued for
     // anything else cannot be replayed here.
     if (
-      plan.sandboxId !== entry.spec.sandboxId ||
-      plan.workspaceId !== entry.spec.workspaceId ||
-      plan.taskId !== entry.spec.taskId ||
-      plan.jobId !== entry.spec.jobId
+      verified.sandboxId !== entry.spec.sandboxId ||
+      verified.workspaceId !== entry.spec.workspaceId ||
+      verified.taskId !== entry.spec.taskId ||
+      verified.jobId !== entry.spec.jobId
     ) {
       throw new ApplicationError(
         "PERMISSION_DENIED",
         "The authorization was not issued for this sandbox, task, job, and workspace.",
-        { details: { sandboxId: sandbox.id, operationId: plan.operationId } },
+        { details: { sandboxId: sandbox.id, operationId: verified.operationId } },
       );
     }
-    if (!this.#allowed.has(plan.operationId)) {
+    if (!this.#allowed.has(verified.operationId)) {
       throw new ApplicationError(
         "UNSUPPORTED_OPERATION",
         "The sandbox may only run operations in its approved semantic operation set.",
-        { details: { sandboxId: sandbox.id, operation: plan.operationId } },
+        { details: { sandboxId: sandbox.id, operation: verified.operationId } },
       );
     }
+    // Spend the capability before any effect can start, so an interrupted attempt cannot be
+    // retried on the same authority.
+    this.#options.capabilities.consume(verified);
+    // Re-verify the workspace facts this execution depends on. Authorization-time validation
+    // leaves a window in which the workspace moves on and a stale effect still runs.
+    await assertWorkspaceStillCurrent(entry.spec.workspaceRoot, verified);
     this.#setStatus(entry, "running");
     try {
-      const result = await this.#options.backend.execute(entry.spec, plan, context);
+      const result = await this.#options.backend.execute(entry.spec, verified, context);
       this.#setStatus(entry, "ready");
       return result;
     } catch (error) {
@@ -206,7 +213,8 @@ export class SandboxSupervisor implements SandboxPort {
           metadata: Object.freeze({
             reason: "sandbox_effect_indeterminate",
             detail: error.message,
-            operationId: plan.operationId,
+            operationId: verified.operationId,
+            executionPlanId: verified.executionPlanId,
           }),
         });
       }
@@ -291,6 +299,54 @@ async function assertExistingDirectory(path: string): Promise<void> {
       details: { path },
     });
   }
+}
+
+/**
+ * Re-reads the authoritative workspace immediately before dispatch and proves the execution's
+ * declared preconditions still hold. A mismatch is `CONFLICT`, and the backend is never reached.
+ */
+async function assertWorkspaceStillCurrent(
+  workspaceRoot: string,
+  plan: AuthorizedSemanticExecutionPlan,
+): Promise<void> {
+  const precondition = plan.currencyPrecondition;
+  if (precondition === null) return;
+  if (!precondition.allowedPathScope.includes(precondition.path)) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "The execution target is outside its own declared path scope.",
+      { details: { path: precondition.path, operationId: plan.operationId } },
+    );
+  }
+  // Every declared path must still resolve inside the assigned workspace.
+  for (const path of precondition.allowedPathScope) {
+    await containedPath(workspaceRoot, path);
+  }
+  const observed = await fingerprintWorkspaceFile(workspaceRoot, precondition.path);
+  if (observed !== precondition.expectedFingerprint) {
+    throw new ApplicationError(
+      "CONFLICT",
+      "The execution target changed between authorization and dispatch; the stale effect is rejected.",
+      {
+        details: {
+          operationId: plan.operationId,
+          path: precondition.path,
+          expectedFingerprint: precondition.expectedFingerprint,
+          observedFingerprint: observed,
+        },
+      },
+    );
+  }
+}
+
+/** SHA-256 of a real workspace file, or the empty string when it does not exist. */
+async function fingerprintWorkspaceFile(
+  workspaceRoot: string,
+  relativePath: string,
+): Promise<string> {
+  const contained = await containedPath(workspaceRoot, relativePath);
+  const bytes = await readFile(contained).catch(() => null);
+  return bytes === null ? "" : createHash("sha256").update(bytes).digest("hex");
 }
 
 /**

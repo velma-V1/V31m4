@@ -106,34 +106,50 @@ describe("semantic operation catalog", () => {
     expect(commandRun.riskClass).toBe("critical");
     expect(commandRun.sandboxRequirement).toBe("required");
   });
+
+  it("lets exactly one operation carry a caller-supplied command", () => {
+    const commandable = SEMANTIC_OPERATION_IDS.filter(
+      (id) => getSemanticOperation(id).allowsCallerSuppliedCommand,
+    );
+    expect(commandable).toEqual(["command.run"]);
+  });
 });
 
 describe("code.patch staleness contract", () => {
   it("requires an expected fingerprint and an explicit path scope", () => {
-    const scope = parseCodePatchScope({
+    const valid = {
       expectedFingerprint: currentFingerprint,
+      targetPath: "src/index.ts",
       pathScope: ["src/index.ts"],
       patch: "--- a\n+++ b\n",
-    });
+    };
+    const scope = parseCodePatchScope(valid);
     expect(scope.expectedFingerprint).toBe(currentFingerprint);
+    expect(scope.targetPath).toBe("src/index.ts");
     expect(scope.pathScope).toEqual(["src/index.ts"]);
 
     for (const parameters of [
-      { pathScope: ["src/index.ts"], patch: "x" },
-      { expectedFingerprint: currentFingerprint, patch: "x" },
-      { expectedFingerprint: "not-a-hash", pathScope: ["src/index.ts"], patch: "x" },
-      { expectedFingerprint: currentFingerprint, pathScope: [], patch: "x" },
-      { expectedFingerprint: currentFingerprint, pathScope: ["../escape.ts"], patch: "x" },
-      { expectedFingerprint: currentFingerprint, pathScope: ["/abs.ts"], patch: "x" },
-      { expectedFingerprint: currentFingerprint, pathScope: ["src/index.ts"] },
+      { ...valid, expectedFingerprint: undefined },
+      { ...valid, pathScope: undefined },
+      { ...valid, targetPath: undefined },
+      { ...valid, patch: undefined },
+      { ...valid, expectedFingerprint: "not-a-hash" },
+      { ...valid, pathScope: [] },
+      { ...valid, pathScope: ["../escape.ts"], targetPath: "../escape.ts" },
+      { ...valid, pathScope: ["/abs.ts"], targetPath: "/abs.ts" },
+      // A target outside its own declared scope is refused.
+      { ...valid, targetPath: "src/other.ts" },
     ]) {
-      expect(() => parseCodePatchScope(parameters)).toThrow(ApplicationError);
+      expect(() => parseCodePatchScope(parameters), JSON.stringify(parameters)).toThrow(
+        ApplicationError,
+      );
     }
   });
 
   it("rejects a stale edit rather than silently overwriting newer work", () => {
     const scope = parseCodePatchScope({
       expectedFingerprint: currentFingerprint,
+      targetPath: "src/index.ts",
       pathScope: ["src/index.ts"],
       patch: "--- a\n+++ b\n",
     });

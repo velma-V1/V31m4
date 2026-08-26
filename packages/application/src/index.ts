@@ -24,6 +24,7 @@ export * from "./ports/resource-monitor.port.js";
 export * from "./ports/sandbox.port.js";
 export * from "./ports/scheduler.port.js";
 export * from "./ports/secret-store.port.js";
+export * from "./ports/semantic-execution-capability.js";
 export * from "./ports/tool-gateway.port.js";
 export * from "./ports/training-store.port.js";
 export * from "./ports/unit-of-work.port.js";

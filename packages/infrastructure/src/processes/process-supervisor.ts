@@ -1,6 +1,14 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 
+/**
+ * Why a supervised process stopped, when the supervisor itself ended it. `undefined` means the
+ * process exited on its own. Callers that must reconcile external side effects need to tell an
+ * ordinary non-zero exit apart from a supervisor kill, because the latter proves nothing about
+ * work the process had already started elsewhere.
+ */
+export type ProcessTerminationReason = "output_limit" | "requested";
+
 export interface SupervisedProcessOptions {
   readonly command: string;
   readonly args?: readonly string[];
@@ -15,6 +23,7 @@ export class ProcessSupervisor {
   #child: ChildProcessWithoutNullStreams | undefined;
   readonly #options: SupervisedProcessOptions;
   #stderrBytes = 0;
+  #terminationReason: ProcessTerminationReason | undefined;
 
   constructor(options: SupervisedProcessOptions) {
     this.#options = options;
@@ -22,6 +31,11 @@ export class ProcessSupervisor {
 
   get process(): ChildProcessWithoutNullStreams | undefined {
     return this.#child;
+  }
+
+  /** Set only when this supervisor ended the process; `undefined` after a self-directed exit. */
+  get terminationReason(): ProcessTerminationReason | undefined {
+    return this.#terminationReason;
   }
 
   async start(): Promise<ChildProcessWithoutNullStreams> {
@@ -34,10 +48,13 @@ export class ProcessSupervisor {
       windowsHide: true,
     });
     this.#child = child;
+    this.#terminationReason = undefined;
     child.stderr.on("data", (chunk: Buffer) => {
       this.#stderrBytes += chunk.length;
-      if (this.#stderrBytes > (this.#options.stderrLimitBytes ?? 1024 * 1024))
+      if (this.#stderrBytes > (this.#options.stderrLimitBytes ?? 1024 * 1024)) {
+        this.#terminationReason ??= "output_limit";
         void this.stop("SIGKILL");
+      }
     });
     child.once("exit", () => {
       if (this.#child === child) this.#child = undefined;
@@ -57,6 +74,7 @@ export class ProcessSupervisor {
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
     const child = this.#child;
     if (!child) return;
+    this.#terminationReason ??= "requested";
     const exited = once(child, "exit").then(() => undefined);
     if (process.platform === "win32") child.kill(signal);
     else if (child.pid) process.kill(-child.pid, signal);
