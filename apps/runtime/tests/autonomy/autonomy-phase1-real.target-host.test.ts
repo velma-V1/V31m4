@@ -3,22 +3,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ApplicationError,
+  type AuthorizedSemanticExecutionPlan,
   createOperationContext,
   type OperationContext,
+  type SandboxHandle,
   SandboxIsolationPolicy,
   type WorkspaceManagerPort,
 } from "@v31m4/application";
 import { JobId, ProjectId, ResourceBudget, TaskId } from "@v31m4/domain";
 import {
+  buildDockerRunArguments,
+  containerNameFor,
   DirectDockerSandbox,
   ReferenceSandboxBackend,
   SandboxSupervisor,
 } from "@v31m4/infrastructure";
 import { expect, it } from "vitest";
-import {
-  assertSemanticEffectIsExecutable,
-  SEMANTIC_OPERATION_IDS,
-} from "../../src/autonomy/semantic-operation-catalog.js";
+import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
 
 /**
@@ -27,14 +29,18 @@ import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js
  * Opt-in (`V31M4_AUTONOMY_PHASE1_REAL=1`) so hermetic `pnpm check` stays unchanged. It runs
  * real Task 1 boundary behavior against the actual machine and reports missing prerequisites
  * honestly instead of asserting a mocked success. Set
- * `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` to make a missing container runtime a hard failure.
+ * `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` to make an unproven container boundary a failure.
+ *
+ * A non-empty `V31M4_SANDBOX_IMAGE` is NOT the same thing as a pinned image: the digest syntax
+ * is validated here before the image is treated as usable.
  */
 const enabled = process.env["V31M4_AUTONOMY_PHASE1_REAL"] === "1";
 const realTest = enabled ? it : it.skip;
 const dockerExecutable = process.env["V31M4_DOCKER_EXECUTABLE"] ?? "docker";
-/** Must be digest-pinned; a floating tag is not an acceptable trusted dependency. */
 const sandboxImage = process.env["V31M4_SANDBOX_IMAGE"] ?? "";
 const requireDocker = process.env["V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER"] === "1";
+const DIGEST_PINNED_IMAGE = /^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$/u;
+const imageIsPinned = DIGEST_PINNED_IMAGE.test(sandboxImage);
 
 const projectId = ProjectId.parse("project:phase1");
 const jobId = JobId.parse("job:phase1");
@@ -79,12 +85,19 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
   const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
   report(`prepared reference sandbox ${sandbox.id} on real workspace ${workspace.id}`);
 
-  const inspected = await sandboxes.execute(
-    sandbox,
-    "code.inspect",
-    { pathScope: ["target.ts"] },
-    context(),
-  );
+  const inspect = (path: string) =>
+    authorizeSemanticExecution({
+      operationId: "code.inspect",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { pathScope: [path] },
+    });
+
+  const inspected = await sandboxes.execute(sandbox, inspect("target.ts"), context());
   expect(inspected.status).toBe("completed");
   const fingerprints = inspected.metadata["fingerprints"] as Record<string, string>;
   expect(fingerprints["target.ts"]).toMatch(/^[a-f0-9]{64}$/u);
@@ -92,19 +105,36 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
 
   // A real path escape attempt against the real filesystem must be refused.
   await expect(
-    sandboxes.execute(sandbox, "code.inspect", { pathScope: ["../../etc/passwd"] }, context()),
+    sandboxes.execute(sandbox, inspect("../../etc/passwd"), context()),
   ).rejects.toBeInstanceOf(ApplicationError);
 
-  // The governed gate is the only route to an effect.
+  // A harmless operation cannot carry a foreign executable, and an effect has no path without
+  // a sandbox.
   expect(() =>
-    assertSemanticEffectIsExecutable({
-      operationId: "code.patch",
+    authorizeSemanticExecution({
+      operationId: "git.status",
       role: "executor",
       policyDecision: "allow",
-      assignedWorkspaceId: workspace.id,
-      sandboxId: null,
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { executable: "touch", arguments: [join(directory, "smuggled.txt")] },
     }),
   ).toThrow(ApplicationError);
+  expect(() =>
+    authorizeSemanticExecution({
+      operationId: "command.run",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox: null,
+      parameters: { executable: "/bin/true", arguments: [] },
+    }),
+  ).toThrow(ApplicationError);
+
   await sandboxes.destroy(sandbox.id, context());
   report("reference-backend boundary proof: PASS");
 });
@@ -112,44 +142,41 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
 realTest(
   "hardened direct-Docker sandbox on this host",
   async () => {
+    report(`container runtime executable: ${dockerExecutable}`);
+    report(
+      `sandbox image supplied: ${sandboxImage.length > 0}; digest-pinned: ${imageIsPinned}` +
+        (sandboxImage.length > 0 && !imageIsPinned
+          ? " (REJECTED: not <repo>@sha256:<64 hex>)"
+          : ""),
+    );
+
+    if (!imageIsPinned) {
+      if (requireDocker) {
+        throw new Error(
+          "V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 but V31M4_SANDBOX_IMAGE is missing or not digest-pinned as <repository>@sha256:<64 lowercase hex>.",
+        );
+      }
+      report(
+        "direct-Docker container assertions: NOT PROVEN (no digest-pinned image); the backend refuses to construct itself without one",
+      );
+      expect(
+        () =>
+          new DirectDockerSandbox({
+            image: sandboxImage,
+            dockerExecutable,
+            userSpec: "65534:65534",
+          }),
+      ).toThrow(ApplicationError);
+      return;
+    }
+
     const docker = new DirectDockerSandbox({
       image: sandboxImage,
       dockerExecutable,
       userSpec: "65534:65534",
-      containerWorkdir: "/workspace",
     });
     const available = await docker.available();
-    report(`container runtime (${dockerExecutable}) reachable: ${available}`);
-    report(`pinned sandbox image supplied: ${sandboxImage.length > 0}`);
-
-    if (!available || sandboxImage.length === 0) {
-      // Honest unavailability, not a fabricated pass: prove the backend fails closed rather
-      // than degrading isolation, and leave the container assertions explicitly unproven.
-      if (requireDocker) {
-        throw new Error(
-          "V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 but no reachable container runtime and/or no digest-pinned V31M4_SANDBOX_IMAGE was supplied.",
-        );
-      }
-      const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-docker-"));
-      const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
-      const workspace = await workspaces.create(projectId, "tool_execution", context());
-      const sandboxes = new SandboxSupervisor({
-        backend: docker,
-        workspaces,
-        allowedOperations: SEMANTIC_OPERATION_IDS,
-        resolveWorkspaceRoot: async (workspaceId) => join(root, workspaceId),
-        generateSandboxId: () => "sandbox:phase1-docker",
-      });
-      if (!available) {
-        await expect(
-          sandboxes.prepare(taskId, jobId, workspace, budget, policy, context()),
-        ).rejects.toMatchObject({ code: "DEPENDENCY_UNAVAILABLE" });
-      }
-      report(
-        "direct-Docker container assertions: NOT PROVEN on this host (prerequisite missing); fail-closed behavior verified instead",
-      );
-      return;
-    }
+    report(`container runtime reachable: ${available}`);
 
     const root = mkdtempSync(join(tmpdir(), "v31m4-phase1-docker-"));
     const workspaces: WorkspaceManagerPort = new LocalWorkspaceManager(root);
@@ -162,38 +189,106 @@ realTest(
       resolveWorkspaceRoot: async (workspaceId) => join(root, workspaceId),
       generateSandboxId: () => "sandbox:phase1-docker",
     });
-    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
 
-    const run = (script: string) =>
-      sandboxes.execute(
-        sandbox,
-        "command.run",
-        { executable: "/bin/sh", arguments: ["-c", script] },
-        context(),
+    if (!available) {
+      if (requireDocker) {
+        throw new Error(
+          "V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 but no reachable container runtime; the isolation properties remain unproven.",
+        );
+      }
+      await expect(
+        sandboxes.prepare(taskId, jobId, workspace, budget, policy, context()),
+      ).rejects.toMatchObject({ code: "DEPENDENCY_UNAVAILABLE" });
+      report(
+        "direct-Docker container assertions: NOT PROVEN on this host (no reachable container runtime); fail-closed behavior verified instead",
       );
+      return;
+    }
 
-    const identity = await run("id -u");
-    expect(identity.status).toBe("completed");
-    expect(String(identity.metadata["stdout"]).trim()).not.toBe("0");
-    report(`container uid: ${String(identity.metadata["stdout"]).trim()}`);
+    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
+    const run = (script: string, sandboxHandle: SandboxHandle): AuthorizedSemanticExecutionPlan =>
+      authorizeSemanticExecution({
+        operationId: "command.run",
+        role: "executor",
+        policyDecision: "allow",
+        taskId,
+        jobId,
+        workspace,
+        sandbox: sandboxHandle,
+        parameters: { executable: "/bin/sh", arguments: ["-c", script] },
+      });
 
-    const readOnlyRoot = await run("touch /v31m4-root-probe");
+    // The argv actually used, asserted against the running configuration.
+    const argv = buildDockerRunArguments(
+      {
+        sandboxId: sandbox.id,
+        taskId,
+        jobId,
+        workspaceId: workspace.id,
+        workspaceRoot: directory,
+        budget,
+        policy,
+      },
+      { image: sandboxImage, dockerExecutable, userSpec: "65534:65534" },
+      ["/bin/sh", "-c", "true"],
+    );
+    expect(argv.filter((value) => value.startsWith("type=bind"))).toEqual([
+      `type=bind,source=${directory},target=/workspace`,
+    ]);
+    report(`effective mounts: ${argv.filter((v) => v.startsWith("type=bind")).join(" | ")}`);
+
+    const uid = await sandboxes.execute(sandbox, run("id -u", sandbox), context());
+    expect(uid.status).toBe("completed");
+    const effectiveUid = String(uid.metadata["stdout"]).trim();
+    expect(effectiveUid).not.toBe("0");
+    expect(Number(effectiveUid)).toBeGreaterThan(0);
+    report(`effective container uid: ${effectiveUid}`);
+
+    const readOnlyRoot = await sandboxes.execute(
+      sandbox,
+      run("touch /v31m4-root-probe", sandbox),
+      context(),
+    );
     expect(readOnlyRoot.status).toBe("failed");
+    report("read-only root filesystem: enforced");
 
-    const socket = await run("test -S /var/run/docker.sock");
+    const socket = await sandboxes.execute(
+      sandbox,
+      run("test -S /var/run/docker.sock", sandbox),
+      context(),
+    );
     expect(socket.status).toBe("failed");
+    report("docker socket: absent");
 
-    const egress = await run("getent hosts example.com || exit 3");
+    const egress = await sandboxes.execute(
+      sandbox,
+      run("getent hosts example.com || exit 3", sandbox),
+      context(),
+    );
     expect(egress.status).toBe("failed");
+    report("network egress: blocked");
 
-    const write = await run("printf 'from-container' > /workspace/produced.txt");
+    const outsideWorkspace = await sandboxes.execute(
+      sandbox,
+      run("touch /etc/v31m4-probe", sandbox),
+      context(),
+    );
+    expect(outsideWorkspace.status).toBe("failed");
+
+    const write = await sandboxes.execute(
+      sandbox,
+      run("printf 'from-container' > /workspace/produced.txt", sandbox),
+      context(),
+    );
     expect(write.status).toBe("completed");
     expect(readFileSync(join(directory, "produced.txt"), "utf8")).toBe("from-container");
-    report(
-      "direct-Docker container assertions: PASS (non-root, read-only root, no socket, no egress, workspace-only write)",
-    );
+    report("workspace-only write: verified on the host filesystem");
 
+    // Destruction must actually prove the container is gone.
     await sandboxes.destroy(sandbox.id, context());
+    expect(await sandboxes.inspect(sandbox.id, context())).toBeNull();
+    report(`container ${containerNameFor(sandbox.id)} removed and absence verified`);
+    report("direct-Docker container assertions: PASS");
   },
-  300_000,
+  600_000,
 );

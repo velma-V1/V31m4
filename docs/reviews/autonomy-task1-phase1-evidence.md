@@ -1,5 +1,21 @@
 # V31M4 Autonomy Task 1 — Scoped Semantic ACI, `SandboxPort`, Adapter-Protocol-1.1 Foundation
 
+> ## STATUS: INCOMPLETE — independent verification FAILED, defects repaired, target-host proof still BLOCKED
+>
+> An independent Codex review of the first implementation (commit `fc84f37`) returned **FAIL** with
+> four findings. All four were reproduced, root-caused, and repaired; see
+> "Independent review findings and remediation" below. **Task 1 still does not pass its hard gate**,
+> because the mandatory target-host Docker proof has never observed a real container: non-root
+> execution, read-only root, absent Docker socket, blocked egress, workspace-only write, and verified
+> container cleanup remain unproven on this host.
+>
+> Everything in "Original Task 1 evidence" below is preserved exactly as it was recorded at
+> `fc84f37`, including the claims the review invalidated. It is kept as the failed record, not as a
+> current description of the system. Where it conflicts with the remediation section, the
+> remediation section is authoritative.
+
+## Original Task 1 evidence (recorded at `fc84f37`; superseded where the review found defects)
+
 **Date:** 2026-08-25
 **Program:** `V31M4-AUTONOMY-001 / 1.1.0`
 **Canonical architecture:** `docs/superpowers/specs/2026-08-25-autonomy-quality-floor-architecture-v2.md`
@@ -265,3 +281,169 @@ Manager/Executor/Auditor harness, Project Intelligence, embeddings, skills, MCP,
 quality-floor controller, evaluation lab, or self-improvement behavior was added. No runtime API
 `1.0.0` surface, adapter protocol `1.0.0` schema, or public tool status was changed, and no sandbox
 backend was selected.
+
+---
+
+# Independent review findings and remediation
+
+**Verifier:** independent Codex review of `fc84f37` · **Verdict:** FAIL · **Repair date:** 2026-08-25
+**Repair starting HEAD:** `fc84f370359ab1593d013e18b659ab324755fa43`, clean worktree.
+
+Each finding was reproduced against the committed code before any fix, then repaired at the root
+cause with a regression that fails without the fix.
+
+## Reproduction
+
+A probe run against `fc84f37` produced this argv from `buildDockerRunArguments` with settings
+`{ image: "alpine:latest", userSpec: "0:0", containerWorkdir: "/" }` and operation-independent
+parameters `{ executable: "touch", arguments: ["/etc/probe"] }`:
+
+```text
+run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges
+--user 0:0 --pids-limit 64 --cpus 0.5 --workdir /
+--mount type=bind,source=/tmp/probe-XXXXXX,target=/ ... alpine:latest touch /etc/probe
+```
+
+That single line reproduces Findings 1 and 3 together: an unpinned image, uid/gid 0, the workspace
+bind-mounted **over the container root**, and a caller-chosen executable. Finding 2 was confirmed by
+inspection of the same commit: `child_process.spawn` used directly, `docker rm --force` results
+discarded with `.catch(() => undefined)`, no pre-abort check, a timeout that killed only the docker
+client, and `#sandboxes.delete(id)` executed *before* `backend.destroy`.
+
+## Finding 1 — semantic authorization was not bound to the execution sink
+
+**Root cause:** authorization and execution were separate steps. `SandboxPort.execute` accepted
+`(operation: string, parameters: ApplicationJsonObject)`; the supervisor checked only that the
+operation name was in an allow-set, and `DirectDockerSandbox` read `parameters.executable` /
+`parameters.arguments` for *any* operation. `assertSemanticEffectIsExecutable`,
+`parseCodePatchScope`, and `assertCodePatchTargetIsCurrent` existed but had no mandatory production
+caller, so they were advisory.
+
+**Repair:**
+
+- `AuthorizedSemanticExecutionPlan` (`packages/application/src/ports/sandbox.port.ts`) is a
+  capability token with a private `#authorized` field. `isAuthentic` rejects a structurally
+  identical plain object, so a fabricated plan cannot reach a backend. Issuance requires role
+  membership, an `allow` policy decision, an **active** workspace, and — for anything that is not a
+  pure read — a sandbox whose `taskId`, `jobId`, and `workspaceId` match the request and whose
+  status is not `stopped`.
+- `SandboxPort.execute` now takes `(sandbox, plan, context)`. `SandboxSupervisor` verifies
+  authenticity, re-checks that the plan is bound to this exact sandbox/task/job/workspace, and only
+  then dispatches. `SandboxBackend.execute` receives the plan, never raw parameters.
+- `authorizeSemanticExecution` (`apps/runtime/src/autonomy/semantic-execution-authorization.ts`) is
+  the single mandatory boundary. It **derives** the command:
+  `git.status → git status --porcelain=v1`, `git.diff → git diff --no-color -- <validated SafePath
+  scope>`, `git.history → git log --no-color --max-count=<bounded int>`; `code.inspect` and
+  `code.patch` are backend-native with no command at all; every remaining operation fails closed
+  with `UNSUPPORTED_OPERATION` ("no trusted execution binding yet") rather than running whatever was
+  supplied. Only `command.run` — the declared escape hatch — may carry a caller-supplied executable,
+  still as an argument array.
+- For any operation that is not the escape hatch, the presence of `executable`, `arguments`, `argv`,
+  `command`, `cmd`, `entrypoint`, `shell`, `image`, `user`, `mount`, `privileged`, or `network` in
+  the parameters is a `PERMISSION_DENIED`, not a silent drop.
+- `code.patch` is validated at that same boundary: `parseCodePatchScope` requires the expected
+  fingerprint and a closed `SafePath` scope; a request with no observed current fingerprint is
+  denied because currency cannot be proven; a mismatch is `CONFLICT`. The plan records both
+  fingerprints.
+- The advisory `assertSemanticEffectIsExecutable` was **removed** so authorization has exactly one
+  entry point rather than two overlapping ones.
+
+**Regressions added:** `apps/runtime/tests/autonomy/semantic-execution-authorization.test.ts` (the
+exact `git.status` + `touch` probe, twelve smuggling parameter shapes, executable override on reads,
+escape-hatch validation, no-trusted-binding fail-closed, patch missing fingerprint / missing or
+escaping scope / unprovable currency / stale `CONFLICT`, and binding checks);
+`packages/application/tests/sandbox-port.test.ts` (issuance preconditions, forged look-alike);
+`packages/infrastructure/tests/sandbox.test.ts` (forged plan, plan replayed against another sandbox
+or task); `apps/runtime/tests/autonomy/autonomy-phase1-boundary.test.ts` (end-to-end smuggling
+attempt with an assertion that no file appears in the real workspace).
+
+## Finding 2 — the direct-Docker backend bypassed Layer 8 supervision
+
+**Root cause:** a parallel bespoke process authority instead of the existing supervised one.
+
+**Repair:** every docker client invocation runs through `ProcessSupervisor`, so process-group
+termination and explicit environment inheritance are the existing Layer 8 behavior. Additionally:
+
+- A pre-aborted `OperationContext.signal` throws `CANCELLED` **before** anything spawns.
+- A timeout or cancellation force-removes the named container and then *verifies its absence* with
+  `docker ps --all --quiet --filter name=^<name>$`; killing the client alone proves nothing about
+  the container.
+- A timeout still raises `SandboxIndeterminateEffectError`, which the supervisor surfaces as
+  internal `unknown` — never a blind retry.
+- Cleanup failure is raised, never suppressed; the previous `.catch(() => undefined)` is gone from
+  the verification path.
+- `SandboxSupervisor.destroy` calls `backend.destroy` **first** and deletes its entry only on
+  success; a failure leaves the sandbox `degraded` and still inspectable. `cancel` degrades the same
+  way rather than reporting a clean cancellation it cannot prove.
+- Container identity is explicit supervised lifecycle state (a sandbox-id → container-name map).
+
+**Regressions added** (`packages/infrastructure/tests/sandbox.test.ts`, driving a real stub `docker`
+child process through the supervisor): pre-aborted signal does not spawn; budget exhaustion triggers
+`rm --force` plus the absence check and yields `unknown` + `degraded`; cancellation triggers cleanup;
+a container still present after removal surfaces `DEPENDENCY_FAILURE` and keeps the sandbox
+degraded; destroy failure preserves reconciliation authority; a plan with no trusted command is
+refused rather than invented.
+
+## Finding 3 — Docker configuration could defeat the isolation policy
+
+**Root cause:** settings were accepted unvalidated, and the container workspace target was
+caller-supplied.
+
+**Repair:** `assertValidDockerSandboxSettings` runs in the constructor *and* in
+`buildDockerRunArguments`, before any probe or execution. It requires
+`<repository>@sha256:<64 lowercase hex>` (rejecting floating tags, bare names, wrong digest length,
+uppercase hex, and non-sha256 algorithms), a numeric `uid:gid` with neither component 0 (rejecting
+`0:0`, `0:n`, `n:0`, `root`, `root:root`, empty), and a non-empty runtime executable.
+`containerWorkdir` was **removed from the settings type**: `CONTAINER_WORKDIR = "/workspace"` is a
+backend-owned constant, so the workspace can no longer be mounted over `/`.
+
+**Regressions added:** twelve rejected configurations asserted against both
+`assertValidDockerSandboxSettings` and the constructor, plus argv assertions that the only bind
+mount targets `/workspace` and that `--workdir /workspace` is used.
+
+**Proof corrected:** the target-host test and `scripts/prove-autonomy-phase1-real.mjs` no longer
+treat a non-empty `V31M4_SANDBOX_IMAGE` as pinned — the digest syntax is validated, and without a
+pinned image the run reports the container assertions as NOT PROVEN. When Docker is available the
+proof now asserts the effective UID is non-zero, the effective bind mounts, read-only root, absent
+Docker socket, blocked egress, refusal to write outside the workspace, a workspace write observed on
+the host filesystem, and verified container removal.
+
+## Finding 4 — repository state falsely advanced the gate
+
+**Repair:** `docs/current-state.md` now records Task 1 as INCOMPLETE with the verification failure,
+the four findings, the repair, the still-blocked target-host proof, and **Task 2 as FORBIDDEN**.
+This document keeps the original failed evidence above under an explicit superseded heading.
+
+## Preserved verified behavior
+
+Unchanged by the repair: the five durable IDs; exactly nineteen semantic operations with
+`git.worktree` absent; `WorkspaceManagerPort` as sole worktree authority; adapter protocol `1.0.0`
+byte/behavior compatibility (`adapter-rpc.schemas.ts` and `common.schemas.ts` still unmodified);
+additive protocol `1.1.0` with exact-version negotiation and rejection; internal `unknown` kept off
+the public v1 tool status; runtime API `1.0.0` untouched; and no dependency, `package.json`, or
+lockfile change.
+
+## Repair verification
+
+- Focused Task 1 suites (domain IDs, sandbox port, adapter RPC 1.1, infrastructure sandbox, adapter
+  operations, and every `apps/runtime/tests/autonomy` file): **82 passing / 2 skipped / 8 todo
+  (92 total) across 9 passing + 1 skipped test files (10 total)**. The 2 skips and the 1 skipped file
+  are the opt-in target-host proof.
+- `pnpm check`: **exit 0** — lint 366 files, 0 errors (9 pre-existing warnings, 1 pre-existing info),
+  typecheck 9/9, **560 passing / 16 skipped / 8 todo (584 total) across 114 passing + 5 skipped test
+  files (119 total)**. Against the Task 0 baseline of 490 passing / 14 skipped / 9 todo: **+70
+  passing, +2 skipped, −1 todo, zero failures**.
+- `pnpm build`: 9/9. `git diff --check`: clean.
+- Static/reference proof: `node scripts/prove-autonomy-phase1-real.mjs` — 2 passing, exit 0, with
+  the container assertions honestly reported as NOT PROVEN.
+- Gate honesty check: `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 node scripts/prove-autonomy-phase1-real.mjs`
+  **fails** with "V31M4_SANDBOX_IMAGE is missing or not digest-pinned", exit 1 — the proof cannot be
+  claimed PASS while the boundary is unobserved.
+
+## Remaining blocker
+
+The mandatory target-host Docker proof. Docker CLI 29.6.2 is installed but the Docker Desktop Linux
+engine is not running and WSL integration is disabled for this distro, and no digest-pinned image has
+been chosen. Until a real container runs and every isolation property is observed, **Task 1 is
+INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted; the bake-off may still return
+`NO_ACCEPTABLE_BACKEND`.

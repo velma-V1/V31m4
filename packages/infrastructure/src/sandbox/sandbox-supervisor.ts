@@ -4,6 +4,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import {
   ApplicationError,
   type ApplicationJsonObject,
+  AuthorizedSemanticExecutionPlan,
   type OperationContext,
   type SandboxExecutionResult,
   type SandboxHandle,
@@ -30,10 +31,14 @@ export interface SandboxExecutionSpec {
 export interface SandboxBackend {
   readonly id: string;
   prepare(spec: SandboxExecutionSpec, context: OperationContext): Promise<void>;
+  /**
+   * Backends receive an issued authorization, never a bare operation name plus free-form JSON.
+   * The command a process backend runs comes from `plan.command`, which the runtime derived —
+   * so a caller cannot name one operation and execute another.
+   */
   execute(
     spec: SandboxExecutionSpec,
-    operation: string,
-    parameters: ApplicationJsonObject,
+    plan: AuthorizedSemanticExecutionPlan,
     context: OperationContext,
   ): Promise<SandboxExecutionResult>;
   cancel(spec: SandboxExecutionSpec, context: OperationContext): Promise<void>;
@@ -149,31 +154,46 @@ export class SandboxSupervisor implements SandboxPort {
 
   async execute(
     sandbox: SandboxHandle,
-    operation: string,
-    parameters: ApplicationJsonObject,
+    plan: AuthorizedSemanticExecutionPlan,
     context: OperationContext,
   ): Promise<SandboxExecutionResult> {
+    if (!AuthorizedSemanticExecutionPlan.isAuthentic(plan)) {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "Sandbox execution requires an authorization issued by the semantic authorization boundary.",
+        { details: { sandboxId: sandbox.id } },
+      );
+    }
     const entry = this.#require(sandbox.id);
     if (entry.handle.status === "stopped") {
       throw new ApplicationError("PERMISSION_DENIED", "The sandbox has been stopped.", {
         details: { sandboxId: sandbox.id },
       });
     }
-    if (!this.#allowed.has(operation)) {
+    // The authorization is bound to one sandbox, task, job, and workspace. A plan issued for
+    // anything else cannot be replayed here.
+    if (
+      plan.sandboxId !== entry.spec.sandboxId ||
+      plan.workspaceId !== entry.spec.workspaceId ||
+      plan.taskId !== entry.spec.taskId ||
+      plan.jobId !== entry.spec.jobId
+    ) {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "The authorization was not issued for this sandbox, task, job, and workspace.",
+        { details: { sandboxId: sandbox.id, operationId: plan.operationId } },
+      );
+    }
+    if (!this.#allowed.has(plan.operationId)) {
       throw new ApplicationError(
         "UNSUPPORTED_OPERATION",
         "The sandbox may only run operations in its approved semantic operation set.",
-        { details: { sandboxId: sandbox.id, operation } },
+        { details: { sandboxId: sandbox.id, operation: plan.operationId } },
       );
     }
     this.#setStatus(entry, "running");
     try {
-      const result = await this.#options.backend.execute(
-        entry.spec,
-        operation,
-        parameters,
-        context,
-      );
+      const result = await this.#options.backend.execute(entry.spec, plan, context);
       this.#setStatus(entry, "ready");
       return result;
     } catch (error) {
@@ -186,7 +206,7 @@ export class SandboxSupervisor implements SandboxPort {
           metadata: Object.freeze({
             reason: "sandbox_effect_indeterminate",
             detail: error.message,
-            operation,
+            operationId: plan.operationId,
           }),
         });
       }
@@ -201,15 +221,32 @@ export class SandboxSupervisor implements SandboxPort {
 
   async cancel(id: SandboxId, context: OperationContext): Promise<void> {
     const entry = this.#require(id);
-    await this.#options.backend.cancel(entry.spec, context);
+    try {
+      await this.#options.backend.cancel(entry.spec, context);
+    } catch (error) {
+      // Cleanup failed, so the sandbox's real state is unknown. Keep it degraded and
+      // reconcilable instead of reporting a clean cancellation.
+      this.#setStatus(entry, "degraded");
+      throw error;
+    }
     this.#setStatus(entry, "ready");
   }
 
+  /**
+   * Destroys a sandbox and only then forgets it. Deleting authoritative lifecycle state before
+   * destruction succeeds would strand a live container with nothing left to reconcile against,
+   * so a failed destroy leaves the sandbox degraded and still inspectable.
+   */
   async destroy(id: SandboxId, context: OperationContext): Promise<void> {
     const entry = this.#sandboxes.get(id);
     if (entry === undefined) return;
+    try {
+      await this.#options.backend.destroy(entry.spec, context);
+    } catch (error) {
+      this.#setStatus(entry, "degraded");
+      throw error;
+    }
     this.#sandboxes.delete(id);
-    await this.#options.backend.destroy(entry.spec, context);
   }
 
   #require(id: string): SandboxEntry {
@@ -275,22 +312,21 @@ export class ReferenceSandboxBackend implements SandboxBackend {
 
   async execute(
     spec: SandboxExecutionSpec,
-    operation: string,
-    parameters: ApplicationJsonObject,
+    plan: AuthorizedSemanticExecutionPlan,
   ): Promise<SandboxExecutionResult> {
-    if (describesAnEffect(parameters)) {
+    if (plan.effectClass !== "read") {
       return Object.freeze({
         status: "failed" as const,
         outputArtifactIds: Object.freeze([]),
         logArtifactIds: Object.freeze([]),
         metadata: Object.freeze({
           reason: "reference_backend_performs_no_effects",
-          operation,
+          operationId: plan.operationId,
         }),
       });
     }
     const fingerprints: Record<string, string> = {};
-    for (const path of readPathScope(parameters)) {
+    for (const path of readPathScope(plan.parameters)) {
       const contained = await containedPath(spec.workspaceRoot, path);
       const bytes = await readFile(contained).catch(() => null);
       fingerprints[path] = bytes === null ? "" : createHash("sha256").update(bytes).digest("hex");
@@ -299,16 +335,15 @@ export class ReferenceSandboxBackend implements SandboxBackend {
       status: "completed" as const,
       outputArtifactIds: Object.freeze([]),
       logArtifactIds: Object.freeze([]),
-      metadata: Object.freeze({ operation, fingerprints: Object.freeze(fingerprints) }),
+      metadata: Object.freeze({
+        operationId: plan.operationId,
+        fingerprints: Object.freeze(fingerprints),
+      }),
     });
   }
 
   async cancel(): Promise<void> {}
   async destroy(): Promise<void> {}
-}
-
-function describesAnEffect(parameters: ApplicationJsonObject): boolean {
-  return parameters["patch"] !== undefined || parameters["executable"] !== undefined;
 }
 
 function readPathScope(parameters: ApplicationJsonObject): readonly string[] {

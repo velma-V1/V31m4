@@ -1,10 +1,8 @@
-import { ApplicationError } from "@v31m4/application";
-import { SandboxId } from "@v31m4/domain";
+import { ApplicationError, type SandboxHandle, type WorkspaceHandle } from "@v31m4/application";
+import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
-import {
-  assertSemanticEffectIsExecutable,
-  SEMANTIC_OPERATION_IDS,
-} from "../../src/autonomy/semantic-operation-catalog.js";
+import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 — program acceptance inventory.
@@ -17,10 +15,11 @@ import {
 describe("autonomy program invariants", () => {
   /**
    * Owned by Task 1. Full end-to-end coverage — real workspaces, the real sandbox supervisor,
-   * and the real catalog — lives in `autonomy-phase1-boundary.test.ts` and
-   * `semantic-operation-catalog.test.ts`; this is the inventory entry's own executable check
-   * that the model-facing vocabulary grants no direct effect authority and that the governed
-   * gate fails closed on every missing precondition.
+   * and the real catalog — lives in `autonomy-phase1-boundary.test.ts`,
+   * `semantic-execution-authorization.test.ts`, and the infrastructure sandbox suite. This is
+   * the inventory entry's own executable check that the model-facing vocabulary grants no
+   * direct effect authority, that the governed boundary fails closed on every missing
+   * precondition, and that a harmless operation cannot smuggle an arbitrary executable.
    */
   it("no model-direct effect bypass", () => {
     for (const forbidden of [
@@ -36,24 +35,50 @@ describe("autonomy program invariants", () => {
       expect((SEMANTIC_OPERATION_IDS as readonly string[]).includes(forbidden)).toBe(false);
     }
 
+    const taskId = TaskId.parse("task:root");
+    const jobId = JobId.parse("job:1");
+    const workspace: WorkspaceHandle = Object.freeze({
+      id: "workspace-1",
+      projectId: ProjectId.parse("project:1"),
+      purpose: "tool_execution" as const,
+      rootPath: SafePath.parse("workspace-1"),
+      status: "active" as const,
+      createdAt: "2026-08-25T00:00:00.000Z",
+    });
+    const sandbox: SandboxHandle = Object.freeze({
+      id: SandboxId.parse("sandbox:1"),
+      jobId,
+      taskId,
+      workspaceId: workspace.id,
+      backendId: "reference",
+      status: "ready" as const,
+    });
     const allowed = {
-      operationId: "code.patch",
-      role: "executor",
-      policyDecision: "allow",
-      assignedWorkspaceId: "workspace-1",
-      sandboxId: SandboxId.parse("sandbox:1"),
-    } as const;
-    expect(assertSemanticEffectIsExecutable(allowed).sandboxRequirement).toBe("required");
+      operationId: "command.run",
+      role: "executor" as const,
+      policyDecision: "allow" as const,
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { executable: "/bin/true", arguments: [] },
+    };
+    expect(authorizeSemanticExecution(allowed).sandboxId).toBe(sandbox.id);
 
     for (const missing of [
       { ...allowed, policyDecision: "deny" as const },
       { ...allowed, policyDecision: "require_approval" as const },
-      { ...allowed, assignedWorkspaceId: null },
-      { ...allowed, sandboxId: null },
+      { ...allowed, workspace: { ...workspace, status: "discarded" as const } },
+      { ...allowed, sandbox: null },
       { ...allowed, role: "auditor" as const },
       { ...allowed, operationId: "git.worktree" },
+      // A harmless operation carrying a foreign executable is a denial, not a silent drop.
+      { ...allowed, operationId: "git.status", parameters: { executable: "touch" } },
     ]) {
-      expect(() => assertSemanticEffectIsExecutable(missing)).toThrow(ApplicationError);
+      expect(
+        () => authorizeSemanticExecution(missing),
+        JSON.stringify(missing.operationId),
+      ).toThrow(ApplicationError);
     }
   });
 

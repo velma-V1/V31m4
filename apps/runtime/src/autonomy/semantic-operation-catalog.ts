@@ -1,5 +1,5 @@
-import { ApplicationError, type PolicyDecision } from "@v31m4/application";
-import { ContentHash, SafePath, type SandboxId } from "@v31m4/domain";
+import { ApplicationError } from "@v31m4/application";
+import { ContentHash, SafePath } from "@v31m4/domain";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 — the model-facing semantic Agent-Computer Interface.
@@ -74,6 +74,12 @@ export interface SemanticOperationDefinition {
   readonly evidencePreconditionPolicyId: string;
   readonly resourcePolicy: SemanticResourcePolicy;
   readonly requiredParameters: readonly string[];
+  /**
+   * True only for `command.run`, the explicit raw escape hatch. Every other operation maps to
+   * a trusted runtime-owned command, so a caller cannot disguise an arbitrary executable as a
+   * harmless read.
+   */
+  readonly allowsCallerSuppliedCommand: boolean;
 }
 
 const SCHEMA_VERSION = "1.0.0";
@@ -106,6 +112,7 @@ function define(
   riskClass: SemanticRiskClass,
   evidencePreconditionPolicyId: string,
   requiredParameters: readonly string[] = [],
+  allowsCallerSuppliedCommand = false,
 ): SemanticOperationDefinition {
   const isRead = effectClass === "read";
   return Object.freeze({
@@ -119,6 +126,7 @@ function define(
     evidencePreconditionPolicyId,
     resourcePolicy: isRead ? READ_RESOURCES : EXECUTE_RESOURCES,
     requiredParameters: Object.freeze([...requiredParameters]),
+    allowsCallerSuppliedCommand,
   });
 }
 
@@ -145,10 +153,14 @@ const DEFINITIONS: readonly SemanticOperationDefinition[] = Object.freeze([
   define("git.history", "read", "low", "evidence.none.v1"),
   // Raw command execution is the explicit escape hatch. It carries the highest risk class and
   // may never be used to sidestep a stronger semantic operation's evidence gate.
-  define("command.run", "process_execute", "critical", "evidence.command_run_escape_hatch.v1", [
-    "executable",
-    "arguments",
-  ]),
+  define(
+    "command.run",
+    "process_execute",
+    "critical",
+    "evidence.command_run_escape_hatch.v1",
+    ["executable", "arguments"],
+    true,
+  ),
   define("browser.inspect", "network_read", "high", "evidence.none.v1", ["target"]),
   define("browser.verify", "network_read", "high", "evidence.none.v1", ["target", "expectation"]),
 ]);
@@ -259,54 +271,11 @@ export function assertCodePatchTargetIsCurrent(
   }
 }
 
-export interface SemanticEffectExecutionRequest {
-  readonly operationId: string;
-  readonly role: SemanticOperationRole;
-  readonly policyDecision: PolicyDecision;
-  readonly assignedWorkspaceId: string | null;
-  readonly sandboxId: SandboxId | null;
-}
-
 /**
- * The single gate every governed semantic operation passes before any execution path exists.
- *
- * A consequential effect requires all of: an approved operation, a role permitted to run it,
- * an `allow` policy decision, a workspace the trusted runtime assigned, and a prepared
- * sandbox. Read operations stay available without a sandbox so the agent can still acquire
- * the evidence an effect needs — a denial must never trap the investigation path.
+ * The catalog is metadata and validation only. It deliberately exposes no execution gate of
+ * its own: `authorizeSemanticExecution` in `semantic-execution-authorization.ts` is the single
+ * boundary that turns a request into an executable, sandbox-bound authorization.
  */
-export function assertSemanticEffectIsExecutable(
-  request: SemanticEffectExecutionRequest,
-): SemanticOperationDefinition {
-  const definition = assertSemanticOperationAllowedForRole(request.operationId, request.role);
-  if (request.policyDecision === "require_approval") {
-    throw new ApplicationError(
-      "APPROVAL_REQUIRED",
-      "The semantic operation requires a governed approval before it can execute.",
-      { details: { operationId: definition.operationId } },
-    );
-  }
-  if (request.policyDecision !== "allow") {
-    throw new ApplicationError("POLICY_REJECTED", "Policy denied the semantic operation.", {
-      details: { operationId: definition.operationId, decision: request.policyDecision },
-    });
-  }
-  if (request.assignedWorkspaceId === null || request.assignedWorkspaceId.length === 0) {
-    throw new ApplicationError(
-      "PERMISSION_DENIED",
-      "A semantic operation runs only inside a workspace assigned by WorkspaceManagerPort.",
-      { details: { operationId: definition.operationId } },
-    );
-  }
-  if (definition.sandboxRequirement === "required" && request.sandboxId === null) {
-    throw new ApplicationError(
-      "PERMISSION_DENIED",
-      "This semantic operation has no execution path without a prepared sandbox.",
-      { details: { operationId: definition.operationId, effectClass: definition.effectClass } },
-    );
-  }
-  return definition;
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

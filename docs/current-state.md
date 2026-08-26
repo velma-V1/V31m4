@@ -31,49 +31,55 @@ This file is a concise operational handoff for future Claude Code sessions. It r
   final count at the Task 0 commit is **490 passing / 14 skipped / 9 todo (513 total) across 107
   passing + 5 skipped files (112 total)**. No runtime API, adapter protocol, or product behavior was
   changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
-- **Task 1 (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation): DONE and verified
-  green, with one explicitly unproven target-host boundary.** Evidence:
-  `docs/reviews/autonomy-task1-phase1-evidence.md`. Starting HEAD `6e4fdd5`, clean worktree; the
-  Task 0 baseline was re-run and matched exactly before any product change. What landed:
-  - Five new branded IDs (`TaskId`, `SandboxId`, `LedgerEntryId`, `SkillId`, `MemoryId`) through the
-    existing durable-ID mechanism.
-  - `packages/application/src/ports/sandbox.port.ts` — `SandboxPort` plus a `SandboxIsolationPolicy`
-    whose security invariants are stamped by its factory and are unreachable from configuration;
-    internal `unknown` effect status with `assertPublicToolInvocationStatus` refusing to coerce it
-    onto the public v1 tool contract.
-  - `apps/runtime/src/autonomy/semantic-operation-catalog.ts` — the one V31M4-owned registry of
-    exactly the nineteen approved model-facing operations. `git.worktree` is deliberately absent;
-    `WorkspaceManagerPort` stays the sole worktree authority. Role permissions are operation-level
-    (auditor read-only, manager non-acting); `code.patch` requires a current-target fingerprint plus
-    a closed path scope and rejects a stale edit with `CONFLICT`; one fail-closed gate requires an
-    approved operation + permitted role + `allow` policy + assigned workspace + prepared sandbox.
-  - `packages/infrastructure/src/sandbox/` — `SandboxSupervisor` (re-reads the workspace from
-    `WorkspaceManagerPort`, runs only an injected closed operation set, surfaces indeterminate
-    effects as internal `unknown`), the hermetic non-effecting `ReferenceSandboxBackend`, and the
-    hardened `DirectDockerSandbox` challenger.
-  - `packages/contracts/src/adapter-rpc-v1_1.schemas.ts` — adapter protocol `1.1.0` **beside**
-    `1.0.0`, with exact-version negotiation. `adapter-rpc.schemas.ts` and `common.schemas.ts` are
-    byte-unchanged and `ADAPTER_PROTOCOL_VERSION` is still `"1.0.0"`.
-  - `AdapterRegistry` now rejects any adapter protocol version outside an explicitly injected
-    supported set (it previously accepted any string unvalidated).
-  - The `no model-direct effect bypass` inventory todo became executable coverage.
+- **Task 1 (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation): INCOMPLETE —
+  independent verification FAILED, then repaired; the mandatory target-host Docker proof is still
+  BLOCKED.** Do not read this as a passed gate.
+  - First implementation: commit `fc84f37`. An independent Codex review then found four defects and
+    returned **FAIL**. All four are reproduced, root-caused, and repaired (commit recorded in
+    `docs/reviews/autonomy-task1-phase1-evidence.md`), but Task 1 does **not** pass its hard gate
+    until a real container actually runs and every required isolation property is observed.
+  - **Finding 1 — semantic authorization was not bound to the execution sink.** `SandboxPort.execute`
+    took an operation string plus free-form JSON, so `{ operation: "git.status", executable: "touch" }`
+    was accepted and the backend ran `touch`; the `code.patch` fingerprint/path checks had no
+    mandatory production caller. **Repaired:** a non-forgeable `AuthorizedSemanticExecutionPlan` is
+    now the only thing the sink accepts, issued solely by `authorizeSemanticExecution`, which derives
+    a trusted runtime-owned command for every operation except the explicit `command.run` escape
+    hatch, rejects caller-supplied execution parameters outright, and validates `code.patch`
+    fingerprint/path-scope/staleness at that boundary.
+  - **Finding 2 — the Docker backend bypassed Layer 8 supervision.** It spawned the client directly,
+    a timeout killed only the CLI, an already-aborted signal still spawned, cleanup errors were
+    swallowed, and the supervisor deleted authoritative state before destruction succeeded.
+    **Repaired:** every docker invocation runs under `ProcessSupervisor`; a pre-aborted operation
+    never spawns; timeout and cancellation force-remove the named container and verify its absence;
+    cleanup failure is surfaced; a failed destroy leaves the sandbox degraded and reconcilable
+    instead of forgotten.
+  - **Finding 3 — configuration could defeat the isolation policy.** `{ image: "alpine:latest",
+    userSpec: "0:0", containerWorkdir: "/" }` was accepted, mounting the workspace over the container
+    root as root from an unpinned image. **Repaired:** settings are validated before anything is
+    probed or executed — the image must be `<repository>@sha256:<64 lowercase hex>`, uid and gid may
+    not be 0, and the container workspace target is a backend-owned constant a caller cannot replace.
+  - **Finding 4 — repository state falsely advanced the gate.** Corrected here and in the evidence
+    file, which retains the original failed evidence alongside the findings and remediation.
+  - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
+    (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
+    disabled for this distro, and no digest-pinned image has been supplied. A non-empty
+    `V31M4_SANDBOX_IMAGE` is **not** a pinned image; the proof validates the digest syntax and the
+    backend refuses to construct itself without one. Therefore non-root execution, read-only root,
+    absent Docker socket, blocked egress, workspace-only write, and verified container cleanup are
+    **NOT observed** and Task 1 may not be called PASS. To close it:
 
-  Full gate: `pnpm check` exit 0 — lint 0 errors (the same 9 pre-existing warnings, 1 pre-existing
-  info), typecheck 9/9, **535 passing / 16 skipped / 8 todo (559 total) across 113 passing + 5
-  skipped test files (118 total)**; `pnpm build` 9/9; `git diff --check` clean. No dependency,
-  lockfile, runtime API, adapter-protocol-1.0, or public tool-status change.
+    ```bash
+    V31M4_SANDBOX_IMAGE=<repository>@sha256:<64 hex> \
+    V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 \
+    node scripts/prove-autonomy-phase1-real.mjs
+    ```
 
-  **Unproven and explicitly incomplete:** the direct-Docker *container* assertions (non-root,
-  read-only root, no Docker socket, no egress, workspace-only write). The Docker CLI is installed
-  (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is disabled
-  for this distro, so no container could be started. The backend fails closed with
-  `DEPENDENCY_UNAVAILABLE`, and `node scripts/prove-autonomy-phase1-real.mjs` reports the gap
-  honestly rather than asserting a mocked pass. **No sandbox backend may be promoted on this
-  evidence.** See the evidence file for the exact command that closes it.
+    With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
+  - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
 
-- **Next action: Task 2** (bounded Task Capsule, checked transitions, Task DAG) per the canonical v2
-  plan — not started, and gated on independent review of the Task 1 hard gate above, including the
-  unproven Docker boundary.
+- **Next action: finish Task 1** — run the target-host Docker proof above once a container runtime
+  and a digest-pinned image are available, then submit Task 1 for independent re-review.
+  **Task 2 is FORBIDDEN** until Task 1's hard gate actually passes.
 
 ## Verified implemented state
 

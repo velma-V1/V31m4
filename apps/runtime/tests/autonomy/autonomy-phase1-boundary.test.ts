@@ -5,6 +5,7 @@ import {
   ApplicationError,
   createOperationContext,
   type OperationContext,
+  type SandboxHandle,
   SandboxIsolationPolicy,
   type WorkspaceHandle,
   type WorkspaceManagerPort,
@@ -17,19 +18,15 @@ import {
 import { ContentHash, JobId, ProjectId, ResourceBudget, TaskId } from "@v31m4/domain";
 import { ReferenceSandboxBackend, SandboxSupervisor } from "@v31m4/infrastructure";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  assertCodePatchTargetIsCurrent,
-  assertSemanticEffectIsExecutable,
-  parseCodePatchScope,
-  SEMANTIC_OPERATION_IDS,
-} from "../../src/autonomy/semantic-operation-catalog.js";
+import { authorizeSemanticExecution } from "../../src/autonomy/semantic-execution-authorization.js";
+import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1 — end-to-end phase-1 boundary.
  *
  * These run against real temporary workspaces, the real `WorkspaceManagerPort` implementation,
- * the real sandbox supervisor, and the real semantic operation catalog. Nothing that a security
+ * the real sandbox supervisor, and the real semantic operation catalog. Nothing a security
  * claim depends on is mocked.
  */
 const projectId = ProjectId.parse("project:autonomy");
@@ -78,6 +75,19 @@ beforeEach(async () => {
   });
 });
 
+function inspectPlan(sandbox: SandboxHandle, path: string) {
+  return authorizeSemanticExecution({
+    operationId: "code.inspect",
+    role: "executor",
+    policyDecision: "allow",
+    taskId,
+    jobId,
+    workspace,
+    sandbox,
+    parameters: { pathScope: [path] },
+  });
+}
+
 describe("no model-direct effect bypass", () => {
   it("keeps autonomy runtime source free of any direct shell, browser, container, or network path", () => {
     const autonomyRoot = join(import.meta.dirname, "../../src/autonomy");
@@ -92,47 +102,82 @@ describe("no model-direct effect bypass", () => {
 
   it("has no execution path for an effect without policy, an assigned workspace, and a sandbox", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-
-    expect(
-      assertSemanticEffectIsExecutable({
-        operationId: "code.patch",
-        role: "executor",
-        policyDecision: "allow",
-        assignedWorkspaceId: workspace.id,
-        sandboxId: sandbox.id,
-      }).operationId,
-    ).toBe("code.patch");
+    const base = {
+      operationId: "command.run",
+      role: "executor" as const,
+      policyDecision: "allow" as const,
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: { executable: "/bin/true", arguments: [] },
+    };
+    expect(authorizeSemanticExecution(base).operationId).toBe("command.run");
 
     for (const attempt of [
-      { policyDecision: "deny" as const, assignedWorkspaceId: workspace.id, sandboxId: sandbox.id },
-      { policyDecision: "allow" as const, assignedWorkspaceId: null, sandboxId: sandbox.id },
-      { policyDecision: "allow" as const, assignedWorkspaceId: workspace.id, sandboxId: null },
+      { policyDecision: "deny" as const },
+      { policyDecision: "require_approval" as const },
+      { workspace: { ...workspace, status: "discarded" as const } },
+      { sandbox: null },
     ]) {
-      expect(() =>
-        assertSemanticEffectIsExecutable({
-          operationId: "code.patch",
-          role: "executor",
-          ...attempt,
-        }),
+      expect(
+        () => authorizeSemanticExecution({ ...base, ...attempt }),
+        JSON.stringify(Object.keys(attempt)),
       ).toThrow(ApplicationError);
     }
   });
 
-  it("refuses worktree and raw shell operations at the sandbox boundary as well as the gate", async () => {
+  it("cannot smuggle an arbitrary executable through a harmless operation end to end", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-    for (const operation of ["git.worktree", "shell.exec", "docker.run"]) {
+    const marker = join(workspaceDirectory, "smuggled.txt");
+
+    // The exact independent-review probe: a read operation carrying a foreign executable.
+    expect(() =>
+      authorizeSemanticExecution({
+        operationId: "git.status",
+        role: "executor",
+        policyDecision: "allow",
+        taskId,
+        jobId,
+        workspace,
+        sandbox,
+        parameters: { executable: "touch", arguments: [marker] },
+      }),
+    ).toThrow(ApplicationError);
+
+    // And a plan that never passed the boundary cannot reach a backend either.
+    const forged = {
+      operationId: "git.status",
+      effectClass: "read",
+      taskId,
+      jobId,
+      workspaceId: workspace.id,
+      sandboxId: sandbox.id,
+      command: { executable: "touch", arguments: [marker] },
+      parameters: {},
+      fingerprints: {},
+    } as never;
+    await expect(sandboxes.execute(sandbox, forged, context())).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    expect(readdirSync(workspaceDirectory)).not.toContain("smuggled.txt");
+  });
+
+  it("refuses worktree and raw shell operations at the catalog and the sandbox alike", async () => {
+    const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
+    for (const operationId of ["git.worktree", "shell.exec", "docker.run"]) {
       expect(() =>
-        assertSemanticEffectIsExecutable({
-          operationId: operation,
+        authorizeSemanticExecution({
+          operationId,
           role: "executor",
           policyDecision: "allow",
-          assignedWorkspaceId: workspace.id,
-          sandboxId: sandbox.id,
+          taskId,
+          jobId,
+          workspace,
+          sandbox,
+          parameters: {},
         }),
       ).toThrow(ApplicationError);
-      await expect(sandboxes.execute(sandbox, operation, {}, context())).rejects.toBeInstanceOf(
-        ApplicationError,
-      );
     }
   });
 });
@@ -147,40 +192,46 @@ describe("workspace authority", () => {
 });
 
 describe("code.patch staleness across a real workspace", () => {
-  it("accepts a patch against the current target and rejects it once the file moves on", async () => {
+  it("authorizes a patch against the current target and refuses it once the file moves on", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
 
-    const before = await sandboxes.execute(
-      sandbox,
-      "code.inspect",
-      { pathScope: ["target.ts"] },
-      context(),
-    );
+    const before = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
     const firstFingerprint = fingerprintOf(before.metadata, "target.ts");
 
-    const scope = parseCodePatchScope({
+    const patchParameters = {
       expectedFingerprint: firstFingerprint,
       pathScope: ["target.ts"],
       patch: "--- a/target.ts\n+++ b/target.ts\n",
-    });
-    expect(() =>
-      assertCodePatchTargetIsCurrent(scope, ContentHash.parse(firstFingerprint)),
-    ).not.toThrow();
+    };
+    const patchRequest = {
+      operationId: "code.patch",
+      role: "executor" as const,
+      policyDecision: "allow" as const,
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      parameters: patchParameters,
+    };
+    expect(
+      authorizeSemanticExecution({
+        ...patchRequest,
+        observedTargetFingerprint: ContentHash.parse(firstFingerprint),
+      }).operationId,
+    ).toBe("code.patch");
 
     // Somebody else changes the file after the agent read it.
     writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 2;\n", "utf8");
-    const after = await sandboxes.execute(
-      sandbox,
-      "code.inspect",
-      { pathScope: ["target.ts"] },
-      context(),
-    );
+    const after = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
     const secondFingerprint = fingerprintOf(after.metadata, "target.ts");
     expect(secondFingerprint).not.toBe(firstFingerprint);
 
     let thrown: unknown;
     try {
-      assertCodePatchTargetIsCurrent(scope, ContentHash.parse(secondFingerprint));
+      authorizeSemanticExecution({
+        ...patchRequest,
+        observedTargetFingerprint: ContentHash.parse(secondFingerprint),
+      });
     } catch (error) {
       thrown = error;
     }
@@ -189,12 +240,24 @@ describe("code.patch staleness across a real workspace", () => {
 
   it("never reports an effect the hermetic backend did not actually perform", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-    const result = await sandboxes.execute(
+    const current = await sandboxes.execute(sandbox, inspectPlan(sandbox, "target.ts"), context());
+    const fingerprint = ContentHash.parse(fingerprintOf(current.metadata, "target.ts"));
+    const plan = authorizeSemanticExecution({
+      operationId: "code.patch",
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
       sandbox,
-      "code.patch",
-      { pathScope: ["target.ts"], patch: "--- a\n+++ b\n" },
-      context(),
-    );
+      parameters: {
+        expectedFingerprint: fingerprint,
+        pathScope: ["target.ts"],
+        patch: "--- a\n+++ b\n",
+      },
+      observedTargetFingerprint: fingerprint,
+    });
+    const result = await sandboxes.execute(sandbox, plan, context());
     expect(result.status).toBe("failed");
     expect(readFileSync(join(workspaceDirectory, "target.ts"), "utf8")).toBe(
       "export const value = 1;\n",

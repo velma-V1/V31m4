@@ -1,10 +1,15 @@
+import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
 import { ApplicationError } from "../src/application-errors.js";
 import {
+  AuthorizedSemanticExecutionPlan,
   assertPublicToolInvocationStatus,
+  type SandboxHandle,
   SandboxIsolationPolicy,
   type SandboxIsolationPolicyInput,
+  type SemanticExecutionAuthorizationInput,
 } from "../src/ports/sandbox.port.js";
+import type { WorkspaceHandle } from "../src/ports/workspace-manager.port.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1.
@@ -107,5 +112,104 @@ describe("sandbox execution status model", () => {
     }
     expect(thrown).toBeInstanceOf(ApplicationError);
     expect((thrown as ApplicationError).code).toBe("INTEGRITY_FAILURE");
+  });
+});
+
+describe("AuthorizedSemanticExecutionPlan", () => {
+  const taskId = TaskId.parse("task:root");
+  const jobId = JobId.parse("job:1");
+  const workspace: WorkspaceHandle = Object.freeze({
+    id: "workspace-1",
+    projectId: ProjectId.parse("project:1"),
+    purpose: "tool_execution" as const,
+    rootPath: SafePath.parse("workspace-1"),
+    status: "active" as const,
+    createdAt: "2026-08-25T00:00:00.000Z",
+  });
+  const sandbox: SandboxHandle = Object.freeze({
+    id: SandboxId.parse("sandbox:1"),
+    jobId,
+    taskId,
+    workspaceId: workspace.id,
+    backendId: "reference",
+    status: "ready" as const,
+  });
+
+  function input(
+    overrides: Partial<SemanticExecutionAuthorizationInput> = {},
+  ): SemanticExecutionAuthorizationInput {
+    return {
+      contract: {
+        operationId: "code.patch",
+        effectClass: "workspace_write",
+        sandboxRequirement: "required",
+        allowedRoles: ["executor"],
+        allowsCallerSuppliedCommand: false,
+      },
+      role: "executor",
+      policyDecision: "allow",
+      taskId,
+      jobId,
+      workspace,
+      sandbox,
+      command: null,
+      parameters: {},
+      ...overrides,
+    };
+  }
+
+  it("issues a frozen plan bound to one operation, task, job, workspace, and sandbox", () => {
+    const plan = AuthorizedSemanticExecutionPlan.issue(
+      input({ command: { executable: "git", arguments: ["status"] } }),
+    );
+    expect(plan.operationId).toBe("code.patch");
+    expect(plan.taskId).toBe(taskId);
+    expect(plan.jobId).toBe(jobId);
+    expect(plan.workspaceId).toBe(workspace.id);
+    expect(plan.sandboxId).toBe(sandbox.id);
+    expect(plan.command).toEqual({ executable: "git", arguments: ["status"] });
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.command)).toBe(true);
+    expect(AuthorizedSemanticExecutionPlan.isAuthentic(plan)).toBe(true);
+  });
+
+  it("refuses every missing precondition", () => {
+    const cases: ReadonlyArray<readonly [string, Partial<SemanticExecutionAuthorizationInput>]> = [
+      ["role not allowed", { role: "auditor" }],
+      ["policy denied", { policyDecision: "deny" as const }],
+      ["approval required", { policyDecision: "require_approval" as const }],
+      ["workspace no longer active", { workspace: { ...workspace, status: "sealed" as const } }],
+      ["no prepared sandbox", { sandbox: null }],
+      ["sandbox bound to another workspace", { sandbox: { ...sandbox, workspaceId: "other" } }],
+      [
+        "sandbox bound to another task",
+        { sandbox: { ...sandbox, taskId: TaskId.parse("task:x") } },
+      ],
+      ["sandbox bound to another job", { sandbox: { ...sandbox, jobId: JobId.parse("job:x") } }],
+      ["sandbox already stopped", { sandbox: { ...sandbox, status: "stopped" as const } }],
+      ["empty executable", { command: { executable: "", arguments: [] } }],
+    ];
+    for (const [label, override] of cases) {
+      expect(() => AuthorizedSemanticExecutionPlan.issue(input(override)), label).toThrow(
+        ApplicationError,
+      );
+    }
+  });
+
+  it("does not recognise a structurally forged look-alike", () => {
+    const forged = {
+      operationId: "code.inspect",
+      effectClass: "read",
+      taskId,
+      jobId,
+      workspaceId: workspace.id,
+      sandboxId: sandbox.id,
+      command: { executable: "touch", arguments: ["/etc/probe"] },
+      parameters: {},
+      fingerprints: {},
+    };
+    expect(AuthorizedSemanticExecutionPlan.isAuthentic(forged)).toBe(false);
+    expect(AuthorizedSemanticExecutionPlan.isAuthentic(null)).toBe(false);
+    expect(AuthorizedSemanticExecutionPlan.isAuthentic("plan")).toBe(false);
   });
 });

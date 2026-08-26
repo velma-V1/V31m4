@@ -1,7 +1,8 @@
 import type { ArtifactId, JobId, ResourceBudget, SandboxId, TaskId } from "@v31m4/domain";
 import { ApplicationError, assertApplication } from "../application-errors.js";
-import type { ApplicationJsonObject } from "../application-json.js";
+import { type ApplicationJsonObject, cloneAndFreezeApplicationJson } from "../application-json.js";
 import type { OperationContext } from "../operation-context.js";
+import type { PolicyDecision } from "./policy-engine.port.js";
 import type { WorkspaceHandle } from "./workspace-manager.port.js";
 
 /**
@@ -207,12 +208,182 @@ export function assertPublicToolInvocationStatus(
   return status;
 }
 
+export type SandboxEffectClass =
+  | "read"
+  | "workspace_write"
+  | "process_execute"
+  | "network_read"
+  | "network_effect";
+
+/**
+ * The concrete process a sandbox may run. Always an executable plus an argument array; no
+ * shell string is ever constructed, and only an operation that explicitly permits a
+ * caller-supplied command can put model-influenced values here.
+ */
+export interface SandboxCommand {
+  readonly executable: string;
+  readonly arguments: readonly string[];
+}
+
+/**
+ * The part of a semantic operation definition the authorizer needs. The definition itself is
+ * owned by the runtime operation catalog; this is the structural contract it satisfies, so
+ * the application layer authorizes without holding a second copy of the registry.
+ */
+export interface SemanticOperationContract {
+  readonly operationId: string;
+  readonly effectClass: SandboxEffectClass;
+  readonly sandboxRequirement: "none" | "required";
+  readonly allowedRoles: readonly string[];
+  /** True only for the explicit raw escape hatch (`command.run`). */
+  readonly allowsCallerSuppliedCommand: boolean;
+}
+
+export interface SemanticExecutionAuthorizationInput {
+  readonly contract: SemanticOperationContract;
+  readonly role: string;
+  readonly policyDecision: PolicyDecision;
+  readonly taskId: TaskId;
+  readonly jobId: JobId;
+  readonly workspace: WorkspaceHandle;
+  readonly sandbox: SandboxHandle | null;
+  /**
+   * The trusted command the runtime derived for this operation, or `null` for an operation a
+   * backend serves natively without spawning a process.
+   */
+  readonly command: SandboxCommand | null;
+  readonly parameters: ApplicationJsonObject;
+  readonly fingerprints?: Readonly<Record<string, string>>;
+}
+
+function assertAuthorization(condition: boolean, message: string, details: object): void {
+  if (!condition) {
+    throw new ApplicationError("PERMISSION_DENIED", message, {
+      details: details as ApplicationJsonObject,
+    });
+  }
+}
+
+/**
+ * A capability token binding one authorization decision to one concrete execution.
+ *
+ * The sandbox execution sink accepts only an instance of this class — never an operation
+ * string plus free-form JSON. That closes the gap where authorization and execution were
+ * separate steps and a caller could name a harmless operation while supplying an arbitrary
+ * command. Every field the sink trusts (operation, task, workspace, sandbox, command,
+ * validated parameters, fingerprints) is fixed at issuance and frozen.
+ *
+ * The private `#authorized` field makes the token unforgeable: a structurally identical plain
+ * object fails `isAuthentic`, so a fabricated plan cannot reach a backend.
+ */
+export class AuthorizedSemanticExecutionPlan {
+  readonly #authorized = true;
+  readonly operationId: string;
+  readonly effectClass: SandboxEffectClass;
+  readonly taskId: TaskId;
+  readonly jobId: JobId;
+  readonly workspaceId: string;
+  readonly sandboxId: SandboxId | null;
+  readonly command: SandboxCommand | null;
+  readonly parameters: ApplicationJsonObject;
+  readonly fingerprints: Readonly<Record<string, string>>;
+
+  private constructor(input: SemanticExecutionAuthorizationInput) {
+    this.operationId = input.contract.operationId;
+    this.effectClass = input.contract.effectClass;
+    this.taskId = input.taskId;
+    this.jobId = input.jobId;
+    this.workspaceId = input.workspace.id;
+    this.sandboxId = input.sandbox === null ? null : input.sandbox.id;
+    this.command =
+      input.command === null
+        ? null
+        : Object.freeze({
+            executable: input.command.executable,
+            arguments: Object.freeze([...input.command.arguments]),
+          });
+    this.parameters = cloneAndFreezeApplicationJson(input.parameters) as ApplicationJsonObject;
+    this.fingerprints = Object.freeze({ ...(input.fingerprints ?? {}) });
+    Object.freeze(this);
+  }
+
+  /**
+   * Issues a plan only when every precondition holds: the role may run the operation, policy
+   * allows it, the workspace is one the workspace manager still owns, and — for anything that
+   * is not a pure read — a prepared sandbox belonging to this exact task, job, and workspace
+   * exists. A command may be present only in the shapes the operation permits.
+   */
+  static issue(input: SemanticExecutionAuthorizationInput): AuthorizedSemanticExecutionPlan {
+    const { contract, sandbox, workspace } = input;
+    assertAuthorization(
+      contract.allowedRoles.includes(input.role),
+      "The requested semantic operation is not permitted for this role.",
+      { operationId: contract.operationId, role: input.role },
+    );
+    if (input.policyDecision === "require_approval") {
+      throw new ApplicationError(
+        "APPROVAL_REQUIRED",
+        "The semantic operation requires a governed approval before it can execute.",
+        { details: { operationId: contract.operationId } },
+      );
+    }
+    if (input.policyDecision !== "allow") {
+      throw new ApplicationError("POLICY_REJECTED", "Policy denied the semantic operation.", {
+        details: { operationId: contract.operationId, decision: input.policyDecision },
+      });
+    }
+    assertAuthorization(
+      workspace.id.length > 0 && workspace.status === "active",
+      "A semantic operation runs only inside an active workspace assigned by WorkspaceManagerPort.",
+      { operationId: contract.operationId, workspaceId: workspace.id, status: workspace.status },
+    );
+    if (contract.sandboxRequirement === "required") {
+      assertAuthorization(
+        sandbox !== null,
+        "This semantic operation has no execution path without a prepared sandbox.",
+        { operationId: contract.operationId, effectClass: contract.effectClass },
+      );
+    }
+    if (sandbox !== null) {
+      assertAuthorization(
+        sandbox.workspaceId === workspace.id &&
+          sandbox.taskId === input.taskId &&
+          sandbox.jobId === input.jobId &&
+          sandbox.status !== "stopped",
+        "The sandbox is not bound to this task, job, and workspace.",
+        { operationId: contract.operationId, sandboxId: sandbox.id, workspaceId: workspace.id },
+      );
+    }
+    if (input.command !== null) {
+      assertAuthorization(
+        typeof input.command.executable === "string" && input.command.executable.length > 0,
+        "An authorized command requires a non-empty executable.",
+        { operationId: contract.operationId },
+      );
+      assertAuthorization(
+        Array.isArray(input.command.arguments) &&
+          input.command.arguments.every((value) => typeof value === "string"),
+        "Authorized command arguments must be an array of strings.",
+        { operationId: contract.operationId },
+      );
+    }
+    return new AuthorizedSemanticExecutionPlan(input);
+  }
+
+  /** Rejects a structurally forged look-alike; only a real issuance carries the private field. */
+  static isAuthentic(value: unknown): value is AuthorizedSemanticExecutionPlan {
+    return typeof value === "object" && value !== null && #authorized in value;
+  }
+}
+
 /**
  * Sandbox lifecycle boundary.
  *
  * `WorkspaceManagerPort` remains the sole workspace/worktree authority: `prepare` consumes a
  * workspace that the trusted runtime already created and never invents a second workspace
- * lifecycle. The model reaches this port only through governed semantic operations.
+ * lifecycle. The model reaches this port only through governed semantic operations, and
+ * `execute` accepts only an `AuthorizedSemanticExecutionPlan` — never a bare operation name
+ * with free-form parameters.
  */
 export interface SandboxPort {
   prepare(
@@ -225,8 +396,7 @@ export interface SandboxPort {
   ): Promise<SandboxHandle>;
   execute(
     sandbox: SandboxHandle,
-    operation: string,
-    parameters: ApplicationJsonObject,
+    plan: AuthorizedSemanticExecutionPlan,
     context: OperationContext,
   ): Promise<SandboxExecutionResult>;
   inspect(id: SandboxId, context: OperationContext): Promise<SandboxHandle | null>;

@@ -1,15 +1,13 @@
 import { ApplicationError } from "@v31m4/application";
-import { ContentHash, SandboxId } from "@v31m4/domain";
+import { ContentHash } from "@v31m4/domain";
 import { describe, expect, it } from "vitest";
 import {
   assertCodePatchTargetIsCurrent,
-  assertSemanticEffectIsExecutable,
   assertSemanticOperationAllowedForRole,
   getSemanticOperation,
   parseCodePatchScope,
   SEMANTIC_OPERATION_CATALOG,
   SEMANTIC_OPERATION_IDS,
-  type SemanticEffectExecutionRequest,
 } from "../../src/autonomy/semantic-operation-catalog.js";
 
 const EXPECTED_OPERATION_IDS = [
@@ -36,19 +34,6 @@ const EXPECTED_OPERATION_IDS = [
 
 const currentFingerprint = "a".repeat(64);
 const otherFingerprint = "b".repeat(64);
-
-function effectRequest(
-  overrides: Partial<SemanticEffectExecutionRequest> = {},
-): SemanticEffectExecutionRequest {
-  return {
-    operationId: "code.patch",
-    role: "executor",
-    policyDecision: "allow",
-    assignedWorkspaceId: "workspace-1",
-    sandboxId: SandboxId.parse("sandbox:1"),
-    ...overrides,
-  };
-}
 
 describe("semantic operation catalog", () => {
   it("exposes exactly the approved model-facing operation vocabulary", () => {
@@ -163,48 +148,5 @@ describe("code.patch staleness contract", () => {
     }
     expect(thrown).toBeInstanceOf(ApplicationError);
     expect((thrown as ApplicationError).code).toBe("CONFLICT");
-  });
-});
-
-describe("no model-direct effect bypass", () => {
-  it("permits a governed effect only with policy, an assigned workspace, and a sandbox", () => {
-    expect(() => assertSemanticEffectIsExecutable(effectRequest())).not.toThrow();
-
-    for (const override of [
-      { policyDecision: "deny" as const },
-      { policyDecision: "require_approval" as const },
-      { assignedWorkspaceId: null },
-      { sandboxId: null },
-    ]) {
-      let thrown: unknown;
-      try {
-        assertSemanticEffectIsExecutable(effectRequest(override));
-      } catch (error) {
-        thrown = error;
-      }
-      expect(thrown, JSON.stringify(override)).toBeInstanceOf(ApplicationError);
-      expect(["PERMISSION_DENIED", "POLICY_REJECTED", "APPROVAL_REQUIRED"]).toContain(
-        (thrown as ApplicationError).code,
-      );
-    }
-  });
-
-  it("still allows read operations to acquire the evidence an effect needs", () => {
-    expect(() =>
-      assertSemanticEffectIsExecutable(
-        effectRequest({
-          operationId: "repo.search",
-          role: "manager",
-          assignedWorkspaceId: "workspace-1",
-          sandboxId: null,
-        }),
-      ),
-    ).not.toThrow();
-  });
-
-  it("refuses an unknown operation before any execution path is reached", () => {
-    expect(() =>
-      assertSemanticEffectIsExecutable(effectRequest({ operationId: "git.worktree" })),
-    ).toThrow(ApplicationError);
   });
 });
