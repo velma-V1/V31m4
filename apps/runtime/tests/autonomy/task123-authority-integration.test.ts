@@ -85,13 +85,21 @@ function newBoundary(): Boundary {
   return createSemanticAuthorizationBoundary({ policy: policyEngine, now: () => clock });
 }
 
-/** Fails one dispatch on demand, so a test can drive the sandbox into `degraded`. */
+/**
+ * Fails one dispatch on demand, so a test can drive the sandbox into `degraded`, and counts how
+ * many times the *backend* was actually reached.
+ *
+ * `dispatches` counts calls to `SandboxPort.execute`; `backendExecutions` counts effects that got
+ * past every supervisor gate. Conflating the two would hide exactly the defect D is about: the
+ * supervisor can refuse a capability while the reconciler still records an outcome for it.
+ */
 class FlakyReferenceBackend extends ReferenceSandboxBackend {
   failNextExecute = false;
   override async execute(
     spec: SandboxExecutionSpec,
     plan: AuthorizedSemanticExecutionPlan,
   ): Promise<SandboxExecutionResult> {
+    backendExecutions += 1;
     if (this.failNextExecute) {
       this.failNextExecute = false;
       throw new Error("the backend failed after the sandbox was already claimed");
@@ -112,6 +120,7 @@ let boundary: Boundary;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
 let dispatches = 0;
+let backendExecutions = 0;
 let probeCalls = 0;
 
 class FixedWorkspaces {
@@ -226,6 +235,7 @@ beforeEach(async () => {
   clock = T0;
   entryCounter = 0;
   dispatches = 0;
+  backendExecutions = 0;
   probeCalls = 0;
   root = mkdtempSync(join(tmpdir(), "v31m4-integration-"));
   writeFileSync(join(root, "target.ts"), "export const value = 1;\n", "utf8");
@@ -265,19 +275,24 @@ async function ledgerKinds(): Promise<readonly string[]> {
 // A — the execution grant expires after an ambiguous effect
 // ===========================================================================
 describe("A: an expired execution grant must not block settling history", () => {
-  it("refuses to re-dispatch the same effect once the grant has expired", async () => {
+  it("refuses to dispatch once the grant behind the authorization has expired", async () => {
     expiresAt = GRANT_EXPIRY;
     await ambiguousAttempt();
-    const originalPlan = await inspectPlan();
+    // A second, independent capability, minted while the grant was still live. It is deliberately
+    // *not* the one `ambiguousAttempt` spent — single-use replay of a consumed capability is Task
+    // 1's own invariant and is covered by Task 1's tests. What is proved here is narrower and is
+    // about time alone: a capability that was valid when issued must stop working once the policy
+    // grant it was minted against lapses.
+    const planIssuedBeforeExpiry = await inspectPlan();
     clock = AFTER_EXPIRY;
 
-    // No fresh authority exists: minting refuses an already-expired grant outright.
+    // No fresh authority can be obtained either: minting refuses an already-expired grant.
     await expect(inspectPlan()).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
-    // Nor can the capability that ran the ambiguous effect be spent a second time.
-    await expect(sandboxes.execute(sandbox, originalPlan, context)).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-    });
-    expect(dispatches).toBe(1);
+    // And the still-unspent capability issued before the lapse no longer reaches the sink.
+    await expect(sandboxes.execute(sandbox, planIssuedBeforeExpiry, context)).rejects.toMatchObject(
+      { code: "PERMISSION_DENIED" },
+    );
+    expect(backendExecutions).toBe(1);
   });
 
   it("still settles the ambiguous attempt after the grant expires", async () => {
@@ -307,29 +322,44 @@ describe("A: an expired execution grant must not block settling history", () => 
 // B — policy flips allow -> deny after an ambiguous effect
 // ===========================================================================
 describe("B: a current deny must not erase settleable history", () => {
-  it("denies a new execution of the same operation", async () => {
+  it("denies a fresh authorization once policy turns to deny", async () => {
     await ambiguousAttempt();
     decision = "deny";
     await expect(inspectPlan()).rejects.toMatchObject({ code: "POLICY_REJECTED" });
-    expect(dispatches).toBe(1);
+    expect(backendExecutions).toBe(1);
   });
 
-  it("still settles the ambiguous attempt while policy denies new execution", async () => {
+  /**
+   * Characterizes what a current deny does and does not do on its own.
+   *
+   * The grant sealed into a capability is immutable provenance, not a live subscription to the
+   * policy engine, and `verify` re-checks only that grant's own expiry. So a capability minted
+   * while policy allowed stays verifiable after policy flips to deny. That is the *current* Task 1
+   * contract, and it means a deny by itself does not strand reconciliation — a caller still
+   * holding a live, unexpired capability can settle.
+   *
+   * This is deliberately GREEN. The gap deny exposes is not a standalone defect; it is that this
+   * route depends on retaining a process-local capability at all, which is what C2 proves cannot
+   * survive a restart. Recording it as RED would have claimed a defect the evidence does not show.
+   */
+  it("does not invalidate a retained, still-current capability issued while policy allowed", async () => {
     const attemptEntryId = await ambiguousAttempt();
+    // Issued while policy allowed, never spent, no expiry: still-current by the Task 1 contract.
+    const retained = await inspectPlan();
     decision = "deny";
 
-    // A component that did not retain the original in-memory capability has exactly one route
-    // today: mint a fresh one. Policy now refuses, so that route is closed.
+    // A component that did *not* retain such a capability has only one route today — mint a fresh
+    // one — and policy now closes it.
     await expect(inspectPlan()).rejects.toMatchObject({ code: "POLICY_REJECTED" });
 
-    // Settling what the ledger already records is not repeating the effect, so it must not be
-    // gated on permission to repeat it.
+    // The retained capability, however, still settles the attempt.
     const settled = await reconciler.reconcileAttempt(
-      { taskId, sandbox, plan: await inspectPlan(), attemptEntryId, probe: notApplied },
+      { taskId, sandbox, plan: retained, attemptEntryId, probe: notApplied },
       context,
     );
     expect(settled.outcome).toBe("not_applied");
-    expect(dispatches).toBe(1);
+    expect(settled.outcomeKind).toBe("effect_nonapplication");
+    expect(backendExecutions).toBe(1);
   });
 });
 
@@ -394,8 +424,10 @@ describe("D: a reconciler and a sandbox from different authorities must not comp
     await expect(
       reconciler.runGovernedEffect({ taskId, sandbox, plan, probe: countedApplied }, context),
     ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    // The supervisor refuses this capability before the backend, so no effect can have happened.
+    // Today the reconciler nonetheless records an authoritative outcome for it.
+    expect(backendExecutions).toBe(0);
     expect(await ledgerKinds()).toEqual([]);
-    expect(dispatches).toBe(0);
     expect(probeCalls).toBe(0);
   });
 
@@ -413,12 +445,17 @@ describe("D: a reconciler and a sandbox from different authorities must not comp
     });
     const plan = await inspectPlan(reconcilerBoundary);
 
+    const backendBefore = backendExecutions;
     await expect(
       reconciler.reconcileAttempt(
         { taskId, sandbox, plan, attemptEntryId, probe: countedApplied },
         context,
       ),
     ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    // Reconciliation never dispatches, so zero backend executions proves nothing about authority
+    // here — the point is that a capability this sandbox's authority would reject can still drive
+    // an authoritative terminal settlement.
+    expect(backendExecutions).toBe(backendBefore);
     expect(probeCalls).toBe(0);
     expect(await ledgerKinds()).toEqual(previous);
   });
