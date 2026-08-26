@@ -1,5 +1,6 @@
 import {
   ApplicationError,
+  type ExecutionLedgerRepositoryPort,
   type OperationContext,
   type PortPage,
   type PortPageRequest,
@@ -9,7 +10,14 @@ import {
   type Versioned,
   type WriteCondition,
 } from "@v31m4/application";
-import { TaskCapsule, type TaskCapsule as TaskCapsuleType, type TaskId } from "@v31m4/domain";
+import {
+  ExecutionLedgerEntry,
+  type ExecutionLedgerEntry as LedgerEntry,
+  type LedgerEntryId,
+  TaskCapsule,
+  type TaskCapsule as TaskCapsuleType,
+  type TaskId,
+} from "@v31m4/domain";
 import { SqliteRecordStore, type SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 
 /**
@@ -130,5 +138,69 @@ export class SqliteTaskCapsuleRepository implements TaskCapsuleRepositoryPort {
       );
     }
     return stored;
+  }
+}
+
+/**
+ * Append-only execution history on the same record store.
+ *
+ * One record type, keyed by the entry's own durable id and written through the store's `append`,
+ * which is `mustNotExist`. There is deliberately no update path: an existing entry cannot be
+ * rewritten even by a caller that wants to. Listing returns insertion order, which is what makes
+ * replay deterministic.
+ */
+const LEDGER_TYPE = "execution_ledger_entry";
+
+export class SqliteExecutionLedgerRepository implements ExecutionLedgerRepositoryPort {
+  readonly #ledgerRecords: SqliteRecordStore;
+
+  constructor(private readonly ledgerDatabase: SqliteRuntimeDatabase) {
+    this.#ledgerRecords = new SqliteRecordStore(ledgerDatabase);
+  }
+
+  async append(
+    entry: LedgerEntry,
+    _context: OperationContext,
+    transaction: UnitOfWorkTransaction,
+  ): Promise<Versioned<LedgerEntry>> {
+    return this.#ledgerRecords.append(LEDGER_TYPE, entry.id, entry, transaction);
+  }
+
+  async getById(
+    id: LedgerEntryId,
+    _context?: OperationContext,
+    _transaction?: UnitOfWorkTransaction,
+  ): Promise<LedgerEntry | null> {
+    const stored = await this.#ledgerRecords.get<unknown>(LEDGER_TYPE, id);
+    // Rehydration re-verifies the fingerprint, so an edited row surfaces as an error instead of
+    // being replayed as history.
+    return stored === null ? null : ExecutionLedgerEntry.rehydrate(stored.value);
+  }
+
+  async listForTask(
+    taskId: TaskId,
+    request: PortPageRequest,
+    _context?: OperationContext,
+    _transaction?: UnitOfWorkTransaction,
+  ): Promise<PortPage<LedgerEntry>> {
+    const limit = Math.max(1, Math.min(request.limit, 500));
+    if (request.cursor !== undefined && !/^(?:0|[1-9]\d{0,15})$/u.test(request.cursor)) {
+      throw new ApplicationError("INVALID_APPLICATION_INPUT", "Pagination cursor is malformed.", {
+        details: { cursor: request.cursor },
+      });
+    }
+    const offset = request.cursor === undefined ? 0 : Number(request.cursor);
+    const rows = this.ledgerDatabase.connection
+      .prepare("SELECT body FROM records WHERE record_type = ? ORDER BY rowid ASC")
+      .all(LEDGER_TYPE) as { body: string }[];
+    const all = rows
+      .map((row) => ExecutionLedgerEntry.rehydrate(JSON.parse(row.body)))
+      .filter((entry) => entry.taskId === taskId);
+    const page = all.slice(offset, offset + limit);
+    return Object.freeze({
+      items: Object.freeze(page),
+      total: all.length,
+      ...(offset + page.length < all.length ? { nextCursor: String(offset + page.length) } : {}),
+    });
   }
 }

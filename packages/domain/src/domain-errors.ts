@@ -29,7 +29,8 @@ export type DomainErrorCode =
   | "INVALID_PROMOTION_RECORD"
   | "INVALID_AVATAR_STATE"
   | "INVALID_STATE_TRANSITION"
-  | "INVALID_TASK_CAPSULE";
+  | "INVALID_TASK_CAPSULE"
+  | "INVALID_LEDGER_ENTRY";
 
 export type DomainErrorDetails = Readonly<Record<string, string | number | boolean | null>>;
 

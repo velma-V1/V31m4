@@ -40,6 +40,14 @@ export {
   type EvidenceStatus,
 } from "./entities/evidence-record.js";
 export {
+  type EffectIntent,
+  ExecutionLedgerEntry,
+  LEDGER_ENTRY_KINDS,
+  LEDGER_LIMITS,
+  type LedgerEntryKind,
+  type LedgerResourceFact,
+} from "./entities/execution-ledger-entry.js";
+export {
   IssueRecord,
   type IssueSeverity,
   type IssueStatus,

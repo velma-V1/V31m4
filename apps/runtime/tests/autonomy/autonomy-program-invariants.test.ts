@@ -1,5 +1,19 @@
-import { ApplicationError, type SandboxHandle, type WorkspaceHandle } from "@v31m4/application";
-import { JobId, ProjectId, SafePath, SandboxId, TaskId } from "@v31m4/domain";
+import {
+  ApplicationError,
+  decideRetry,
+  projectLedger,
+  type SandboxHandle,
+  type WorkspaceHandle,
+} from "@v31m4/application";
+import {
+  ExecutionLedgerEntry,
+  JobId,
+  ProjectId,
+  SafePath,
+  SandboxId,
+  sha256Hex,
+  TaskId,
+} from "@v31m4/domain";
 import { SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 import { describe, expect, it } from "vitest";
 import { SqliteTaskCapsuleRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
@@ -150,7 +164,63 @@ describe("autonomy program invariants", () => {
       reopened.close();
     }
   });
-  it.todo("ambiguous effect is reconciled before retry");
+  /**
+   * Owned by Task 3. Full lifecycle coverage — attempt before dispatch, verified post-state, and
+   * restart recovery against real SQLite — lives in `execution-ledger.test.ts`. This is the
+   * inventory entry's own executable check that an effect nobody could prove blocks the same
+   * intent from being tried again, and that only a verified non-application clears it.
+   */
+  it("ambiguous effect is reconciled before retry", () => {
+    const intent = ExecutionLedgerEntry.intentFingerprint({
+      taskId: "task:root",
+      operationId: "code.patch",
+      workspaceId: "workspace-1",
+      command: null,
+      parameters: { pathScope: ["src/index.ts"] },
+    });
+    const attempt = ExecutionLedgerEntry.create({
+      id: "ledger:attempt",
+      taskId: "task:root",
+      jobId: "job:1",
+      recordedAt: "2026-08-26T00:00:00.000Z",
+      detail: "attempting code.patch",
+      kind: "effect_attempt",
+      intentFingerprint: intent,
+      operationId: "code.patch",
+      workspaceId: "workspace-1",
+      sandboxId: "sandbox:1",
+    });
+    const outcome = (kind: string, facts: readonly unknown[]) =>
+      ExecutionLedgerEntry.create({
+        id: `ledger:${kind}`,
+        taskId: "task:root",
+        jobId: "job:1",
+        recordedAt: "2026-08-26T00:00:01.000Z",
+        detail: `code.patch resolved as ${kind}`,
+        kind,
+        attemptEntryId: attempt.id,
+        facts,
+      });
+    const verified = [
+      { resourceKind: "workspace_file", locator: "src/index.ts", fingerprint: sha256Hex("x") },
+    ];
+
+    // Unresolved, indeterminate, and already-applied all block another attempt.
+    expect(decideRetry(projectLedger([attempt]), intent).allowed).toBe(false);
+    expect(
+      decideRetry(projectLedger([attempt, outcome("reconciliation_indeterminate", [])]), intent)
+        .allowed,
+    ).toBe(false);
+    expect(
+      decideRetry(projectLedger([attempt, outcome("effect_confirmation", verified)]), intent)
+        .allowed,
+    ).toBe(false);
+    // Only a verified non-application clears the way.
+    expect(
+      decideRetry(projectLedger([attempt, outcome("effect_nonapplication", verified)]), intent)
+        .allowed,
+    ).toBe(true);
+  });
   it.todo("agent turn cannot invoke disallowed operation");
   it.todo("auditor cannot mutate candidate");
   it.todo("stale workspace index cannot enter context");
