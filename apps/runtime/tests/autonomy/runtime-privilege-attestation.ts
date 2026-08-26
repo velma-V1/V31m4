@@ -68,3 +68,55 @@ export function assertHardenedRuntimePrivileges(procStatus: string): RuntimePriv
   }
   return attestation;
 }
+
+export interface RootFilesystemMountState {
+  readonly mountOptions: readonly string[];
+  readonly superOptions: readonly string[];
+  readonly readOnly: boolean;
+}
+
+/**
+ * Parses `/proc/self/mountinfo` and returns the effective state of the container's root mount.
+ *
+ * A failed write is not evidence of a read-only filesystem: a non-root user gets exactly the same
+ * `EACCES` on a perfectly writable root. Only the mount's own options say whether it is `ro`.
+ *
+ * mountinfo fields: `id parent major:minor root mountpoint options [optional...] - fstype source
+ * superopts`. The last record for `/` wins, because a later mount shadows an earlier one.
+ */
+export function parseRootFilesystemMountState(mountinfo: string): RootFilesystemMountState {
+  let found: RootFilesystemMountState | undefined;
+  for (const line of mountinfo.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const fields = line.trim().split(/\s+/u);
+    if (fields.length < 7) {
+      throw new Error(`Malformed mountinfo record: ${line.trim()}`);
+    }
+    if (fields[4] !== "/") continue;
+    const mountOptions = (fields[5] ?? "").split(",").filter((option) => option.length > 0);
+    if (mountOptions.length === 0) {
+      throw new Error(`Mountinfo record for / has no mount options: ${line.trim()}`);
+    }
+    const separator = fields.indexOf("-", 6);
+    const superOptions =
+      separator === -1 ? [] : (fields[separator + 3] ?? "").split(",").filter((o) => o.length > 0);
+    found = {
+      mountOptions,
+      superOptions,
+      readOnly: mountOptions.includes("ro"),
+    };
+  }
+  if (found === undefined) {
+    throw new Error("Mountinfo contains no record for the root mount /.");
+  }
+  return found;
+}
+
+/** The container's root mount must actually be mounted read-only. */
+export function assertReadOnlyRootFilesystem(mountinfo: string): RootFilesystemMountState {
+  const state = parseRootFilesystemMountState(mountinfo);
+  if (!state.readOnly) {
+    throw new Error(`Root filesystem is not mounted read-only: ${state.mountOptions.join(",")}`);
+  }
+  return state;
+}

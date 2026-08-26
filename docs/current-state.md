@@ -106,6 +106,28 @@ This file is a concise operational handoff for future Claude Code sessions. It r
        through `applyWorkspaceChange`, which re-checks the fingerprint inside the same call under
        the execution lease, and the supervisor refuses a `workspace_write` effect to any backend
        that has not declared write support.
+  - **Round 4 (independent re-review of `6b2d4ba`).** Three further findings, all reproduced and
+    repaired:
+    1. *The interlock was not multiplicity-safe.* Leases were keyed by `sandboxId`, so two
+       executions from one sandbox collapsed into a single holder and the first release freed the
+       workspace while the second effect was still running; overlapping lifecycle mutations were
+       also possible. Each lease now carries its own unique identity, release is idempotent and
+       tied to that exact lease, and the stated policy is **exclusive dispatch per workspace** —
+       every governed operation reaches a writable workspace mount, so none may be treated as a
+       harmless concurrent reader. Lifecycle changes are exclusive against effects and against
+       each other.
+    2. *Compare-and-apply could be captured by a pre-placed symlink.* The temporary file used a
+       predictable `<target>.v31m4-apply` name; a symlink at that path turned the "safe" temp
+       write into a host-side write outside the workspace, which a probe demonstrated. The
+       replacement is now created in the validated canonical parent with an unguessable name via
+       exclusive creation (`wx`, mode 0600), written through its own descriptor, re-verified
+       against the expected fingerprint immediately before the rename, and removed on any failure.
+    3. *The read-only-root proof was a false positive.* A failed `touch /` proves permissions, not
+       a read-only mount — demonstrated on this host, where the write fails while
+       `/proc/self/mountinfo` reports `rw,relatime`. The proof now parses the container's mount
+       table and requires the root mount to carry `ro`, keeping the failed write as supplemental
+       evidence only. The egress probe now proves its own utility exists before treating that
+       utility's failure as evidence of a blocked network.
   - **Still BLOCKED — the required target-host Docker proof.** The Docker CLI is installed
     (client 29.6.2) but the Docker Desktop Linux engine is not running and WSL integration is
     disabled for this distro, and no digest-pinned image has been supplied. A non-empty
@@ -122,8 +144,8 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
     With `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` the proof fails today, by design.
   - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
-  - Current gate after round 3: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **603 passing / 16 skipped / 8 todo (627 total) across 115
+  - Current gate after round 4: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **618 passing / 16 skipped / 8 todo (642 total) across 115
     passing + 5 skipped test files (120 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 1 gate.
 

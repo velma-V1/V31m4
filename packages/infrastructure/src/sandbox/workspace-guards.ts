@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import type { FileHandle } from "node:fs/promises";
+import { open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   ApplicationError,
@@ -156,9 +157,17 @@ export async function assertSameCanonicalRoot(
 }
 
 /**
- * The sanctioned workspace write. The expected fingerprint is re-checked and the replacement is
- * written atomically inside the same call, under the supervisor's execution lease, so no backend
- * can perform "check now, write later".
+ * The sanctioned workspace write.
+ *
+ * The expected fingerprint is re-checked and the replacement is written inside the same call,
+ * under the supervisor's exclusive execution claim, so no backend can perform "check now, write
+ * later".
+ *
+ * The replacement file is created with an unpredictable name via exclusive creation (`wx`), in
+ * the already-validated canonical parent, and written through its own descriptor. A predictable
+ * temporary name is a write primitive in its own right: an attacker who can pre-create that path
+ * as a symlink turns the "safe" temp write into a host-side write anywhere the runtime can
+ * reach. Exclusive creation refuses an existing path — symlink or not — rather than following it.
  */
 export async function compareAndApply(
   workspaceRoot: string,
@@ -173,23 +182,89 @@ export async function compareAndApply(
     );
   }
   const contained = await containedPath(workspaceRoot, precondition.path);
+  // The directory the replacement is created in must itself be inside the workspace.
+  const parent = await containedDirectory(workspaceRoot, dirname(contained));
+  await assertCurrent(workspaceRoot, precondition, "before");
+
+  const { handle, path: temporary } = await createExclusiveTemporary(parent);
+  try {
+    await handle.writeFile(nextContent);
+    // Re-verify immediately before the replacement lands: nothing may have moved the target
+    // while the new content was being written.
+    await assertCurrent(workspaceRoot, precondition, "before replacement");
+    await handle.close();
+    await rename(temporary, contained);
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function assertCurrent(
+  workspaceRoot: string,
+  precondition: WorkspaceCurrencyPrecondition,
+  stage: string,
+): Promise<void> {
   const observed = await fingerprintWorkspaceFile(workspaceRoot, precondition.path);
   if (observed !== precondition.expectedFingerprint) {
     throw new ApplicationError(
       "CONFLICT",
-      "The workspace write target changed; the stale change is rejected rather than applied.",
+      `The workspace write target changed ${stage}; the stale change is rejected rather than applied.`,
       {
         details: {
           path: precondition.path,
+          stage,
           expectedFingerprint: precondition.expectedFingerprint,
           observedFingerprint: observed,
         },
       },
     );
   }
-  const temporary = `${contained}.v31m4-apply`;
-  await writeFile(temporary, nextContent);
-  await rename(temporary, contained);
+}
+
+const TEMPORARY_ATTEMPTS = 8;
+
+/**
+ * Creates a new regular file with an unguessable name and bounded permissions. `wx` is
+ * `O_CREAT|O_EXCL`, which fails outright on an existing path instead of following it, so a
+ * pre-placed symlink cannot capture the write.
+ */
+async function createExclusiveTemporary(
+  directory: string,
+): Promise<{ readonly handle: FileHandle; readonly path: string }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TEMPORARY_ATTEMPTS; attempt += 1) {
+    const path = join(directory, `.v31m4-apply-${randomBytes(16).toString("hex")}`);
+    try {
+      return { handle: await open(path, "wx", 0o600), path };
+    } catch (error) {
+      lastError = error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") break;
+    }
+  }
+  throw new ApplicationError(
+    "DEPENDENCY_FAILURE",
+    "A workspace replacement file could not be created safely.",
+    { cause: lastError, details: { directory } },
+  );
+}
+
+/** Resolves a directory and proves it is the workspace root or lies inside it. */
+async function containedDirectory(workspaceRoot: string, directory: string): Promise<string> {
+  const canonicalRoot = await realpath(workspaceRoot);
+  const canonical = await realpath(directory).catch(() => null);
+  if (
+    canonical === null ||
+    (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep))
+  ) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "A workspace write directory escapes the assigned workspace.",
+      { details: { workspaceRoot: canonicalRoot, directory } },
+    );
+  }
+  return canonical;
 }
 
 /** The assigned workspace must be a real, absolute directory before anything runs. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertHardenedRuntimePrivileges,
+  assertReadOnlyRootFilesystem,
   parseRuntimePrivilegeAttestation,
 } from "./runtime-privilege-attestation.js";
 
@@ -61,5 +62,50 @@ describe("runtime privilege attestation", () => {
   it("rejects a non-integer NoNewPrivs", () => {
     const malformed = HARDENED.replace("NoNewPrivs:\t1", "NoNewPrivs:\tyes");
     expect(() => assertHardenedRuntimePrivileges(malformed)).toThrow(/not an integer/u);
+  });
+});
+
+/**
+ * Read-only root is attested from the mount table, not inferred from a failed write: a non-root
+ * user gets the same `EACCES` on a writable root, which would make the failed write a false
+ * positive.
+ */
+const RO_ROOT =
+  "23 1 0:20 / / ro,relatime - overlay overlay rw,lowerdir=/a,upperdir=/b\n" +
+  "24 23 0:21 / /proc rw,nosuid - proc proc rw\n";
+const RW_ROOT = RO_ROOT.replace("/ ro,relatime", "/ rw,relatime");
+
+describe("root filesystem mount attestation", () => {
+  it("accepts a genuinely read-only root mount", () => {
+    const state = assertReadOnlyRootFilesystem(RO_ROOT);
+    expect(state.readOnly).toBe(true);
+    expect(state.mountOptions).toContain("ro");
+  });
+
+  it("rejects a writable root mount even though a non-root write would still fail", () => {
+    expect(() => assertReadOnlyRootFilesystem(RW_ROOT)).toThrow(
+      /Root filesystem is not mounted read-only/u,
+    );
+  });
+
+  it("rejects a mount table with no root record", () => {
+    const withoutRoot = RO_ROOT.split("\n")
+      .filter((line) => !line.includes(" / ro,relatime "))
+      .join("\n");
+    expect(() => assertReadOnlyRootFilesystem(withoutRoot)).toThrow(
+      /no record for the root mount/u,
+    );
+    expect(() => assertReadOnlyRootFilesystem("")).toThrow(/no record for the root mount/u);
+  });
+
+  it("rejects a malformed record rather than skipping it", () => {
+    expect(() => assertReadOnlyRootFilesystem("23 1 0:20 /\n")).toThrow(/Malformed mountinfo/u);
+  });
+
+  it("uses the last root record, because a later mount shadows an earlier one", () => {
+    const shadowed = `${RW_ROOT}25 23 0:22 / / ro,relatime - overlay overlay ro\n`;
+    expect(assertReadOnlyRootFilesystem(shadowed).readOnly).toBe(true);
+    const reShadowed = `${RO_ROOT}25 23 0:22 / / rw,relatime - overlay overlay rw\n`;
+    expect(() => assertReadOnlyRootFilesystem(reShadowed)).toThrow(/not mounted read-only/u);
   });
 });

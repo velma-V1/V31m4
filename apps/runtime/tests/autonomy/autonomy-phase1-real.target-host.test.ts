@@ -23,7 +23,10 @@ import { expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
-import { assertHardenedRuntimePrivileges } from "./runtime-privilege-attestation.js";
+import {
+  assertHardenedRuntimePrivileges,
+  assertReadOnlyRootFilesystem,
+} from "./runtime-privilege-attestation.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1 target-host proof.
@@ -265,13 +268,26 @@ realTest(
     expect(Number(effectiveUid)).toBeGreaterThan(0);
     report(`effective container uid: ${effectiveUid}`);
 
+    // Read-only root is attested from the mount table. A failed write is supplemental only: a
+    // non-root user gets the same EACCES on a perfectly writable root, so the write alone would
+    // be a false positive.
+    const mountinfo = await sandboxes.execute(
+      sandbox,
+      run("cat /proc/self/mountinfo", sandbox),
+      context(),
+    );
+    expect(mountinfo.status).toBe("completed");
+    const rootMount = assertReadOnlyRootFilesystem(String(mountinfo.metadata["stdout"]));
     const readOnlyRoot = await sandboxes.execute(
       sandbox,
       run("touch /v31m4-root-probe", sandbox),
       context(),
     );
     expect(readOnlyRoot.status).toBe("failed");
-    report("read-only root filesystem: enforced");
+    report(
+      `read-only root filesystem: mount options ${rootMount.mountOptions.join(",")} ` +
+        "(write also refused, supplemental)",
+    );
 
     const socket = await sandboxes.execute(
       sandbox,
@@ -281,13 +297,24 @@ realTest(
     expect(socket.status).toBe("failed");
     report("docker socket: absent");
 
+    // Prove the probe mechanism exists before treating its failure as evidence: a missing
+    // utility fails the same way a blocked lookup does.
+    const probePresent = await sandboxes.execute(
+      sandbox,
+      run("command -v getent >/dev/null 2>&1", sandbox),
+      context(),
+    );
+    expect(
+      probePresent.status,
+      "the egress probe utility must exist before its failure means anything",
+    ).toBe("completed");
     const egress = await sandboxes.execute(
       sandbox,
-      run("getent hosts example.com || exit 3", sandbox),
+      run("getent hosts example.com", sandbox),
       context(),
     );
     expect(egress.status).toBe("failed");
-    report("network egress: blocked");
+    report("network egress: blocked (probe utility confirmed present first)");
 
     const outsideWorkspace = await sandboxes.execute(
       sandbox,

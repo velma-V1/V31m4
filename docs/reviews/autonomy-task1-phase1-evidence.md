@@ -759,3 +759,110 @@ The mandatory target-host Docker proof. No container runtime is reachable and no
 is supplied, so UID, read-only root, socket absence, egress, workspace-only write, tmpfs scratch,
 real timeout cleanup, and the new capability/no-new-privileges attestation remain unobserved.
 **Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted.
+
+---
+
+# Independent review round 4 — findings and remediation
+
+**Verifier:** independent GitHub source review of `6b2d4ba` · **Repair starting HEAD:**
+`6b2d4ba2bfeabbc0f0ca5d1cbdb0c4feb2dcdde4`, clean worktree. Each claim was treated as untrusted and
+reproduced before any fix.
+
+## Reproduction
+
+```text
+[probe4 F1]  second lease still held, seal permitted anyway: true
+[probe4 F1b] two seals ran concurrently: true
+[probe4 F2]  host file outside workspace now contains: export const value = 9;
+```
+
+F3 was reproduced directly on this host: `touch /v31m4-root-probe` fails with `Permission denied`
+while `awk '$5=="/"' /proc/self/mountinfo` reports `rw,relatime`. The failed write proves the
+process is unprivileged, not that the filesystem is read-only.
+
+After the repair the same probes report `seal permitted: false`, `concurrent: false`, and the
+outside file still holding `ORIGINAL HOST CONTENT`.
+
+## Finding 1 (HIGH) — the workspace interlock was not multiplicity-safe
+
+**Root cause:** leases were tracked as `Map<workspaceId, Set<sandboxId>>`. Two executions from one
+sandbox collapsed into a single set entry, so the first `release()` deleted the holder while the
+second effect was still running and `seal`/`discard` then proceeded under it. `#mutating` recorded
+only a workspace id and never refused a second overlapping mutation.
+
+**Repair.** At most one claim per workspace, of either kind, held in `Map<workspaceId,
+WorkspaceClaim>`. Each claim carries a `randomUUID()` identity; a lease's `release()` clears the
+workspace **only if that exact claim still holds it**, which makes release idempotent and makes a
+stale handle harmless. `#claim` is synchronous and runs before any `await`, so the ordering is a
+real guarantee.
+
+**Policy, stated explicitly:** effect dispatch is **exclusive per workspace**. `command.run` and
+`code.patch` obviously mutate the workspace, but so can a nominally read-only operation — it still
+runs a process against the same writable mount — so no operation is classified as a harmless
+concurrent reader. Lifecycle changes are exclusive against effects and against each other. Whoever
+loses gets a deterministic `CONFLICT`.
+
+**Regressions:** a second `beginExecution` is refused for the same sandbox id *and* a different
+one; a fresh lease after release has a different `leaseId`; a stale lease handle released twice
+does not free the live claim, and lifecycle stays blocked until the live lease releases; seal and
+discard both refused while a lease is held, then permitted; concurrent seal/seal and seal/discard
+serialize with `concurrent === false`; discard in flight refuses both a seal and a new execution.
+
+## Finding 2 (HIGH) — compare-and-apply could be captured by a pre-placed temporary symlink
+
+**Root cause:** the replacement path was `${contained}.v31m4-apply` — entirely predictable.
+`writeFile` follows a symlink, so an attacker able to pre-create that path pointed the "safe"
+temporary write at any file the runtime could reach. The probe overwrote a file in a separate
+temporary directory outside the workspace, before the rename ever happened.
+
+**Repair.** The replacement is created in the already-validated **canonical parent** (itself
+re-checked for containment) with an unguessable name (`.v31m4-apply-<16 random bytes>`) via
+`open(path, "wx", 0o600)` — `O_CREAT|O_EXCL`, which fails outright on an existing path, symlink or
+not, instead of following it. Content is written through that descriptor. The expected fingerprint
+is checked before the write *and again immediately before the rename*, so nothing may move the
+target while the new content is being written. Every failure path closes the descriptor and unlinks
+the temporary. Collision retries a fresh name, then fails safely.
+
+**Regressions:** a pre-placed temp symlink leaves the outside file byte-identical while the real
+target is replaced and no stray temporary remains; a successful apply is atomic and leaves no
+temporary; a stale expectation yields `CONFLICT`, leaves the target untouched, and cleans up; a
+symlinked target, an escaping symlink parent, and a nonexistent path beneath one are all
+`PERMISSION_DENIED` with the outside file unchanged; a target outside its own declared scope is
+refused.
+
+## Finding 3 (MEDIUM) — the read-only-root proof was a false positive
+
+**Repair.** `parseRootFilesystemMountState` parses `/proc/self/mountinfo`, takes the **last** record
+for `/` (a later mount shadows an earlier one), and reports the mount's own options;
+`assertReadOnlyRootFilesystem` requires `ro`. The target-host proof now reads the container's mount
+table and asserts that, keeping the failed `touch /` as supplemental evidence only. Malformed
+records and a missing root record are failures, not skipped checks.
+
+**Egress hardening.** The proof previously treated any failure of `getent hosts example.com` as
+proof of a blocked network — a missing utility fails identically. It now first asserts
+`command -v getent` succeeds, so the probe mechanism is proven present before its failure is used
+as evidence.
+
+**Regressions (hermetic, no Docker required):** `ro` root accepted; `rw` root rejected even though a
+non-root write would still fail; missing root record rejected; empty input rejected; malformed
+record rejected; shadowing verified in both directions.
+
+## Round-4 verification
+
+- Focused Task 1 suites: **144 passing / 2 skipped / 8 todo (154 total) across 11 passing + 1
+  skipped test files (12 total)**.
+- `packages/infrastructure/tests/supervised-processes.test.ts`: **9 passing**.
+- `pnpm check`: **exit 0** — lint 373 files, 0 errors (9 pre-existing warnings, 1 pre-existing
+  info), typecheck 9/9, **618 passing / 16 skipped / 8 todo (642 total) across 115 passing + 5
+  skipped test files (120 total)**.
+- `pnpm build`: 9/9. `git diff --check`: clean.
+- Static/reference proof: 2 passing, exit 0, container assertions honestly NOT PROVEN.
+- `V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1` exits **1**.
+- No dependency, lockfile, `allowBuilds`, adapter-protocol-1.0, or runtime-API-1.0 change.
+
+## Remaining blocker (unchanged)
+
+The mandatory target-host Docker proof. No container runtime is reachable and no digest-pinned image
+is supplied, so every isolation property — UID, read-only root mount, socket absence, egress, tmpfs
+scratch, workspace-only write, capability attestation, and real timeout cleanup — remains
+unobserved. **Task 1 is INCOMPLETE and Task 2 must not begin.** No sandbox backend is promoted.

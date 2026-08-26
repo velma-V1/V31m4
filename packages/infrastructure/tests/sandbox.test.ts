@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -39,6 +40,7 @@ import {
   SandboxSupervisor,
 } from "../src/sandbox/sandbox-supervisor.js";
 import { WorkspaceExecutionInterlock } from "../src/sandbox/workspace-execution-interlock.js";
+import { compareAndApply } from "../src/sandbox/workspace-guards.js";
 
 const projectId = ProjectId.parse("project:1");
 const jobId = JobId.parse("job:1");
@@ -74,6 +76,8 @@ const ABORTED_SIGNAL: OperationContext["signal"] = Object.freeze({
 class StubWorkspaceManager implements WorkspaceManagerPort {
   readonly #handles = new Map<string, WorkspaceHandle>();
   #sealGate: Promise<void> | undefined;
+  #sealHook: (() => Promise<void>) | undefined;
+  #discardHook: (() => Promise<void>) | undefined;
 
   add(id: string, status: WorkspaceHandle["status"]): WorkspaceHandle {
     const handle: WorkspaceHandle = Object.freeze({
@@ -97,6 +101,14 @@ class StubWorkspaceManager implements WorkspaceManagerPort {
   async snapshot(): Promise<never> {
     throw new Error("unused");
   }
+  onSeal(gate: () => Promise<void>): void {
+    this.#sealHook = gate;
+  }
+
+  onDiscard(gate: () => Promise<void>): void {
+    this.#discardHook = gate;
+  }
+
   replace(workspaceId: string, changes: Partial<WorkspaceHandle>): void {
     const existing = this.#handles.get(workspaceId);
     if (existing === undefined) throw new Error("unknown workspace");
@@ -113,6 +125,7 @@ class StubWorkspaceManager implements WorkspaceManagerPort {
       this.#sealGate = undefined;
       await gate;
     }
+    if (this.#sealHook !== undefined) await this.#sealHook();
     const existing = this.#handles.get(workspaceId);
     if (existing === undefined) throw new Error("unknown workspace");
     const sealed = Object.freeze({ ...existing, status: "sealed" as const });
@@ -120,6 +133,7 @@ class StubWorkspaceManager implements WorkspaceManagerPort {
     return sealed;
   }
   async discard(workspaceId: string): Promise<void> {
+    if (this.#discardHook !== undefined) await this.#discardHook();
     this.#handles.delete(workspaceId);
   }
 }
@@ -572,6 +586,95 @@ describe("dispatch re-reads the authoritative workspace", () => {
   });
 });
 
+describe("workspace execution interlock", () => {
+  it("keeps effect dispatch exclusive per workspace, whatever the sandbox id", async () => {
+    // Two leases keyed by sandboxId used to collapse into one holder, so the first release freed
+    // the workspace while a second effect was still running.
+    const first = await workspaces.beginExecution("workspace-1", "sandbox:1", context());
+    await expect(
+      workspaces.beginExecution("workspace-1", "sandbox:1", context()),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      workspaces.beginExecution("workspace-1", "sandbox:2", context()),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    first.lease.release();
+    const next = await workspaces.beginExecution("workspace-1", "sandbox:2", context());
+    expect(next.lease.leaseId).not.toBe(first.lease.leaseId);
+    next.lease.release();
+  });
+
+  it("ties release to the exact lease and stays idempotent", async () => {
+    const first = await workspaces.beginExecution("workspace-1", "sandbox:1", context());
+    first.lease.release();
+    const second = await workspaces.beginExecution("workspace-1", "sandbox:1", context());
+    // A stale handle must not free the claim the live lease now holds.
+    first.lease.release();
+    first.lease.release();
+    await expect(workspaces.seal("workspace-1", context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    second.lease.release();
+    expect((await workspaces.seal("workspace-1", context())).status).toBe("sealed");
+  });
+
+  it("blocks lifecycle changes until the held lease is released", async () => {
+    const lease = (await workspaces.beginExecution("workspace-1", "sandbox:1", context())).lease;
+    await expect(workspaces.seal("workspace-1", context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    await expect(workspaces.discard("workspace-1", context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    lease.release();
+    expect((await workspaces.seal("workspace-1", context())).status).toBe("sealed");
+  });
+
+  it("serializes lifecycle mutations against each other", async () => {
+    let releaseSeal: (() => void) | undefined;
+    let concurrent = false;
+    let inFlight = 0;
+    inner.onSeal(async () => {
+      inFlight += 1;
+      if (inFlight > 1) concurrent = true;
+      await new Promise<void>((resolve) => {
+        releaseSeal = resolve;
+      });
+      inFlight -= 1;
+    });
+    const firstSeal = workspaces.seal("workspace-1", context());
+    await vi.waitUntil(() => releaseSeal !== undefined);
+    for (const second of [
+      workspaces.seal("workspace-1", context()),
+      workspaces.discard("workspace-1", context()),
+    ]) {
+      await expect(second).rejects.toMatchObject({ code: "CONFLICT" });
+    }
+    releaseSeal?.();
+    await firstSeal;
+    expect(concurrent).toBe(false);
+  });
+
+  it("refuses a discard while a seal is in flight, and the reverse", async () => {
+    let releaseDiscard: (() => void) | undefined;
+    inner.onDiscard(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDiscard = resolve;
+        }),
+    );
+    const discarding = workspaces.discard("workspace-1", context());
+    await vi.waitUntil(() => releaseDiscard !== undefined);
+    await expect(workspaces.seal("workspace-1", context())).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    await expect(
+      workspaces.beginExecution("workspace-1", "sandbox:1", context()),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    releaseDiscard?.();
+    await discarding;
+  });
+});
+
 describe("workspace path containment", () => {
   it("refuses a nonexistent target under an escaping symlink parent", async () => {
     const outside = mkdtempSync(join(tmpdir(), "v31m4-outside-"));
@@ -716,6 +819,93 @@ describe("guarded workspace writes", () => {
     });
     // The racing write stands; the stale change was never applied on top of it.
     expect(readFileSync(join(root, "target.ts"), "utf8")).toBe("export const value = 42;\n");
+  });
+});
+
+describe("compare-and-apply is the only workspace write, and it cannot be captured", () => {
+  const scope = ["target.ts"];
+
+  function precondition(fingerprint: string) {
+    return { path: "target.ts", expectedFingerprint: fingerprint, allowedPathScope: scope };
+  }
+
+  function currentFingerprintOf(path: string): string {
+    return createHash("sha256")
+      .update(readFileSync(join(root, path)))
+      .digest("hex");
+  }
+
+  it("refuses to be captured by a pre-placed temporary symlink pointing outside", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "v31m4-outside-"));
+    const outsideFile = join(outside, "host-file.txt");
+    writeFileSync(outsideFile, "ORIGINAL HOST CONTENT", "utf8");
+    // The old implementation used a predictable temporary name, which a pre-created symlink
+    // turned into a host-side write primitive.
+    symlinkSync(outsideFile, join(root, "target.ts.v31m4-apply"));
+
+    await compareAndApply(
+      root,
+      precondition(currentFingerprintOf("target.ts")),
+      "export const value = 9;\n",
+    );
+
+    expect(readFileSync(outsideFile, "utf8")).toBe("ORIGINAL HOST CONTENT");
+    expect(readFileSync(join(root, "target.ts"), "utf8")).toBe("export const value = 9;\n");
+    // The decoy symlink is untouched and no stray temporary is left behind.
+    expect(readdirSync(root).filter((name) => name.startsWith(".v31m4-apply"))).toEqual([]);
+  });
+
+  it("replaces the target atomically and leaves no temporary behind", async () => {
+    await compareAndApply(
+      root,
+      precondition(currentFingerprintOf("target.ts")),
+      "export const value = 5;\n",
+    );
+    expect(readFileSync(join(root, "target.ts"), "utf8")).toBe("export const value = 5;\n");
+    expect(readdirSync(root).filter((name) => name.startsWith(".v31m4-apply"))).toEqual([]);
+  });
+
+  it("refuses a stale expectation and cleans up its temporary", async () => {
+    const stale = "a".repeat(64);
+    await expect(
+      compareAndApply(root, precondition(stale), "export const value = 9;\n"),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(readFileSync(join(root, "target.ts"), "utf8")).toBe("export const value = 1;\n");
+    expect(readdirSync(root).filter((name) => name.startsWith(".v31m4-apply"))).toEqual([]);
+  });
+
+  it("refuses a target or parent that escapes the workspace", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "v31m4-outside-"));
+    writeFileSync(join(outside, "host-file.txt"), "HOST", "utf8");
+    symlinkSync(join(outside, "host-file.txt"), join(root, "linked-target.ts"));
+    mkdirSync(join(root, "sub"));
+    symlinkSync(outside, join(root, "sub", "link"), "dir");
+
+    for (const path of ["linked-target.ts", "sub/link/host-file.txt", "sub/link/new.ts"]) {
+      await expect(
+        compareAndApply(
+          root,
+          { path, expectedFingerprint: "a".repeat(64), allowedPathScope: [path] },
+          "x",
+        ),
+        path,
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    }
+    expect(readFileSync(join(outside, "host-file.txt"), "utf8")).toBe("HOST");
+  });
+
+  it("refuses a target outside its own declared scope", async () => {
+    await expect(
+      compareAndApply(
+        root,
+        {
+          path: "target.ts",
+          expectedFingerprint: currentFingerprintOf("target.ts"),
+          allowedPathScope: ["other.ts"],
+        },
+        "x",
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
   });
 });
 

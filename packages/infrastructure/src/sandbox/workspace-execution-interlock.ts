@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   ApplicationError,
   type OperationContext,
@@ -16,22 +17,32 @@ import type { ProjectId } from "@v31m4/domain";
  * manager, so there is exactly one object everyone holds and exactly one place where sealing,
  * discarding, and executing are ordered against each other.
  *
- * The interlock is deliberately synchronous where it matters. JavaScript runs the body of
- * `beginExecution` up to its first `await` without interleaving, so registering the lease before
- * any asynchronous work makes "no seal can start after this point" a real guarantee rather than
- * a hopeful one. `seal`/`discard` register their own marker the same way, which closes the
- * mirror-image race where a seal is already in flight when an execution begins.
+ * **Policy: effect dispatch is exclusive per workspace.** Every governed operation reaches a
+ * sandbox whose workspace mount is writable — `command.run` and `code.patch` obviously, but a
+ * read operation still runs a process against that same mount — so no operation may be treated
+ * as a harmless concurrent reader. One effect at a time per workspace, and a lifecycle change is
+ * exclusive against both effects and other lifecycle changes.
+ *
+ * The interlock is deliberately synchronous where it matters. JavaScript runs the body of each
+ * entry point up to its first `await` without interleaving, so claiming the workspace before any
+ * asynchronous work makes the ordering a real guarantee rather than a hopeful one.
+ *
+ * A lease carries its own unique identity. Keying leases by `sandboxId` would let two executions
+ * from one sandbox collapse into a single holder, so the first release would free the workspace
+ * while the second effect was still running.
  */
 export interface WorkspaceExecutionLease {
+  readonly leaseId: string;
   readonly workspaceId: string;
   readonly sandboxId: string;
+  /** Idempotent, and tied to this exact lease: releasing it never frees somebody else's claim. */
   release(): void;
 }
 
 export interface WorkspaceExecutionInterlockPort extends WorkspaceManagerPort {
   /**
-   * Takes an execution lease and returns the **current authoritative** workspace record. Callers
-   * must not trust any handle they captured earlier; this is the read that decides.
+   * Claims the workspace for one effect and returns the **current authoritative** record.
+   * Callers must not trust any handle they captured earlier; this is the read that decides.
    */
   beginExecution(
     workspaceId: string,
@@ -40,12 +51,16 @@ export interface WorkspaceExecutionInterlockPort extends WorkspaceManagerPort {
   ): Promise<{ readonly workspace: WorkspaceHandle; readonly lease: WorkspaceExecutionLease }>;
 }
 
+interface WorkspaceClaim {
+  readonly kind: "execution" | "lifecycle";
+  readonly claimId: string;
+  readonly sandboxId?: string;
+}
+
 export class WorkspaceExecutionInterlock implements WorkspaceExecutionInterlockPort {
   readonly #inner: WorkspaceManagerPort;
-  /** workspaceId -> sandboxIds currently dispatching an effect against it. */
-  readonly #executing = new Map<string, Set<string>>();
-  /** workspaceIds whose lifecycle is currently being changed. */
-  readonly #mutating = new Set<string>();
+  /** At most one claim per workspace, whatever its kind. */
+  readonly #claims = new Map<string, WorkspaceClaim>();
 
   constructor(inner: WorkspaceManagerPort) {
     this.#inner = inner;
@@ -56,21 +71,16 @@ export class WorkspaceExecutionInterlock implements WorkspaceExecutionInterlockP
     sandboxId: string,
     context: OperationContext,
   ): Promise<{ readonly workspace: WorkspaceHandle; readonly lease: WorkspaceExecutionLease }> {
-    if (this.#mutating.has(workspaceId)) {
-      throw new ApplicationError(
-        "CONFLICT",
-        "The workspace lifecycle is being changed; no effect may enter dispatch against it.",
-        { details: { workspaceId, sandboxId } },
-      );
-    }
-    // Register synchronously, before the first await: from here on a seal or discard is refused.
-    const holders = this.#executing.get(workspaceId) ?? new Set<string>();
-    holders.add(sandboxId);
-    this.#executing.set(workspaceId, holders);
+    const claimId = this.#claim(workspaceId, {
+      kind: "execution",
+      claimId: randomUUID(),
+      sandboxId,
+    });
     const lease: WorkspaceExecutionLease = Object.freeze({
+      leaseId: claimId,
       workspaceId,
       sandboxId,
-      release: () => this.#release(workspaceId, sandboxId),
+      release: () => this.#release(workspaceId, claimId),
     });
 
     try {
@@ -96,32 +106,42 @@ export class WorkspaceExecutionInterlock implements WorkspaceExecutionInterlockP
     }
   }
 
-  #release(workspaceId: string, sandboxId: string): void {
-    const holders = this.#executing.get(workspaceId);
-    if (holders === undefined) return;
-    holders.delete(sandboxId);
-    if (holders.size === 0) this.#executing.delete(workspaceId);
-  }
-
-  #assertNoInFlightEffect(workspaceId: string, operation: string): void {
-    const holders = this.#executing.get(workspaceId);
-    if (holders !== undefined && holders.size > 0) {
+  /** Claims a workspace synchronously, or refuses. Returns the claim's unique id. */
+  #claim(workspaceId: string, claim: WorkspaceClaim): string {
+    const held = this.#claims.get(workspaceId);
+    if (held !== undefined) {
       throw new ApplicationError(
         "CONFLICT",
-        `A sandbox effect is in flight against this workspace; ${operation} would invalidate it mid-dispatch.`,
-        { details: { workspaceId, sandboxIds: [...holders] } },
+        held.kind === "lifecycle"
+          ? "The workspace lifecycle is being changed; nothing else may claim it."
+          : "A sandbox effect is already in flight against this workspace.",
+        {
+          details: {
+            workspaceId,
+            heldBy: held.kind,
+            ...(held.sandboxId === undefined ? {} : { sandboxId: held.sandboxId }),
+            requested: claim.kind,
+          },
+        },
       );
+    }
+    this.#claims.set(workspaceId, claim);
+    return claim.claimId;
+  }
+
+  /** Releases only if this exact claim still holds the workspace; safe to call repeatedly. */
+  #release(workspaceId: string, claimId: string): void {
+    if (this.#claims.get(workspaceId)?.claimId === claimId) {
+      this.#claims.delete(workspaceId);
     }
   }
 
-  async #mutate<T>(workspaceId: string, operation: string, run: () => Promise<T>): Promise<T> {
-    this.#assertNoInFlightEffect(workspaceId, operation);
-    // Registered synchronously for the same reason `beginExecution` registers early.
-    this.#mutating.add(workspaceId);
+  async #mutate<T>(workspaceId: string, run: () => Promise<T>): Promise<T> {
+    const claimId = this.#claim(workspaceId, { kind: "lifecycle", claimId: randomUUID() });
     try {
       return await run();
     } finally {
-      this.#mutating.delete(workspaceId);
+      this.#release(workspaceId, claimId);
     }
   }
 
@@ -142,10 +162,10 @@ export class WorkspaceExecutionInterlock implements WorkspaceExecutionInterlockP
   }
 
   seal(workspaceId: string, context: OperationContext): Promise<WorkspaceHandle> {
-    return this.#mutate(workspaceId, "sealing", () => this.#inner.seal(workspaceId, context));
+    return this.#mutate(workspaceId, () => this.#inner.seal(workspaceId, context));
   }
 
   discard(workspaceId: string, context: OperationContext): Promise<void> {
-    return this.#mutate(workspaceId, "discarding", () => this.#inner.discard(workspaceId, context));
+    return this.#mutate(workspaceId, () => this.#inner.discard(workspaceId, context));
   }
 }
