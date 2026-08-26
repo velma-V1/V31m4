@@ -7,20 +7,30 @@ import {
 import { ApplicationError } from "../application-errors.js";
 import type { OperationContext } from "../operation-context.js";
 import { type Versioned, WriteConditions } from "../port-types.js";
+import type { EvidenceRepositoryPort } from "../ports/evidence-repository.port.js";
 import type {
   TaskCapsuleHead,
   TaskCapsuleRepositoryPort,
 } from "../ports/task-capsule-repository.port.js";
 import type { UnitOfWorkPort } from "../ports/unit-of-work.port.js";
 import {
+  assessTaskEvidence,
+  type TaskEvidenceAssessment,
   TaskTransitionPolicy,
   type TaskTransitionProposal,
   type TaskTransitionRefusalCode,
 } from "../services/task-transition-policy.js";
+import { resolveTaskEvidence } from "./task-evidence.js";
 
 export interface ProposeTaskTransitionDependencies {
   readonly unitOfWork: UnitOfWorkPort;
   readonly capsules: TaskCapsuleRepositoryPort;
+  /**
+   * The one authoritative evidence store. Transitions that require proof resolve their citations
+   * here rather than trusting the identifiers a proposer supplies; there is no second evidence
+   * authority and no free-form assertion path.
+   */
+  readonly evidence: EvidenceRepositoryPort;
 }
 
 export interface ProposeTaskTransitionResult {
@@ -94,7 +104,23 @@ export async function proposeTaskTransition(
       );
     }
 
-    const decision = TaskTransitionPolicy.evaluate(current, proposal);
+    // Resolve every reference this transition would rely on before any predicate is evaluated:
+    // the ones it cites as proof, and any newly claimed verified reference the changes introduce.
+    const nextEvidenceIds = nextVerifiedEvidenceIds(current, proposal, changes);
+    const carried = new Set<string>(current.verifiedEvidenceIds);
+    const mustResolve = [
+      ...new Set([
+        ...proposal.evidenceIds,
+        ...nextEvidenceIds.filter((evidenceId) => !carried.has(evidenceId)),
+      ]),
+    ];
+    const assessment = assessTaskEvidence(
+      current,
+      mustResolve,
+      await resolveTaskEvidence(dependencies.evidence, mustResolve, context, transaction),
+    );
+
+    const decision = TaskTransitionPolicy.evaluate(current, proposal, assessment);
     if (!decision.allowed) {
       throw new ApplicationError(
         REFUSAL_ERRORS[decision.code],
@@ -109,11 +135,16 @@ export async function proposeTaskTransition(
       );
     }
 
+    // `verifiedEvidenceIds` may only ever hold references the evidence layer validated. Anything
+    // the changes newly introduce has to clear the same bar as a cited proof; already-carried
+    // references were validated when they entered.
+    assertOnlyVerifiedEvidence(taskId, nextEvidenceIds, carried, assessment);
+
     const next = TaskCapsule.next(current, {
       ...changes,
       phase: decision.to,
       attempts: current.attempts + decision.attemptCost,
-      verifiedEvidenceIds: mergeEvidence(current, proposal, changes),
+      verifiedEvidenceIds: nextEvidenceIds,
     });
     const advanced = await dependencies.capsules.appendRevision(
       next,
@@ -130,13 +161,35 @@ export async function proposeTaskTransition(
  * unless the caller is explicitly rewriting that set. Bounds and uniqueness are enforced by the
  * entity, so an overflowing merge is rejected rather than silently truncated.
  */
-function mergeEvidence(
+function nextVerifiedEvidenceIds(
   current: TaskCapsuleType,
   proposal: TaskTransitionProposal,
   changes: TaskCapsuleChanges,
 ): readonly string[] {
   if (changes.verifiedEvidenceIds !== undefined) {
-    return changes.verifiedEvidenceIds;
+    return [...new Set(changes.verifiedEvidenceIds)];
   }
   return [...new Set([...current.verifiedEvidenceIds, ...proposal.evidenceIds])];
+}
+
+/**
+ * A capsule's `verifiedEvidenceIds` is a claim that the evidence layer verified those records.
+ * Rewriting it through `changes` must therefore not be a way to launder an unverified identifier
+ * into that set — a rewrite may drop references and may add validated ones, nothing else.
+ */
+function assertOnlyVerifiedEvidence(
+  taskId: string,
+  nextEvidenceIds: readonly string[],
+  carried: ReadonlySet<string>,
+  assessment: TaskEvidenceAssessment,
+): void {
+  const unverified = nextEvidenceIds.filter(
+    (evidenceId) => !carried.has(evidenceId) && !assessment.verifiedEvidenceIds.has(evidenceId),
+  );
+  if (unverified.length === 0) return;
+  throw new ApplicationError(
+    "INVALID_APPLICATION_INPUT",
+    "A capsule's verified evidence may only name records the evidence authority validated.",
+    { details: { taskId, unverifiedEvidenceIds: Object.freeze([...unverified]) } },
+  );
 }

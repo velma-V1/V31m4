@@ -2,6 +2,8 @@ import type { ContentHash, ExecutionLedgerEntry, LedgerEntryId, TaskId } from "@
 import { ApplicationError } from "../application-errors.js";
 import type { OperationContext } from "../operation-context.js";
 import type { ExecutionLedgerRepositoryPort } from "../ports/execution-ledger-repository.port.js";
+import type { UnitOfWorkTransaction } from "../ports/unit-of-work.port.js";
+import { type PortPageVisitDecision, visitPortPages } from "./use-case-support.js";
 
 /**
  * Deterministic reconciliation over the Execution Ledger.
@@ -30,13 +32,29 @@ export interface LedgerProjection {
   readonly invalidatedEntryIds: ReadonlySet<string>;
 }
 
+interface LedgerFold {
+  readonly attempts: Map<string, { state: AttemptState; resolved: boolean }>;
+  readonly invalidated: Set<string>;
+}
+
 /**
  * Folds the append-only history into current state. Later entries supersede earlier beliefs;
  * nothing is mutated, and the same entries always fold to the same projection.
  */
 export function projectLedger(entries: readonly ExecutionLedgerEntry[]): LedgerProjection {
-  const attempts = new Map<string, { state: AttemptState; resolved: boolean }>();
-  const invalidated = new Set<string>();
+  const fold: LedgerFold = { attempts: new Map(), invalidated: new Set() };
+  foldLedgerPage(fold, entries);
+  return finishFold(fold);
+}
+
+/**
+ * Folds one page of history into an in-progress fold. Splitting the fold from the read is what
+ * lets an unbounded history be reconciled incrementally instead of materialised in full — the
+ * result is identical either way, because the fold only ever depends on append order.
+ */
+function foldLedgerPage(fold: LedgerFold, entries: readonly ExecutionLedgerEntry[]): void {
+  const attempts = fold.attempts;
+  const invalidated = fold.invalidated;
 
   for (const entry of entries) {
     switch (entry.kind) {
@@ -74,10 +92,12 @@ export function projectLedger(entries: readonly ExecutionLedgerEntry[]): LedgerP
         break;
     }
   }
+}
 
+function finishFold(fold: LedgerFold): LedgerProjection {
   return Object.freeze({
-    attempts: Object.freeze([...attempts.values()].map((held) => held.state)),
-    invalidatedEntryIds: invalidated,
+    attempts: Object.freeze([...fold.attempts.values()].map((held) => held.state)),
+    invalidatedEntryIds: fold.invalidated,
   });
 }
 
@@ -185,12 +205,57 @@ export interface ReconcileExecutionEffectDependencies {
   readonly ledger: ExecutionLedgerRepositoryPort;
 }
 
-/** Loads a task's history and folds it, so callers reconcile from durable state alone. */
+/**
+ * How much history one read pulls back. This is a transport bound, never a claim that a task's
+ * history ends here: every authoritative reader below follows `nextCursor` to exhaustion.
+ */
+export const LEDGER_PAGE_SIZE = 500;
+
+/**
+ * The one canonical paged walk over a task's execution history, in append order.
+ *
+ * Every authoritative decision that reads the Ledger goes through this: retry projection,
+ * reconciliation, and finalized-outcome conflict detection. It follows `nextCursor` until the
+ * history is exhausted, rejects a repeated cursor, and surfaces its defensive page ceiling as a
+ * typed non-success — so no decision can ever be made against a silently truncated first page.
+ * A visitor may stop early, which is how a targeted lookup avoids reading the whole history.
+ */
+export async function scanTaskLedger(
+  ledger: ExecutionLedgerRepositoryPort,
+  taskId: TaskId,
+  context: OperationContext,
+  visit: (entries: readonly ExecutionLedgerEntry[]) => PortPageVisitDecision,
+  transaction?: UnitOfWorkTransaction,
+): Promise<void> {
+  await visitPortPages<ExecutionLedgerEntry>(
+    (cursor) =>
+      ledger.listForTask(
+        taskId,
+        cursor === undefined ? { limit: LEDGER_PAGE_SIZE } : { limit: LEDGER_PAGE_SIZE, cursor },
+        context,
+        transaction,
+      ),
+    visit,
+  );
+}
+
+/** Loads a task's complete history and folds it, so callers reconcile from durable state alone. */
 export async function reconcileExecutionEffect(
   dependencies: ReconcileExecutionEffectDependencies,
   taskId: TaskId,
   context: OperationContext,
+  transaction?: UnitOfWorkTransaction,
 ): Promise<LedgerProjection> {
-  const page = await dependencies.ledger.listForTask(taskId, { limit: 500 }, context);
-  return projectLedger(page.items);
+  const fold: LedgerFold = { attempts: new Map(), invalidated: new Set() };
+  await scanTaskLedger(
+    dependencies.ledger,
+    taskId,
+    context,
+    (entries) => {
+      foldLedgerPage(fold, entries);
+      return "continue";
+    },
+    transaction,
+  );
+  return finishFold(fold);
 }

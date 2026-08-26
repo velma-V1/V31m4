@@ -1,9 +1,15 @@
 import { ApplicationError, type TaskTransitionProposal, WriteConditions } from "@v31m4/application";
-import { TaskCapsule, type TaskCapsule as TaskCapsuleType, TaskId } from "@v31m4/domain";
+import {
+  EvidenceRecord,
+  TaskCapsule,
+  type TaskCapsule as TaskCapsuleType,
+  TaskId,
+} from "@v31m4/domain";
 import type { SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteTaskCapsuleRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import { readyDagNodeIds, TaskManager } from "../../src/autonomy/task-manager.js";
+import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
 import { context, runtimeDatabase } from "../fixtures.js";
 
 /**
@@ -31,11 +37,13 @@ const draft = {
 let database: SqliteRuntimeDatabase;
 let databasePath: string;
 let capsules: SqliteTaskCapsuleRepository;
+let evidence: SqliteEvidenceRepository;
 let manager: TaskManager;
 
 function wire(db: SqliteRuntimeDatabase): void {
   capsules = new SqliteTaskCapsuleRepository(db);
-  manager = new TaskManager({ unitOfWork: db.unitOfWork, capsules });
+  evidence = new SqliteEvidenceRepository(db);
+  manager = new TaskManager({ unitOfWork: db.unitOfWork, capsules, evidence });
 }
 
 beforeEach(() => {
@@ -240,6 +248,134 @@ describe("restart and replay", () => {
     await expect(manager.loadCurrent(taskId, context)).rejects.toMatchObject({
       code: "INTEGRITY_FAILURE",
     });
+  });
+});
+
+/**
+ * Entering `complete` or `repair` is a claim about observed reality, so it must rest on records
+ * the authoritative evidence store actually holds. These run against the real
+ * `SqliteEvidenceRepository`, so a fabricated identifier has nowhere to resolve from.
+ */
+describe("evidence-backed transitions against the real evidence store", () => {
+  async function reachVerify(): Promise<{
+    readonly capsule: TaskCapsuleType;
+    readonly headRevision: string;
+  }> {
+    let current = await manager.createTask(draft, context);
+    for (const [index, phase] of (["plan", "execute", "verify"] as const).entries()) {
+      current = await manager.proposeTransition(
+        proposalFor(current.capsule, current.head.revision, {
+          from: current.capsule.phase,
+          to: phase,
+        }),
+        { updatedAt: `2026-08-26T00:0${index + 1}:00.000Z` },
+        context,
+      );
+    }
+    return { capsule: current.capsule, headRevision: current.head.revision };
+  }
+
+  async function storeEvidence(
+    overrides: Partial<Parameters<typeof EvidenceRecord.create>[0]> = {},
+  ): Promise<void> {
+    const record = EvidenceRecord.create({
+      id: "evidence:passing",
+      projectId: "project:1",
+      jobId: "job:1",
+      kind: "unit_test",
+      subjectType: "task",
+      subjectId: "task:root",
+      status: "passed",
+      summary: "the targeted regression passed",
+      artifactIds: ["artifact:log"],
+      verifierId: "verifier:node",
+      verifierVersion: "1.0.0",
+      createdAt: "2026-08-26T00:00:00.000Z",
+      ...overrides,
+    });
+    await database.unitOfWork.execute(context, async (transaction) => {
+      await evidence.append(record, context, transaction);
+    });
+  }
+
+  it("refuses to enter complete on a fabricated canonical evidence ID", async () => {
+    const { capsule, headRevision } = await reachVerify();
+    await expect(
+      manager.proposeTransition(
+        proposalFor(capsule, headRevision, {
+          from: "verify",
+          to: "complete",
+          evidenceIds: ["evidence:fake"],
+        }),
+        { updatedAt: "2026-08-26T00:04:00.000Z" },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    const current = await manager.loadCurrent(taskId, context);
+    expect(current?.capsule.phase).toBe("verify");
+    expect(current?.capsule.verifiedEvidenceIds).toEqual([]);
+  });
+
+  it("refuses to enter repair on a fabricated canonical evidence ID", async () => {
+    const { capsule, headRevision } = await reachVerify();
+    await expect(
+      manager.proposeTransition(
+        proposalFor(capsule, headRevision, {
+          from: "verify",
+          to: "repair",
+          evidenceIds: ["evidence:fake"],
+        }),
+        { updatedAt: "2026-08-26T00:04:00.000Z" },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect((await manager.loadCurrent(taskId, context))?.capsule.phase).toBe("verify");
+  });
+
+  it("refuses failed, inconclusive, and wrong-scope evidence", async () => {
+    for (const wrong of [
+      { status: "failed" as const },
+      { status: "inconclusive" as const },
+      { projectId: "project:other" },
+      { jobId: "job:other" },
+      { subjectType: "candidate", subjectId: "candidate:1" },
+    ]) {
+      database.close();
+      database = runtimeDatabase();
+      wire(database);
+      await storeEvidence(wrong);
+      const { capsule, headRevision } = await reachVerify();
+      await expect(
+        manager.proposeTransition(
+          proposalFor(capsule, headRevision, {
+            from: "verify",
+            to: "complete",
+            evidenceIds: ["evidence:passing"],
+          }),
+          { updatedAt: "2026-08-26T00:04:00.000Z" },
+          context,
+        ),
+        JSON.stringify(wrong),
+      ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    }
+  });
+
+  it("still permits the intended transition on real passing evidence", async () => {
+    await storeEvidence();
+    const { capsule, headRevision } = await reachVerify();
+    const completed = await manager.proposeTransition(
+      proposalFor(capsule, headRevision, {
+        from: "verify",
+        to: "complete",
+        evidenceIds: ["evidence:passing"],
+      }),
+      { updatedAt: "2026-08-26T00:04:00.000Z" },
+      context,
+    );
+    expect(completed.capsule.phase).toBe("complete");
+    expect(completed.capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+    // And it is durable, not just returned.
+    expect((await manager.loadCurrent(taskId, context))?.capsule.phase).toBe("complete");
   });
 });
 

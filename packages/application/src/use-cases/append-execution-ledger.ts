@@ -4,6 +4,7 @@ import type { OperationContext } from "../operation-context.js";
 import type { Versioned } from "../port-types.js";
 import type { ExecutionLedgerRepositoryPort } from "../ports/execution-ledger-repository.port.js";
 import type { UnitOfWorkPort, UnitOfWorkTransaction } from "../ports/unit-of-work.port.js";
+import { scanTaskLedger } from "./reconcile-execution-effect.js";
 
 export interface AppendExecutionLedgerDependencies {
   readonly unitOfWork: UnitOfWorkPort;
@@ -61,18 +62,25 @@ async function assertReferencesResolve(
     }
     // One attempt, one finalized outcome. Refusing a second here keeps a contradictory history
     // from being written at all, rather than leaving it to be discovered during a later fold.
-    const history = await dependencies.ledger.listForTask(
+    // The search walks the *whole* history through the canonical paged scan — an existing outcome
+    // beyond the first page must block just as firmly as one on it — and stops as soon as it
+    // finds a match.
+    let existing: LedgerEntry | undefined;
+    await scanTaskLedger(
+      dependencies.ledger,
       entry.taskId,
-      { limit: 500 },
       context,
+      (entries) => {
+        existing = entries.find(
+          (candidate) =>
+            (candidate.kind === "effect_confirmation" ||
+              candidate.kind === "effect_nonapplication" ||
+              candidate.kind === "reconciliation_indeterminate") &&
+            candidate.attemptEntryId === entry.attemptEntryId,
+        );
+        return existing === undefined ? "continue" : "stop";
+      },
       transaction,
-    );
-    const existing = history.items.find(
-      (candidate) =>
-        (candidate.kind === "effect_confirmation" ||
-          candidate.kind === "effect_nonapplication" ||
-          candidate.kind === "reconciliation_indeterminate") &&
-        candidate.attemptEntryId === entry.attemptEntryId,
     );
     if (existing !== undefined) {
       throw new ApplicationError(

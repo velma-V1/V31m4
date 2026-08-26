@@ -3,12 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ApplicationError,
+  appendExecutionLedgerEntry,
   type SandboxHandle,
   SandboxIsolationPolicy,
+  type SandboxPort,
   type WorkspaceHandle,
 } from "@v31m4/application";
 import {
   ContentHash,
+  ExecutionLedgerEntry,
   JobId,
   ProjectId,
   ResourceBudget,
@@ -56,6 +59,25 @@ let boundary: ReturnType<typeof createSemanticAuthorizationBoundary>;
 let workspace: WorkspaceHandle;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
+let dispatches = 0;
+
+/**
+ * Counts what actually reached the sandbox. Several invariants here are about *dispatch*
+ * multiplicity, which the ledger alone cannot prove — a second attempt that never ran and a
+ * second attempt that ran twice leave different marks in the environment, not in the record.
+ */
+function countingSandboxes(inner: SandboxSupervisor): SandboxPort {
+  return {
+    prepare: (...args) => inner.prepare(...args),
+    execute: (...args) => {
+      dispatches += 1;
+      return inner.execute(...args);
+    },
+    inspect: (...args) => inner.inspect(...args),
+    cancel: (...args) => inner.cancel(...args),
+    destroy: (...args) => inner.destroy(...args),
+  };
+}
 
 class FixedWorkspaces {
   constructor(private readonly handle: WorkspaceHandle) {}
@@ -90,7 +112,7 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   reconciler = new EffectReconciler({
     unitOfWork: db.unitOfWork,
     ledger,
-    sandboxes,
+    sandboxes: countingSandboxes(sandboxes),
     generateEntryId: () => `ledger:${++entryCounter}`,
     now: () => "2026-08-26T00:00:00.000Z",
   });
@@ -108,6 +130,7 @@ beforeEach(async () => {
     createdAt: "2026-08-26T00:00:00.000Z",
   });
   entryCounter = 0;
+  dispatches = 0;
   database = runtimeDatabase();
   databasePath = database.path;
   await wire(database);
@@ -293,8 +316,6 @@ describe("append-only history", () => {
       { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
       context,
     );
-    const { ExecutionLedgerEntry } = await import("@v31m4/domain");
-    const { appendExecutionLedgerEntry } = await import("@v31m4/application");
     const contradiction = ExecutionLedgerEntry.create({
       id: "ledger:contradiction",
       taskId,
@@ -324,7 +345,6 @@ describe("append-only history", () => {
   });
 
   it("refuses an outcome that names no real attempt", async () => {
-    const { ExecutionLedgerEntry } = await import("@v31m4/domain");
     const orphan = ExecutionLedgerEntry.create({
       id: "ledger:orphan",
       taskId,
@@ -341,7 +361,6 @@ describe("append-only history", () => {
         },
       ],
     });
-    const { appendExecutionLedgerEntry } = await import("@v31m4/application");
     await expect(
       appendExecutionLedgerEntry({ unitOfWork: database.unitOfWork, ledger }, orphan, context),
     ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
@@ -368,14 +387,316 @@ describe("append-only history", () => {
   });
 });
 
+/**
+ * Claiming an intent is atomic. Checking the history and appending the attempt used to be two
+ * steps, so two callers could both look, both see nothing blocking, and both go ahead.
+ */
+describe("same-intent claiming is atomic", () => {
+  it("lets exactly one of two concurrent identical intents claim and dispatch", async () => {
+    const outcomes = await Promise.allSettled([
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const loser = outcomes.find(
+      (outcome) => outcome.status === "rejected",
+    ) as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(ApplicationError);
+    expect((loser.reason as ApplicationError).code).toBe("CONFLICT");
+
+    // Exactly one attempt was committed, and exactly one effect reached the environment.
+    const page = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(page.items.filter((entry) => entry.kind === "effect_attempt")).toHaveLength(1);
+    expect(dispatches).toBe(1);
+  });
+
+  it("keeps the winning claim across a restart, and still refuses the loser's intent", async () => {
+    const outcomes = await Promise.allSettled([
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: unknownProbe },
+        context,
+      ),
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: unknownProbe },
+        context,
+      ),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    database.close();
+
+    const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
+    database = new SqliteRuntimeDatabase(databasePath);
+    await wire(database);
+
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts).toHaveLength(1);
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+/**
+ * A governed effect is checked, recorded, and executed under one scoped identity. A request that
+ * names a different task than the authorization and the sandbox would let a Task-A effect be
+ * projected against, and written into, Task-B's ledger.
+ */
+describe("scoped identity must agree", () => {
+  const otherTask = TaskId.parse("task:other");
+
+  it("refuses a request whose taskId disagrees with the plan and sandbox", async () => {
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId: otherTask, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    // Neither ledger gained an entry, and nothing was dispatched.
+    expect((await ledger.listForTask(otherTask, { limit: 500 }, context)).items).toHaveLength(0);
+    expect((await ledger.listForTask(taskId, { limit: 500 }, context)).items).toHaveLength(0);
+    expect(dispatches).toBe(0);
+  });
+
+  it("refuses a plan bound to a different sandbox, workspace, job, or task", async () => {
+    const foreignSandbox: SandboxHandle = Object.freeze({
+      id: "sandbox:2" as SandboxHandle["id"],
+      jobId,
+      taskId,
+      workspaceId: workspace.id,
+      backendId: "reference",
+      status: "ready" as const,
+    });
+    const mismatches: readonly SandboxHandle[] = [
+      foreignSandbox,
+      Object.freeze({ ...sandbox, workspaceId: "workspace-2" }),
+      Object.freeze({ ...sandbox, jobId: JobId.parse("job:2") }),
+      Object.freeze({ ...sandbox, taskId: otherTask }),
+    ];
+    for (const candidate of mismatches) {
+      await expect(
+        reconciler.runGovernedEffect(
+          {
+            taskId: candidate.taskId,
+            sandbox: candidate,
+            plan: inspectPlan(),
+            probe: appliedProbe,
+          },
+          context,
+        ),
+        candidate.id,
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    }
+    expect((await ledger.listForTask(taskId, { limit: 500 }, context)).items).toHaveLength(0);
+    expect(dispatches).toBe(0);
+  });
+
+  it("refuses a mismatched identity even when two such calls race", async () => {
+    const outcomes = await Promise.allSettled([
+      reconciler.runGovernedEffect(
+        { taskId: otherTask, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+      reconciler.runGovernedEffect(
+        { taskId: otherTask, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ]);
+    expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
+    expect(dispatches).toBe(0);
+  });
+});
+
+/**
+ * Long-horizon correctness: no authoritative decision may be made against a truncated first page
+ * of history. Each of these places the decisive entry past the 500-entry page boundary.
+ */
+describe("decisions read the whole ledger", () => {
+  const LONG_HISTORY = 500;
+
+  async function fillHistory(count: number): Promise<void> {
+    await database.unitOfWork.execute(context, async (transaction) => {
+      for (let index = 0; index < count; index += 1) {
+        await ledger.append(
+          ExecutionLedgerEntry.create({
+            id: `ledger:filler-${index}`,
+            taskId,
+            jobId,
+            recordedAt: "2026-08-26T00:00:00.000Z",
+            detail: `filler observation ${index}`,
+            kind: "observation",
+            facts: [
+              {
+                resourceKind: "workspace_file",
+                locator: `filler-${index}.ts`,
+                fingerprint: ContentHash.parse(sha256Hex(`filler-${index}`)),
+              },
+            ],
+          }),
+          context,
+          transaction,
+        );
+      }
+    });
+  }
+
+  const verifiedFacts = [
+    {
+      resourceKind: "workspace_file",
+      locator: "target.ts",
+      fingerprint: ContentHash.parse(sha256Hex("after")),
+    },
+  ];
+
+  async function recordAttempt(id: string, intentFingerprint: string): Promise<void> {
+    await appendExecutionLedgerEntry(
+      { unitOfWork: database.unitOfWork, ledger },
+      ExecutionLedgerEntry.create({
+        id,
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "attempting code.inspect",
+        kind: "effect_attempt",
+        intentFingerprint,
+        operationId: "code.inspect",
+        workspaceId: workspace.id,
+        sandboxId: sandbox.id,
+      }),
+      context,
+    );
+  }
+
+  it("still blocks on an unresolved attempt recorded past the first page", async () => {
+    await fillHistory(LONG_HISTORY);
+    await recordAttempt("ledger:blocking", reconciler.intentFingerprintFor(inspectPlan()));
+
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(dispatches).toBe(0);
+  });
+
+  it("still blocks on a confirmed attempt recorded past the first page", async () => {
+    await fillHistory(LONG_HISTORY);
+    await recordAttempt("ledger:confirmed", reconciler.intentFingerprintFor(inspectPlan()));
+    await appendExecutionLedgerEntry(
+      { unitOfWork: database.unitOfWork, ledger },
+      ExecutionLedgerEntry.create({
+        id: "ledger:confirmed-outcome",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:01.000Z",
+        detail: "code.inspect verified as applied",
+        kind: "effect_confirmation",
+        attemptEntryId: "ledger:confirmed",
+        facts: verifiedFacts,
+      }),
+      context,
+    );
+
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT", details: { code: "ALREADY_APPLIED" } });
+    expect(dispatches).toBe(0);
+  });
+
+  it("refuses a contradictory outcome when the existing one is past the first page", async () => {
+    await fillHistory(LONG_HISTORY);
+    await recordAttempt("ledger:late", ContentHash.parse(sha256Hex("a late intent")));
+    const deps = { unitOfWork: database.unitOfWork, ledger };
+    await appendExecutionLedgerEntry(
+      deps,
+      ExecutionLedgerEntry.create({
+        id: "ledger:late-confirmation",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:01.000Z",
+        detail: "code.inspect verified as applied",
+        kind: "effect_confirmation",
+        attemptEntryId: "ledger:late",
+        facts: verifiedFacts,
+      }),
+      context,
+    );
+
+    await expect(
+      appendExecutionLedgerEntry(
+        deps,
+        ExecutionLedgerEntry.create({
+          id: "ledger:late-contradiction",
+          taskId,
+          jobId,
+          recordedAt: "2026-08-26T00:00:02.000Z",
+          detail: "code.inspect verified as not_applied",
+          kind: "effect_nonapplication",
+          attemptEntryId: "ledger:late",
+          facts: verifiedFacts,
+        }),
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // History stays foldable, because the contradiction was never written.
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts[0]?.outcome).toBe("confirmed");
+  });
+
+  it("folds a multi-page history into the same deterministic projection", async () => {
+    await fillHistory(LONG_HISTORY + 250);
+    await recordAttempt("ledger:paged", ContentHash.parse(sha256Hex("a paged intent")));
+
+    const page = await ledger.listForTask(taskId, { limit: 500 }, context);
+    expect(page.items).toHaveLength(500);
+    expect(page.nextCursor).toBe("500");
+    expect(page.total).toBe(LONG_HISTORY + 251);
+
+    const first = await reconciler.projection(taskId, context);
+    const second = await reconciler.projection(taskId, context);
+    expect(first).toEqual(second);
+    expect(first.attempts).toHaveLength(1);
+    expect(first.attempts[0]?.attemptEntryId).toBe("ledger:paged");
+  });
+
+  it("keeps a >500-entry history blocking under two concurrent identical intents", async () => {
+    await fillHistory(LONG_HISTORY);
+    await recordAttempt("ledger:blocking", reconciler.intentFingerprintFor(inspectPlan()));
+
+    const outcomes = await Promise.allSettled([
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ]);
+    expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
+    expect(dispatches).toBe(0);
+  });
+});
+
 describe("restart recovery", () => {
   it("keeps an unresolved attempt unresolved across a brand-new database instance", async () => {
     // Simulate a crash after the attempt was recorded but before any outcome: append the attempt
     // through the reconciler's own path, then drop the outcome by closing mid-flight.
     const plan = inspectPlan();
     const intent = reconciler.intentFingerprintFor(plan);
-    const { ExecutionLedgerEntry } = await import("@v31m4/domain");
-    const { appendExecutionLedgerEntry } = await import("@v31m4/application");
     await appendExecutionLedgerEntry(
       { unitOfWork: database.unitOfWork, ledger },
       ExecutionLedgerEntry.create({
@@ -408,6 +729,45 @@ describe("restart recovery", () => {
         context,
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("keeps a dispatched-but-unresolved effect blocked after a restart", async () => {
+    // A crash between dispatch and the outcome append: the effect really did reach the sandbox,
+    // and nothing recorded whether it landed. The durable claim is what must stop a blind retry.
+    const plan = inspectPlan();
+    const intent = reconciler.intentFingerprintFor(plan);
+    await appendExecutionLedgerEntry(
+      { unitOfWork: database.unitOfWork, ledger },
+      ExecutionLedgerEntry.create({
+        id: "ledger:claimed",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "attempting code.inspect",
+        kind: "effect_attempt",
+        intentFingerprint: intent,
+        operationId: plan.operationId,
+        workspaceId: plan.workspaceId,
+        sandboxId: plan.sandboxId,
+      }),
+      context,
+    );
+    await sandboxes.execute(sandbox, plan, context);
+    database.close();
+
+    const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
+    database = new SqliteRuntimeDatabase(databasePath);
+    await wire(database);
+
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts[0]?.outcome).toBe("unresolved");
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: inspectPlan(), probe: appliedProbe },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(dispatches).toBe(0);
   });
 
   it("keeps a resolved attempt resolved across a restart", async () => {

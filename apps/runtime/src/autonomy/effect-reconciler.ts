@@ -6,11 +6,12 @@ import {
   type ExecutionLedgerRepositoryPort,
   type LedgerProjection,
   type OperationContext,
-  projectLedger,
+  reconcileExecutionEffect,
   type SandboxExecutionResult,
   type SandboxHandle,
   type SandboxPort,
   type UnitOfWorkPort,
+  type UnitOfWorkTransaction,
 } from "@v31m4/application";
 import {
   type ContentHash,
@@ -82,10 +83,17 @@ export interface GovernedEffectOutcome {
 export class EffectReconciler {
   constructor(private readonly dependencies: EffectReconcilerDependencies) {}
 
-  /** The current folded history for a task, read from durable entries alone. */
-  async projection(taskId: TaskId, context: OperationContext): Promise<LedgerProjection> {
-    const page = await this.dependencies.ledger.listForTask(taskId, { limit: 500 }, context);
-    return projectLedger(page.items);
+  /**
+   * The current folded history for a task, read from durable entries alone and from *all* of
+   * them: the canonical scan follows the ledger's cursor to exhaustion rather than deciding
+   * against whatever fits in one page.
+   */
+  async projection(
+    taskId: TaskId,
+    context: OperationContext,
+    transaction?: UnitOfWorkTransaction,
+  ): Promise<LedgerProjection> {
+    return reconcileExecutionEffect(this.dependencies, taskId, context, transaction);
   }
 
   /**
@@ -102,46 +110,90 @@ export class EffectReconciler {
     });
   }
 
+  /**
+   * Every identity this effect is checked and recorded against must be the same identity it
+   * executes under. The request carries its own `taskId`, and the plan and the sandbox each
+   * carry theirs; if those disagree, an effect authorized for one task could be projected
+   * against — and written into — another task's ledger. That is checked here, before the
+   * projection, before the claim, and before dispatch, so a mismatch produces no ledger entry
+   * and no backend call at all.
+   */
+  private assertScopedIdentity(request: GovernedEffectRequest): void {
+    const { plan, sandbox, taskId } = request;
+    const mismatches: string[] = [];
+    if (taskId !== plan.taskId) mismatches.push("request.taskId != plan.taskId");
+    if (plan.taskId !== sandbox.taskId) mismatches.push("plan.taskId != sandbox.taskId");
+    if (plan.jobId !== sandbox.jobId) mismatches.push("plan.jobId != sandbox.jobId");
+    if (plan.workspaceId !== sandbox.workspaceId) {
+      mismatches.push("plan.workspaceId != sandbox.workspaceId");
+    }
+    // A governed effect always dispatches into a sandbox, so a plan that names no sandbox — or
+    // names a different one — was not authorized for this execution.
+    if (plan.sandboxId !== sandbox.id) mismatches.push("plan.sandboxId != sandbox.id");
+    if (mismatches.length === 0) return;
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "The effect's request, authorization, and sandbox do not describe the same scoped identity.",
+      {
+        details: {
+          operationId: plan.operationId,
+          requestTaskId: taskId,
+          planTaskId: plan.taskId,
+          sandboxTaskId: sandbox.taskId,
+          mismatches: Object.freeze([...mismatches]),
+        },
+      },
+    );
+  }
+
   async runGovernedEffect(
     request: GovernedEffectRequest,
     context: OperationContext,
   ): Promise<GovernedEffectOutcome> {
     const { plan, sandbox, taskId } = request;
+    this.assertScopedIdentity(request);
     const intentFingerprint = this.intentFingerprintFor(plan);
 
-    // Refuse before anything happens: an unresolved, indeterminate, or already-applied intent
-    // must not be attempted again.
-    const decision = decideRetry(await this.projection(taskId, context), intentFingerprint);
-    if (!decision.allowed) {
-      throw new ApplicationError(
-        "CONFLICT",
-        `This effect cannot be attempted again: ${decision.reason}.`,
-        {
-          details: {
-            taskId,
-            operationId: plan.operationId,
-            code: decision.code,
-            attemptEntryId: decision.attemptEntryId,
-          },
-        },
+    // Claiming the intent is one atomic step, not a check followed by a write. Reading the
+    // history, deciding, and appending the attempt all happen inside a single authoritative
+    // transaction, so a second caller for the same intent waits for this commit and then sees
+    // the unresolved attempt it must lose to. Nothing may reach the environment until the claim
+    // is durable — which is also what makes a crash from here on show up as an unresolved
+    // attempt rather than as silence.
+    const attempt = await this.dependencies.unitOfWork.execute(context, async (transaction) => {
+      const decision = decideRetry(
+        await this.projection(taskId, context, transaction),
+        intentFingerprint,
       );
-    }
-
-    // The attempt is durable before dispatch. A crash from here on leaves it unresolved, which
-    // is exactly what blocks a blind retry.
-    const attempt = ExecutionLedgerEntry.create({
-      id: this.dependencies.generateEntryId(),
-      taskId,
-      jobId: plan.jobId,
-      recordedAt: this.dependencies.now(),
-      detail: `attempting ${plan.operationId}`,
-      kind: "effect_attempt",
-      intentFingerprint,
-      operationId: plan.operationId,
-      workspaceId: plan.workspaceId,
-      sandboxId: plan.sandboxId,
+      if (!decision.allowed) {
+        throw new ApplicationError(
+          "CONFLICT",
+          `This effect cannot be attempted again: ${decision.reason}.`,
+          {
+            details: {
+              taskId,
+              operationId: plan.operationId,
+              code: decision.code,
+              attemptEntryId: decision.attemptEntryId,
+            },
+          },
+        );
+      }
+      const claimed = ExecutionLedgerEntry.create({
+        id: this.dependencies.generateEntryId(),
+        taskId,
+        jobId: plan.jobId,
+        recordedAt: this.dependencies.now(),
+        detail: `attempting ${plan.operationId}`,
+        kind: "effect_attempt",
+        intentFingerprint,
+        operationId: plan.operationId,
+        workspaceId: plan.workspaceId,
+        sandboxId: plan.sandboxId,
+      });
+      await appendExecutionLedgerEntry(this.dependencies, claimed, context, transaction);
+      return claimed;
     });
-    await appendExecutionLedgerEntry(this.dependencies, attempt, context);
 
     let result: SandboxExecutionResult | null = null;
     let dispatchFailure: string | null = null;

@@ -1,4 +1,9 @@
-import { isCanonicalDurableId, type TaskCapsule, type TaskPhase } from "@v31m4/domain";
+import {
+  type EvidenceRecord,
+  isCanonicalDurableId,
+  type TaskCapsule,
+  type TaskPhase,
+} from "@v31m4/domain";
 
 /**
  * Deterministic checked transitions for the Task Capsule.
@@ -66,6 +71,109 @@ const CONSUMES_ATTEMPT: ReadonlySet<TaskPhase> = new Set<TaskPhase>(["execute", 
 const MAX_REASON_LENGTH = 4_000;
 const MAX_EVIDENCE_PER_PROPOSAL = 64;
 
+/** Why the evidence authority refused to treat a cited record as proof for this transition. */
+export type TaskEvidenceRejectionReason =
+  | "unknown"
+  | "not_passed"
+  | "wrong_project"
+  | "wrong_job"
+  | "wrong_subject";
+
+export interface TaskEvidenceRejection {
+  readonly evidenceId: string;
+  readonly reason: TaskEvidenceRejectionReason;
+}
+
+/**
+ * The result of resolving cited evidence against the authoritative evidence layer.
+ *
+ * `verifiedEvidenceIds` holds only references an `EvidenceRepositoryPort` actually returned and
+ * that passed every scope predicate below. A caller cannot construct one of these from its own
+ * assertion and have it mean anything: the policy compares the cited IDs against this set, so an
+ * identifier that no `EvidenceRecord` backs simply is not in it.
+ */
+export interface TaskEvidenceAssessment {
+  readonly verifiedEvidenceIds: ReadonlySet<string>;
+  readonly rejections: readonly TaskEvidenceRejection[];
+}
+
+/**
+ * Subjects a task's evidence may be about, and how each one is tied back to this exact capsule.
+ * Evidence about some other project's candidate is not proof about this task, however real the
+ * record is — that is the wrong-scope hole this closes.
+ */
+function subjectInScope(capsule: TaskCapsule, record: EvidenceRecord): boolean {
+  switch (record.subjectType) {
+    case "task":
+      return record.subjectId === capsule.taskId;
+    case "acceptance_criterion":
+    case "requirement":
+      return (capsule.acceptanceCriterionIds as readonly string[]).includes(record.subjectId);
+    case "artifact":
+      return (capsule.changeArtifactIds as readonly string[]).includes(record.subjectId);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Deterministically decides which resolved evidence records may back a transition of this capsule.
+ *
+ * This is a pure predicate over records the caller already loaded through the authoritative
+ * `EvidenceRepositoryPort`; it performs no I/O and consults no model. A record must exist, have
+ * passed, belong to the capsule's project, agree with the capsule's job when it names one, and be
+ * about a subject this capsule actually owns.
+ */
+export function assessTaskEvidence(
+  capsule: TaskCapsule,
+  citedEvidenceIds: readonly string[],
+  resolved: ReadonlyMap<string, EvidenceRecord>,
+): TaskEvidenceAssessment {
+  const verified = new Set<string>();
+  const rejections: TaskEvidenceRejection[] = [];
+  const reject = (evidenceId: string, reason: TaskEvidenceRejectionReason): void => {
+    rejections.push(Object.freeze({ evidenceId, reason }));
+  };
+
+  for (const evidenceId of new Set(citedEvidenceIds)) {
+    const record = resolved.get(evidenceId);
+    if (record === undefined) {
+      reject(evidenceId, "unknown");
+      continue;
+    }
+    if (record.status !== "passed") {
+      reject(evidenceId, "not_passed");
+      continue;
+    }
+    if (record.projectId !== capsule.projectId) {
+      reject(evidenceId, "wrong_project");
+      continue;
+    }
+    if (record.jobId !== undefined && record.jobId !== capsule.jobId) {
+      reject(evidenceId, "wrong_job");
+      continue;
+    }
+    if (!subjectInScope(capsule, record)) {
+      reject(evidenceId, "wrong_subject");
+      continue;
+    }
+    verified.add(evidenceId);
+  }
+
+  return Object.freeze({
+    verifiedEvidenceIds: verified as ReadonlySet<string>,
+    rejections: Object.freeze(rejections),
+  });
+}
+
+const REJECTION_TEXT: Readonly<Record<TaskEvidenceRejectionReason, string>> = Object.freeze({
+  unknown: "does not exist in the evidence repository",
+  not_passed: "did not pass",
+  wrong_project: "belongs to another project",
+  wrong_job: "belongs to another job",
+  wrong_subject: "is not about a subject this task owns",
+});
+
 export const TaskTransitionPolicy = Object.freeze({
   /** How much of the attempt budget entering `phase` consumes. */
   attemptCost(phase: TaskPhase): number {
@@ -75,8 +183,17 @@ export const TaskTransitionPolicy = Object.freeze({
   /**
    * Evaluates a proposal against the current capsule. Every failed predicate is reported, not
    * just the first, so a caller learns everything it must fix rather than one thing at a time.
+   *
+   * `assessment` is mandatory and must come from the authoritative evidence layer: the policy
+   * stays a pure deterministic function, but it is structurally impossible to evaluate a
+   * transition without first having resolved the evidence it cites. A syntactically valid
+   * identifier is not proof of anything on its own.
    */
-  evaluate(current: TaskCapsule, proposal: TaskTransitionProposal): TaskTransitionDecision {
+  evaluate(
+    current: TaskCapsule,
+    proposal: TaskTransitionProposal,
+    assessment: TaskEvidenceAssessment,
+  ): TaskTransitionDecision {
     const reasons: string[] = [];
     let code: TaskTransitionRefusalCode | undefined;
     const refuse = (candidate: TaskTransitionRefusalCode, reason: string): void => {
@@ -134,6 +251,22 @@ export const TaskTransitionPolicy = Object.freeze({
     }
     if (REQUIRES_EVIDENCE.has(proposal.to) && evidenceIds.length === 0) {
       refuse("MISSING_EVIDENCE", `Entering ${proposal.to} requires at least one evidence record.`);
+    }
+    // Every cited reference must be one the evidence authority actually resolved and accepted.
+    // The specific reason is reported where it is known, so a caller learns whether the record is
+    // missing, failed, inconclusive, or simply about something else.
+    const rejectionsById = new Map(
+      assessment.rejections.map((rejection) => [rejection.evidenceId, rejection.reason]),
+    );
+    for (const evidenceId of evidenceIds) {
+      if (assessment.verifiedEvidenceIds.has(evidenceId)) continue;
+      const reason = rejectionsById.get(evidenceId);
+      refuse(
+        "INVALID_EVIDENCE",
+        reason === undefined
+          ? `Evidence ${evidenceId} was not validated by the evidence authority.`
+          : `Evidence ${evidenceId} ${REJECTION_TEXT[reason]}.`,
+      );
     }
 
     // Blocking is always reachable: a task that has run out of attempts must still be able to

@@ -10,6 +10,7 @@ import {
   decideRetry,
   isEntryStillValid,
   projectLedger,
+  reconcileExecutionEffect,
 } from "../../src/use-cases/reconcile-execution-effect.js";
 
 /**
@@ -180,6 +181,91 @@ describe("retry decisions", () => {
     // Two attempts at the same intent: whichever resolves, the other still gates a third try.
     const projection = projectLedger([attempt("ledger:a"), attempt("ledger:b")]);
     expect(decideRetry(projection, INTENT).allowed).toBe(false);
+  });
+});
+
+/**
+ * Every authoritative decision folds the *whole* history. A repository that pages must be walked
+ * to exhaustion, and a cursor progression that never terminates is an integrity condition — never
+ * an excuse to decide against whatever the first page happened to contain.
+ */
+describe("paged ledger reads", () => {
+  const taskId = "task:root" as never;
+  const operationContext = {} as never;
+
+  function pagingLedger(pages: readonly (readonly LedgerEntry[])[]) {
+    const calls: (string | undefined)[] = [];
+    return {
+      calls,
+      ledger: {
+        async append() {
+          throw new Error("unused");
+        },
+        async getById() {
+          return null;
+        },
+        async listForTask(_task: never, request: { readonly cursor?: string }) {
+          calls.push(request.cursor);
+          const index = request.cursor === undefined ? 0 : Number(request.cursor);
+          const items = pages[index] ?? [];
+          return Object.freeze({
+            items,
+            ...(index + 1 < pages.length ? { nextCursor: String(index + 1) } : {}),
+          });
+        },
+      } as never,
+    };
+  }
+
+  it("follows the cursor to exhaustion and folds every page", async () => {
+    const attemptEntry = attempt("ledger:paged");
+    const outcome = entry({
+      kind: "effect_confirmation",
+      attemptEntryId: "ledger:paged",
+      facts,
+    });
+    const { ledger, calls } = pagingLedger([
+      [entry({ kind: "observation", facts })],
+      [attemptEntry],
+      [outcome],
+    ]);
+    const projection = await reconcileExecutionEffect({ ledger }, taskId, operationContext);
+    expect(calls).toEqual([undefined, "1", "2"]);
+    expect(projection.attempts).toHaveLength(1);
+    expect(projection.attempts[0]?.outcome).toBe("confirmed");
+  });
+
+  it("is deterministic: the same paged history always folds identically", async () => {
+    const pages = [[attempt("ledger:a")], [entry({ kind: "observation", facts })]];
+    const first = await reconcileExecutionEffect(
+      { ledger: pagingLedger(pages).ledger },
+      taskId,
+      operationContext,
+    );
+    const second = await reconcileExecutionEffect(
+      { ledger: pagingLedger(pages).ledger },
+      taskId,
+      operationContext,
+    );
+    expect(first).toEqual(second);
+  });
+
+  it("refuses a repeated cursor rather than looping or truncating", async () => {
+    const cyclic = {
+      async append() {
+        throw new Error("unused");
+      },
+      async getById() {
+        return null;
+      },
+      async listForTask() {
+        // Always the same cursor: a malformed progression that never terminates.
+        return Object.freeze({ items: [attempt("ledger:a")], nextCursor: "0" });
+      },
+    } as never;
+    await expect(
+      reconcileExecutionEffect({ ledger: cyclic }, taskId, operationContext),
+    ).rejects.toMatchObject({ code: "INTEGRITY_FAILURE" });
   });
 });
 

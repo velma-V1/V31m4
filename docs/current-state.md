@@ -163,6 +163,39 @@ This file is a concise operational handoff for future Claude Code sessions. It r
   and a digest-pinned image are available, then submit Task 1 for independent re-review.
   **Task 2 is FORBIDDEN** until Task 1's hard gate actually passes.
 
+- **Task 2 / Task 3 (staging branch `autonomy-task2-3-staging`): implemented, independently
+  reviewed, FAILED, then repaired — NOT accepted.** This work lives only on the staging branch;
+  `autonomy-v1.1.0` is untouched at `bf5ef96b059e26d0176fbf6cf81a37d96d169731` and nothing is
+  merged. Task 1 remains INCOMPLETE, so neither task may be called passed. An independent review
+  of `faa13e3` returned four HIGH findings; each was reproduced against the committed code before
+  any repair, then root-caused, repaired, and covered by permanent regressions:
+  - **T2-1 — a fabricated evidence ID satisfied a checked transition.** `TaskTransitionPolicy`
+    validated only syntax, count, and uniqueness, so `evidence:fake` could enter `complete` or
+    `repair`. Transitions now resolve every cited reference through the existing
+    `EvidenceRepositoryPort` inside the same transaction and require the record to exist, be
+    `passed`, belong to the capsule's project, agree with its job, and be about a subject the
+    capsule owns. The policy stays pure but takes a mandatory evidence assessment, so it cannot be
+    evaluated on caller assertion at all. Self-review found the same hole at creation
+    (`createTaskCapsule` could seed `verifiedEvidenceIds`); that is repaired through the same
+    authority. No second evidence store was created.
+  - **T3-1 — a same-intent check/append race.** `runGovernedEffect` projected, decided, then
+    appended as separate steps, so two concurrent callers could both claim and both dispatch.
+    Reading the history, `decideRetry`, and the `effect_attempt` append now happen in one
+    authoritative `UnitOfWork` transaction that commits before anything reaches the environment.
+  - **T3-2 — request task ID could disagree with plan/sandbox.** The complete scoped identity
+    (`request.taskId`/`plan.taskId`/`sandbox.taskId`, `plan.jobId`/`sandbox.jobId`,
+    `plan.workspaceId`/`sandbox.workspaceId`, `plan.sandboxId`/`sandbox.id`) is now checked before
+    projection, ledger write, or dispatch; a mismatch fails closed with no entry and no dispatch.
+  - **T3-3 — first-500 ledger truncation.** Retry projection, reconciliation, and finalized-outcome
+    conflict detection each read one 500-entry page and ignored `nextCursor`. All three now use one
+    canonical paged walk built on the existing `collectPortPages` mechanism, which follows the
+    cursor to exhaustion, rejects a repeated cursor as `INTEGRITY_FAILURE`, and reports its
+    defensive page ceiling as a typed non-success rather than pretending history ended.
+  - Gate after repair: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **791 passing / 16 skipped / 6 todo (813) across 124
+    passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+    is a green regression suite, **not** a passed Task 2 or Task 3 gate.
+
 ## Verified implemented state
 
 - Layers 1-5: hardened baseline complete before this canonical continuation.

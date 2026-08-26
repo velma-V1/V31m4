@@ -1,6 +1,7 @@
 import {
   ApplicationError,
   createTaskCapsule,
+  type EvidenceRepositoryPort,
   type OperationContext,
   proposeTaskTransition,
   type TaskCapsuleHead,
@@ -22,6 +23,11 @@ import type { TaskCapsule, TaskCapsuleChanges, TaskCapsuleInput, TaskId } from "
 export interface TaskManagerDependencies {
   readonly unitOfWork: UnitOfWorkPort;
   readonly capsules: TaskCapsuleRepositoryPort;
+  /**
+   * The existing authoritative evidence store. A transition that claims evidence resolves it
+   * here; nothing in this seam is a second evidence authority.
+   */
+  readonly evidence: EvidenceRepositoryPort;
 }
 
 export interface CurrentTask {

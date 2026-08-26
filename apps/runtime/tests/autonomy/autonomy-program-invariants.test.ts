@@ -20,6 +20,7 @@ import { SqliteTaskCapsuleRepository } from "../../src/autonomy/autonomy-state-i
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { TaskManager } from "../../src/autonomy/task-manager.js";
+import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
 import { runtimeDatabase, context as taskContext } from "../fixtures.js";
 
 /**
@@ -132,6 +133,7 @@ describe("autonomy program invariants", () => {
     const before = new TaskManager({
       unitOfWork: database.unitOfWork,
       capsules: new SqliteTaskCapsuleRepository(database),
+      evidence: new SqliteEvidenceRepository(database),
     });
     const created = await before.createTask(draft, taskContext);
     const moved = await before.proposeTransition(
@@ -155,6 +157,7 @@ describe("autonomy program invariants", () => {
       const recovered = await new TaskManager({
         unitOfWork: reopened.unitOfWork,
         capsules: new SqliteTaskCapsuleRepository(reopened),
+        evidence: new SqliteEvidenceRepository(reopened),
       }).loadCurrent(TaskId.parse(draft.taskId), taskContext);
       expect(recovered?.capsule).toEqual(moved.capsule);
       expect(recovered?.capsule.fingerprint).toBe(moved.capsule.fingerprint);

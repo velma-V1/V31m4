@@ -1,9 +1,14 @@
-import type { TaskCapsule as TaskCapsuleType } from "@v31m4/domain";
-import { TaskCapsule } from "@v31m4/domain";
+import type {
+  EvidenceId,
+  EvidenceRecord as EvidenceRecordType,
+  TaskCapsule as TaskCapsuleType,
+} from "@v31m4/domain";
+import { EvidenceRecord, TaskCapsule } from "@v31m4/domain";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ApplicationError } from "../../src/application-errors.js";
 import { createOperationContext, type OperationContext } from "../../src/operation-context.js";
 import type { PortPage, Versioned, WriteCondition } from "../../src/port-types.js";
+import type { EvidenceRepositoryPort } from "../../src/ports/evidence-repository.port.js";
 import type {
   TaskCapsuleHead,
   TaskCapsuleRepositoryPort,
@@ -85,10 +90,53 @@ const unitOfWork: UnitOfWorkPort = {
     } as UnitOfWorkTransaction),
 };
 
+/** The one evidence authority, in memory. Only records actually appended here can be resolved. */
+class FakeEvidence implements EvidenceRepositoryPort {
+  readonly records = new Map<string, EvidenceRecordType>();
+
+  async getById(id: EvidenceId): Promise<Versioned<EvidenceRecordType> | null> {
+    const record = this.records.get(id);
+    return record === undefined ? null : Object.freeze({ value: record, revision: "1" });
+  }
+  async list(): Promise<PortPage<Versioned<EvidenceRecordType>>> {
+    return Object.freeze({ items: Object.freeze([]), total: 0 });
+  }
+  async append(record: EvidenceRecordType): Promise<Versioned<EvidenceRecordType>> {
+    this.records.set(record.id, record);
+    return Object.freeze({ value: record, revision: "1" });
+  }
+}
+
 let capsules: FakeRepository;
+let evidence: FakeEvidence;
+
+function deps() {
+  return { unitOfWork, capsules, evidence };
+}
+
+function evidenceRecord(
+  overrides: Partial<Parameters<typeof EvidenceRecord.create>[0]> = {},
+): EvidenceRecordType {
+  return EvidenceRecord.create({
+    id: "evidence:passing",
+    projectId: "project:1",
+    jobId: "job:1",
+    kind: "unit_test",
+    subjectType: "task",
+    subjectId: "task:root",
+    status: "passed",
+    summary: "the targeted regression passed",
+    artifactIds: ["artifact:log"],
+    verifierId: "verifier:node",
+    verifierVersion: "1.0.0",
+    createdAt: "2026-08-26T00:00:00.000Z",
+    ...overrides,
+  });
+}
 
 beforeEach(() => {
   capsules = new FakeRepository();
+  evidence = new FakeEvidence();
 });
 
 const draft = {
@@ -103,7 +151,7 @@ const draft = {
 };
 
 async function seed(): Promise<TaskCapsuleType> {
-  const { capsule } = await createTaskCapsule({ unitOfWork, capsules }, draft, context);
+  const { capsule } = await createTaskCapsule(deps(), draft, context);
   return capsule;
 }
 
@@ -122,7 +170,7 @@ function proposalFor(capsule: TaskCapsuleType, overrides: Record<string, unknown
 
 describe("createTaskCapsule", () => {
   it("stores the first revision and a head that points at it", async () => {
-    const { capsule, head } = await createTaskCapsule({ unitOfWork, capsules }, draft, context);
+    const { capsule, head } = await createTaskCapsule(deps(), draft, context);
     expect(capsule.capsuleRevision).toBe(1);
     expect(head.value.capsuleRevision).toBe(1);
     expect(head.value.fingerprint).toBe(capsule.fingerprint);
@@ -133,9 +181,44 @@ describe("createTaskCapsule", () => {
 
   it("refuses to create the same task twice", async () => {
     await seed();
+    await expect(createTaskCapsule(deps(), draft, context)).rejects.toBeInstanceOf(
+      ApplicationError,
+    );
+  });
+
+  it("refuses to seed a first revision with unverified evidence references", async () => {
+    // Otherwise creation would be a way to declare a fabricated reference "verified", and every
+    // later transition would inherit it as already-established proof.
     await expect(
-      createTaskCapsule({ unitOfWork, capsules }, draft, context),
-    ).rejects.toBeInstanceOf(ApplicationError);
+      createTaskCapsule(deps(), { ...draft, verifiedEvidenceIds: ["evidence:fake"] }, context),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(0);
+    expect(capsules.head).toBeNull();
+  });
+
+  it("refuses to seed a first revision with failed or wrong-scope evidence", async () => {
+    for (const wrong of [
+      { status: "failed" as const },
+      { subjectType: "candidate", subjectId: "candidate:1" },
+    ]) {
+      capsules = new FakeRepository();
+      evidence = new FakeEvidence();
+      await evidence.append(evidenceRecord(wrong));
+      await expect(
+        createTaskCapsule(deps(), { ...draft, verifiedEvidenceIds: ["evidence:passing"] }, context),
+        JSON.stringify(wrong),
+      ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    }
+  });
+
+  it("accepts a first revision carrying real passing evidence about this task", async () => {
+    await evidence.append(evidenceRecord());
+    const { capsule } = await createTaskCapsule(
+      deps(),
+      { ...draft, verifiedEvidenceIds: ["evidence:passing"] },
+      context,
+    );
+    expect(capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
   });
 });
 
@@ -143,7 +226,7 @@ describe("proposeTaskTransition", () => {
   it("appends the next logical revision and advances the head atomically", async () => {
     const first = await seed();
     const { capsule, head } = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(first),
       { updatedAt: "2026-08-26T00:01:00.000Z" },
       context,
@@ -160,13 +243,13 @@ describe("proposeTaskTransition", () => {
   it("charges an attempt when entering execute", async () => {
     const first = await seed();
     const planned = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(first),
       { updatedAt: "2026-08-26T00:01:00.000Z" },
       context,
     );
     const executing = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(planned.capsule, { to: "execute" }),
       { updatedAt: "2026-08-26T00:02:00.000Z" },
       context,
@@ -178,7 +261,7 @@ describe("proposeTaskTransition", () => {
     const first = await seed();
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         proposalFor(first, { expectedHeadRevision: "99" }),
         { updatedAt: "2026-08-26T00:01:00.000Z" },
         context,
@@ -191,7 +274,7 @@ describe("proposeTaskTransition", () => {
     const first = await seed();
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         proposalFor(first, { expectedCapsuleRevision: 99 }),
         { updatedAt: "2026-08-26T00:01:00.000Z" },
         context,
@@ -204,7 +287,7 @@ describe("proposeTaskTransition", () => {
     const first = await seed();
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         proposalFor(first, { to: "complete" }),
         { updatedAt: "2026-08-26T00:01:00.000Z" },
         context,
@@ -218,7 +301,7 @@ describe("proposeTaskTransition", () => {
     capsules.failHeadWrite = true;
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         proposalFor(first),
         { updatedAt: "2026-08-26T00:01:00.000Z" },
         context,
@@ -233,18 +316,8 @@ describe("proposeTaskTransition", () => {
     const first = await seed();
     const proposal = proposalFor(first);
     const outcomes = await Promise.allSettled([
-      proposeTaskTransition(
-        { unitOfWork, capsules },
-        proposal,
-        { updatedAt: "2026-08-26T00:01:00.000Z" },
-        context,
-      ),
-      proposeTaskTransition(
-        { unitOfWork, capsules },
-        proposal,
-        { updatedAt: "2026-08-26T00:01:00.000Z" },
-        context,
-      ),
+      proposeTaskTransition(deps(), proposal, { updatedAt: "2026-08-26T00:01:00.000Z" }, context),
+      proposeTaskTransition(deps(), proposal, { updatedAt: "2026-08-26T00:01:00.000Z" }, context),
     ]);
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     const rejected = outcomes.find((outcome) => outcome.status === "rejected");
@@ -254,13 +327,13 @@ describe("proposeTaskTransition", () => {
 
   it("cannot escape an exhausted attempt budget by proposing a wider one", async () => {
     const first = await createTaskCapsule(
-      { unitOfWork, capsules },
+      deps(),
       { ...draft, maxAttempts: 1, phase: "plan" },
       context,
     );
     // Spend the only attempt.
     const executing = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(first.capsule, { from: "plan", to: "execute" }),
       { updatedAt: "2026-08-26T00:01:00.000Z" },
       context,
@@ -269,13 +342,13 @@ describe("proposeTaskTransition", () => {
 
     // Return to plan, then try to execute again while smuggling a larger ceiling through.
     const replanned = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(executing.capsule, { from: "execute", to: "blocked" }),
       { updatedAt: "2026-08-26T00:02:00.000Z" },
       context,
     );
     const unblocked = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(replanned.capsule, { from: "blocked", to: "plan" }),
       { updatedAt: "2026-08-26T00:03:00.000Z" },
       context,
@@ -283,7 +356,7 @@ describe("proposeTaskTransition", () => {
     expect(unblocked.capsule.maxAttempts).toBe(1);
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         proposalFor(unblocked.capsule, { from: "plan", to: "execute" }),
         { updatedAt: "2026-08-26T00:04:00.000Z", maxAttempts: 99 } as never,
         context,
@@ -294,7 +367,7 @@ describe("proposeTaskTransition", () => {
   it("refuses a proposal for a task that does not exist", async () => {
     await expect(
       proposeTaskTransition(
-        { unitOfWork, capsules },
+        deps(),
         {
           taskId: "task:missing",
           expectedHeadRevision: "1",
@@ -311,17 +384,133 @@ describe("proposeTaskTransition", () => {
   });
 });
 
+/**
+ * A phase whose entry is a claim about observed reality may only be entered on evidence the
+ * authoritative evidence layer actually resolved and accepted. A syntactically valid identifier
+ * proves nothing on its own — that was the hole these regressions close.
+ */
+describe("evidence-gated transitions", () => {
+  async function atVerify(): Promise<TaskCapsuleType> {
+    const first = await createTaskCapsule(deps(), { ...draft, phase: "verify" }, context);
+    return first.capsule;
+  }
+
+  async function enterComplete(current: TaskCapsuleType, evidenceIds: readonly string[]) {
+    return proposeTaskTransition(
+      deps(),
+      proposalFor(current, { from: "verify", to: "complete", evidenceIds }),
+      { updatedAt: "2026-08-26T00:01:00.000Z" },
+      context,
+    );
+  }
+
+  it("refuses a fabricated evidence ID for complete", async () => {
+    const current = await atVerify();
+    await expect(enterComplete(current, ["evidence:fake"])).rejects.toMatchObject({
+      code: "INVALID_APPLICATION_INPUT",
+    });
+    expect(capsules.revisions.size).toBe(1);
+    expect(capsules.head?.value.capsuleRevision).toBe(1);
+  });
+
+  it("refuses a fabricated evidence ID for repair", async () => {
+    const current = await atVerify();
+    await expect(
+      proposeTaskTransition(
+        deps(),
+        proposalFor(current, { from: "verify", to: "repair", evidenceIds: ["evidence:fake"] }),
+        { updatedAt: "2026-08-26T00:01:00.000Z" },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+  });
+
+  it("refuses failed and inconclusive evidence", async () => {
+    for (const status of ["failed", "inconclusive"] as const) {
+      capsules = new FakeRepository();
+      evidence = new FakeEvidence();
+      await evidence.append(evidenceRecord({ status }));
+      const current = await atVerify();
+      await expect(enterComplete(current, ["evidence:passing"]), status).rejects.toMatchObject({
+        code: "INVALID_APPLICATION_INPUT",
+      });
+    }
+  });
+
+  it("refuses evidence scoped to another project, job, or subject", async () => {
+    for (const wrong of [
+      { projectId: "project:other" },
+      { jobId: "job:other" },
+      { subjectType: "task", subjectId: "task:elsewhere" },
+      { subjectType: "candidate", subjectId: "candidate:1" },
+    ] as const) {
+      capsules = new FakeRepository();
+      evidence = new FakeEvidence();
+      await evidence.append(evidenceRecord(wrong));
+      const current = await atVerify();
+      await expect(
+        enterComplete(current, ["evidence:passing"]),
+        JSON.stringify(wrong),
+      ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    }
+  });
+
+  it("allows the transition on real passing evidence about this task", async () => {
+    await evidence.append(evidenceRecord());
+    const current = await atVerify();
+    const completed = await enterComplete(current, ["evidence:passing"]);
+    expect(completed.capsule.phase).toBe("complete");
+    expect(completed.capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+  });
+
+  it("refuses a rewritten verified-evidence set that smuggles in an unresolved reference", async () => {
+    await evidence.append(evidenceRecord());
+    const current = await atVerify();
+    await expect(
+      proposeTaskTransition(
+        deps(),
+        proposalFor(current, {
+          from: "verify",
+          to: "complete",
+          evidenceIds: ["evidence:passing"],
+        }),
+        {
+          updatedAt: "2026-08-26T00:01:00.000Z",
+          verifiedEvidenceIds: ["evidence:passing", "evidence:fake"],
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+  });
+
+  it("does not consult the evidence store for a transition that cites none", async () => {
+    // A phase that needs no proof must not be made to acquire some; only the investigation path
+    // stays open when evidence is missing.
+    const first = await seed();
+    const planned = await proposeTaskTransition(
+      deps(),
+      proposalFor(first),
+      { updatedAt: "2026-08-26T00:01:00.000Z" },
+      context,
+    );
+    expect(planned.capsule.phase).toBe("plan");
+    expect(evidence.records.size).toBe(0);
+  });
+});
+
 describe("replay without conversation history", () => {
   it("reconstructs the latest state from stored revisions alone", async () => {
     const first = await seed();
     const planned = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(first),
       { updatedAt: "2026-08-26T00:01:00.000Z", planSteps: ["reproduce", "fix"] },
       context,
     );
     const executing = await proposeTaskTransition(
-      { unitOfWork, capsules },
+      deps(),
       proposalFor(planned.capsule, { to: "execute" }),
       { updatedAt: "2026-08-26T00:02:00.000Z" },
       context,
