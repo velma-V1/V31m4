@@ -3,12 +3,14 @@ import type {
   AuthorizedSemanticExecutionPlan,
   ExecutionLedgerRepositoryPort,
   OperationContext,
+  PolicyEnginePort,
   SandboxExecutionResult,
   SandboxHandle,
   SandboxPort,
   UnitOfWorkPort,
 } from "@v31m4/application";
 import type { ContentHash, LedgerResourceFact, TaskId } from "@v31m4/domain";
+import type { SandboxSupervisorOptions } from "@v31m4/infrastructure";
 
 /**
  * The contracts of the governed effect lifecycle.
@@ -60,13 +62,6 @@ export interface PairedExecutionSurface {
   readonly sandboxes: SandboxPort;
   verifyExecutionAuthority(plan: AuthorizedSemanticExecutionPlan): void;
 }
-
-/**
- * Proves an `EffectReconciler` was built by the canonical factory rather than assembled from an
- * arbitrary verifier and an arbitrary sandbox.
- */
-export const EFFECT_RECONCILER_CONSTRUCTION_TOKEN: unique symbol =
-  Symbol("v31m4.effect-reconciler");
 
 export interface GovernedEffectRequest {
   readonly taskId: TaskId;
@@ -157,3 +152,25 @@ export const LEDGER_KIND_FOR_POST_STATE: Readonly<
   not_applied: "effect_nonapplication",
   unknown: "reconciliation_indeterminate",
 });
+
+/** Everything the surface needs that is genuinely the caller's to choose. */
+export interface GovernedExecutionSurfaceOptions
+  extends Omit<SandboxSupervisorOptions, "capabilities"> {
+  /** The canonical policy engine the semantic boundary consults for itself. */
+  readonly policy: PolicyEnginePort;
+  readonly generateExecutionPlanId?: () => string;
+  readonly now?: () => string;
+}
+
+/** What an `EffectReconciler` needs beyond the paired authority the surface owns. */
+export type GovernedReconcilerOptions = EffectReconcilerDependencies &
+  Readonly<{ unitOfWork: UnitOfWorkPort; ledger: ExecutionLedgerRepositoryPort }>;
+
+/** Everything the surface needs that is genuinely the caller's to choose. */
+export interface GovernedExecutionSurfaceOptions
+  extends Omit<SandboxSupervisorOptions, "capabilities"> {
+  /** The canonical policy engine the semantic boundary consults for itself. */
+  readonly policy: PolicyEnginePort;
+  readonly generateExecutionPlanId?: () => string;
+  readonly now?: () => string;
+}

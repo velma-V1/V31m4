@@ -10,14 +10,11 @@ import {
   type OperationContext,
   reconcileExecutionEffect,
   type SandboxExecutionResult,
+  type SandboxPort,
   type UnitOfWorkTransaction,
 } from "@v31m4/application";
-import {
-  type ContentHash,
-  ExecutionLedgerEntry,
-  type ExecutionLedgerEntry as LedgerEntry,
-  type TaskId,
-} from "@v31m4/domain";
+import { type ContentHash, ExecutionLedgerEntry, type TaskId } from "@v31m4/domain";
+import { SandboxSupervisor } from "@v31m4/infrastructure";
 import type {
   EffectPostState,
   EffectReconcilerDependencies,
@@ -26,16 +23,35 @@ import type {
   EffectReconciliationResult,
   GovernedEffectOutcome,
   GovernedEffectRequest,
+  GovernedExecutionSurfaceOptions,
   PairedExecutionSurface,
   ReconciliationAttemptDescriptor,
 } from "./effect-reconciler-contracts.js";
 import {
-  EFFECT_RECONCILER_CONSTRUCTION_TOKEN,
   LEDGER_KIND_FOR_POST_STATE,
   OUTCOME_FOR_POST_STATE,
 } from "./effect-reconciler-contracts.js";
+import {
+  assertScopedIdentity,
+  observePostState,
+  recordOutcome,
+} from "./governed-effect-recording.js";
+import {
+  createSemanticAuthorizationBoundary,
+  type SemanticAuthorizationBoundary,
+} from "./semantic-execution-authorization.js";
 
 export * from "./effect-reconciler-contracts.js";
+
+/**
+ * The credential that links a governed execution surface to the reconciler it creates.
+ *
+ * Deliberately **not exported**. An earlier revision exported an equivalent token, which meant a
+ * caller could import it and construct a reconciler around a hand-assembled surface pairing
+ * authority A's verifier with authority B's sandbox — exactly the mismatch this design exists to
+ * prevent. A credential that any caller can obtain is not a credential.
+ */
+const RECONCILER_CONSTRUCTION: unique symbol = Symbol("v31m4.effect-reconciler");
 
 /**
  * The governed effect lifecycle, with the Execution Ledger recording what actually happened.
@@ -65,23 +81,29 @@ export class EffectReconciler {
   readonly #surface: PairedExecutionSurface;
 
   /**
-   * Not publicly constructible: a governed-execution-surface factory passes the token along with
-   * a surface whose verifier and sandbox provably come from one Task 1 authority. Hand-assembling
-   * a reconciler from a verifier and a `SandboxPort` chosen independently is the mismatch this
-   * refuses, at runtime as well as in the type system.
+   * Not constructible from outside this module.
+   *
+   * `RECONCILER_CONSTRUCTION` is a module-private symbol: it is never exported, never re-exported,
+   * and never reachable through any public value, so importing the entire public surface of this
+   * package does not yield it. The second check is the one that matters even inside the module —
+   * `GovernedExecutionSurface.assertGenuine` proves the surface is an instance this module's own
+   * `create` produced, so a structural object, a prototype forgery, or a hand-built pair of
+   * `{ sandboxes, verifyExecutionAuthority }` taken from two different authorities is refused.
+   * Together those close the pairing hole at runtime, not merely in the type system.
    */
   constructor(
     token: symbol,
     surface: PairedExecutionSurface,
     private readonly dependencies: EffectReconcilerDependencies,
   ) {
-    if (token !== EFFECT_RECONCILER_CONSTRUCTION_TOKEN) {
+    if (token !== RECONCILER_CONSTRUCTION) {
       throw new ApplicationError(
         "PERMISSION_DENIED",
         "An EffectReconciler is created only by a governed execution surface, so that its Task 1 verifier and its sandbox cannot come from different authorities.",
         {},
       );
     }
+    GovernedExecutionSurface.assertGenuine(surface);
     this.#surface = surface;
   }
 
@@ -146,42 +168,6 @@ export class EffectReconciler {
     this.#surface.verifyExecutionAuthority(plan);
   }
 
-  /**
-   * Every identity this effect is checked and recorded against must be the same identity it
-   * executes under. The request carries its own `taskId`, and the plan and the sandbox each
-   * carry theirs; if those disagree, an effect authorized for one task could be projected
-   * against — and written into — another task's ledger. That is checked here, before the
-   * projection, before the claim, and before dispatch, so a mismatch produces no ledger entry
-   * and no backend call at all.
-   */
-  private assertScopedIdentity(request: GovernedEffectRequest): void {
-    const { plan, sandbox, taskId } = request;
-    const mismatches: string[] = [];
-    if (taskId !== plan.taskId) mismatches.push("request.taskId != plan.taskId");
-    if (plan.taskId !== sandbox.taskId) mismatches.push("plan.taskId != sandbox.taskId");
-    if (plan.jobId !== sandbox.jobId) mismatches.push("plan.jobId != sandbox.jobId");
-    if (plan.workspaceId !== sandbox.workspaceId) {
-      mismatches.push("plan.workspaceId != sandbox.workspaceId");
-    }
-    // A governed effect always dispatches into a sandbox, so a plan that names no sandbox — or
-    // names a different one — was not authorized for this execution.
-    if (plan.sandboxId !== sandbox.id) mismatches.push("plan.sandboxId != sandbox.id");
-    if (mismatches.length === 0) return;
-    throw new ApplicationError(
-      "PERMISSION_DENIED",
-      "The effect's request, authorization, and sandbox do not describe the same scoped identity.",
-      {
-        details: {
-          operationId: plan.operationId,
-          requestTaskId: taskId,
-          planTaskId: plan.taskId,
-          sandboxTaskId: sandbox.taskId,
-          mismatches: Object.freeze([...mismatches]),
-        },
-      },
-    );
-  }
-
   async runGovernedEffect(
     request: GovernedEffectRequest,
     context: OperationContext,
@@ -190,7 +176,7 @@ export class EffectReconciler {
     // Authority first: before the projection this claim reads, before the attempt is appended,
     // and before anything reaches SandboxPort.
     this.requireCanonicalAuthority(plan);
-    this.assertScopedIdentity(request);
+    assertScopedIdentity(request);
     const intentFingerprint = this.intentFingerprintFor(plan);
 
     // Claiming the intent is one atomic step, not a check followed by a write. Reading the
@@ -243,74 +229,16 @@ export class EffectReconciler {
       dispatchFailure = error instanceof Error ? error.message : "dispatch failed";
     }
 
-    const post = await this.observePostState(request, result, context);
-    return this.recordOutcome(request, attempt, result, post, dispatchFailure, context);
-  }
-
-  private async observePostState(
-    request: GovernedEffectRequest,
-    result: SandboxExecutionResult | null,
-    context: OperationContext,
-  ): Promise<EffectPostState> {
-    // An internal `unknown` sandbox status already means the effect is unproven; no probe can
-    // upgrade that.
-    if (result !== null && result.status === "unknown") {
-      return Object.freeze({
-        kind: "unknown" as const,
-        reason: "the sandbox reported an unreconciled effect",
-      });
-    }
-    try {
-      return await request.probe(request.plan, result, context);
-    } catch (error) {
-      return Object.freeze({
-        kind: "unknown" as const,
-        reason: error instanceof Error ? error.message : "the post-state could not be observed",
-      });
-    }
-  }
-
-  private async recordOutcome(
-    request: GovernedEffectRequest,
-    attempt: LedgerEntry,
-    result: SandboxExecutionResult | null,
-    post: EffectPostState,
-    dispatchFailure: string | null,
-    context: OperationContext,
-  ): Promise<GovernedEffectOutcome> {
-    const common = {
-      id: this.dependencies.generateEntryId(),
-      taskId: request.taskId,
-      jobId: request.plan.jobId,
-      recordedAt: this.dependencies.now(),
-      attemptEntryId: attempt.id,
-    };
-    const outcomeKind =
-      post.kind === "applied"
-        ? "effect_confirmation"
-        : post.kind === "not_applied"
-          ? "effect_nonapplication"
-          : "reconciliation_indeterminate";
-
-    const entry = ExecutionLedgerEntry.create({
-      ...common,
-      kind: outcomeKind,
-      facts: post.kind === "unknown" ? [] : post.facts,
-      detail:
-        post.kind === "unknown"
-          ? `${request.plan.operationId} could not be proved applied or unapplied: ${post.reason}`
-          : `${request.plan.operationId} verified as ${post.kind}${
-              dispatchFailure === null ? "" : ` after a failed dispatch: ${dispatchFailure}`
-            }`,
-    });
-    await appendExecutionLedgerEntry(this.dependencies, entry, context);
-
-    return Object.freeze({
-      attemptEntryId: attempt.id,
-      outcomeEntryId: entry.id,
-      outcomeKind,
+    const post = await observePostState(request, result, context);
+    return recordOutcome(
+      this.dependencies,
+      request,
+      attempt,
       result,
-    });
+      post,
+      dispatchFailure,
+      context,
+    );
   }
 
   /**
@@ -464,5 +392,94 @@ export class EffectReconciler {
       );
     }
     return attempt;
+  }
+}
+
+/**
+ * One governed execution surface: a Task 1 semantic authorization boundary, the sandbox that
+ * boundary governs, and the Execution Ledger reconciler that records what they do.
+ *
+ * These three cannot be assembled from parts of different origins. Independently injecting a
+ * verifier and a `SandboxPort` allowed a reconciler whose verifier came from authority A while its
+ * sink enforced authority B: A's capabilities passed the reconciler's check, B refused them at the
+ * sink, and the ledger recorded an authoritative outcome — including a *confirmation* — for an
+ * effect that never reached a backend. There is no configuration of this factory that produces
+ * that pairing, because the caller never supplies either half.
+ *
+ * Authenticity is a private static `WeakSet` populated only by `create`. `assertGenuine` is a
+ * predicate, not a registration operation: there is no exported way to add a surface to it, so a
+ * forged instance can never become genuine. `instanceof` alone would not do — `Object.create`
+ * produces an object that passes it — which is why membership, not shape or prototype, decides.
+ */
+export class GovernedExecutionSurface {
+  static readonly #genuine = new WeakSet<GovernedExecutionSurface>();
+
+  readonly #boundary: SemanticAuthorizationBoundary;
+  readonly #sandboxes: SandboxPort;
+
+  private constructor(boundary: SemanticAuthorizationBoundary, sandboxes: SandboxPort) {
+    this.#boundary = boundary;
+    this.#sandboxes = sandboxes;
+  }
+
+  /**
+   * Builds the boundary and the sandbox together, from one authority, and records the result as
+   * genuine. This is the only way a `GovernedExecutionSurface` comes into existence.
+   */
+  static create(options: GovernedExecutionSurfaceOptions): GovernedExecutionSurface {
+    const { policy, generateExecutionPlanId, now, ...sandbox } = options;
+    const boundary = createSemanticAuthorizationBoundary({
+      policy,
+      ...(generateExecutionPlanId === undefined ? {} : { generateExecutionPlanId }),
+      ...(now === undefined ? {} : { now }),
+    });
+    const surface = new GovernedExecutionSurface(
+      boundary,
+      // The sandbox is paired with this boundary's verifier here and nowhere else.
+      new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities }),
+    );
+    GovernedExecutionSurface.#genuine.add(surface);
+    return surface;
+  }
+
+  /** Refuses anything this module's own `create` did not produce. */
+  static assertGenuine(candidate: unknown): asserts candidate is GovernedExecutionSurface {
+    if (
+      !(candidate instanceof GovernedExecutionSurface) ||
+      !GovernedExecutionSurface.#genuine.has(candidate)
+    ) {
+      throw new ApplicationError(
+        "PERMISSION_DENIED",
+        "A governed execution surface must be one this runtime created, so that its Task 1 verifier and the sandbox it governs are provably the same authority.",
+        {},
+      );
+    }
+  }
+
+  /** Requests an execution capability from this surface's own Task 1 boundary. */
+  get authorize(): SemanticAuthorizationBoundary["authorize"] {
+    return this.#boundary.authorize;
+  }
+
+  /**
+   * The sandbox this surface governs. Safe to expose: it enforces the same authority, so handing
+   * it out cannot create a mismatched pair — only `createEffectReconciler` decides what an
+   * `EffectReconciler` runs against, and it always passes this surface itself.
+   */
+  get sandboxes(): SandboxPort {
+    return this.#sandboxes;
+  }
+
+  /** Proves a capability came from this surface's boundary, and that its grant is still current. */
+  verifyExecutionAuthority(plan: AuthorizedSemanticExecutionPlan): void {
+    this.#boundary.capabilities.verify(plan);
+  }
+
+  /**
+   * The reconciler for this surface. It receives the surface itself, so its authority check and
+   * its dispatch sink are the same authority by construction rather than by convention.
+   */
+  createEffectReconciler(options: EffectReconcilerDependencies): EffectReconciler {
+    return new EffectReconciler(RECONCILER_CONSTRUCTION, this, options);
   }
 }

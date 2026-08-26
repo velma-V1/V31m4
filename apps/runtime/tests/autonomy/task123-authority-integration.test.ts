@@ -34,7 +34,7 @@ import type {
   EffectReconciler,
   ReconciliationAttemptDescriptor,
 } from "../../src/autonomy/effect-reconciler.js";
-import { GovernedExecutionSurface } from "../../src/autonomy/governed-execution-surface.js";
+import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
 
@@ -461,8 +461,9 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
    * `GovernedExecutionSurface`, which builds the Task 1 boundary and the sandbox it governs
    * together. There is no configuration of the factory that yields verifier A over sandbox B.
    */
-  it("cannot be assembled: the reconciler constructor refuses anything but its own surface", async () => {
-    const foreignSurface = GovernedExecutionSurface.create({
+  /** A second, genuinely canonical surface — authority B. */
+  function otherSurface(): GovernedExecutionSurface {
+    return GovernedExecutionSurface.create({
       policy: policyEngine,
       backend: new FlakyReferenceBackend(),
       workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
@@ -471,49 +472,122 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
       generateSandboxId: () => "sandbox:2",
       now: () => clock,
     });
-    // A hand-rolled surface pairing this sandbox with a *foreign* authority's verifier — the exact
-    // object the old dependency shape accepted.
-    const mispaired = {
-      sandboxes,
-      verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
-        foreignSurface.verifyExecutionAuthority(plan),
-    };
-    const ReconcilerClass = Object.getPrototypeOf(reconciler).constructor as new (
-      token: symbol,
-      surface: unknown,
-      dependencies: unknown,
-    ) => EffectReconciler;
+  }
 
-    for (const token of [
+  /**
+   * The attack an earlier revision failed.
+   *
+   * That revision exported the construction token, so importing it and passing a hand-built
+   * `{ sandboxes, verifyExecutionAuthority }` recreated the verifier-A / sandbox-B mismatch
+   * exactly. The test then in place only tried *guessed* symbols and never the real one, so it
+   * passed while the hole was open. This attacks through every publicly exported value instead of
+   * guessing, and additionally forges the surface itself.
+   */
+  it("cannot be assembled from any publicly exported value", async () => {
+    const authorityA = surface;
+    const authorityB = otherSurface();
+    const ReconcilerClass = Object.getPrototypeOf(reconciler).constructor as new (
+      ...args: readonly unknown[]
+    ) => EffectReconciler;
+    const deps = {
+      unitOfWork: database.unitOfWork,
+      ledger,
+      generateEntryId: () => "ledger:forged",
+      now: () => clock,
+    };
+
+    // Every symbol reachable from the module's entire public export surface, plus guesses.
+    const publicModule: Record<string, unknown> = await import(
+      "../../src/autonomy/effect-reconciler.js"
+    );
+    const exportedSymbols = Object.values(publicModule).filter(
+      (value): value is symbol => typeof value === "symbol",
+    );
+    expect(exportedSymbols).toEqual([]); // no construction credential is exported at all
+    const candidateTokens: symbol[] = [
+      ...exportedSymbols,
       Symbol("v31m4.effect-reconciler"),
       Symbol.for("v31m4.effect-reconciler"),
-    ]) {
-      expect(
-        () =>
-          new ReconcilerClass(token, mispaired, {
-            unitOfWork: database.unitOfWork,
-            ledger,
-            generateEntryId: () => "ledger:forged",
-            now: () => clock,
-          }),
-      ).toThrow(ApplicationError);
+      Symbol.iterator,
+    ];
+
+    // Cross-authority composition: A's verifier over B's sandbox, and the reverse.
+    const crossAuthority = [
+      {
+        sandboxes: authorityB.sandboxes,
+        verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
+          authorityA.verifyExecutionAuthority(plan),
+      },
+      {
+        sandboxes: authorityA.sandboxes,
+        verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
+          authorityB.verifyExecutionAuthority(plan),
+      },
+    ];
+    // Structural fake, prototype forgery, cast, and methods copied off a real surface.
+    const forgedSurfaces: unknown[] = [
+      ...crossAuthority,
+      { sandboxes: authorityA.sandboxes, verifyExecutionAuthority: () => undefined },
+      Object.create(GovernedExecutionSurface.prototype),
+      // A prototype forgery dressed with a real sandbox. `sandboxes` is a getter on the
+      // prototype, so this has to be defined rather than assigned — which is itself a reminder
+      // that shape can be imitated and membership cannot.
+      Object.defineProperty(Object.create(GovernedExecutionSurface.prototype), "sandboxes", {
+        value: authorityB.sandboxes,
+        enumerable: true,
+      }),
+      Object.create(authorityA),
+      {} as unknown,
+      null,
+    ];
+
+    let built = 0;
+    for (const token of candidateTokens) {
+      for (const forged of forgedSurfaces) {
+        try {
+          new ReconcilerClass(token, forged, deps);
+          built += 1;
+        } catch (error) {
+          expect(error).toBeInstanceOf(ApplicationError);
+          expect((error as ApplicationError).code).toBe("PERMISSION_DENIED");
+        }
+      }
     }
-    // Nothing was written by the attempt to build one.
+    expect(built).toBe(0);
+
+    // A genuine surface is still the one thing that works, and it is self-paired.
+    expect(authorityB.createEffectReconciler(deps)).toBeDefined();
+
+    // Nothing was written, probed, or dispatched by any of it.
+    expect(await ledgerKinds()).toEqual([]);
+    expect(probeCalls).toBe(0);
+    expect(backendExecutions).toBe(0);
+  });
+
+  it("refuses a forged surface even when the sandbox and verifier are both genuine", async () => {
+    // Both halves real, but taken from *different* authorities and recombined by hand. Membership
+    // in the private registry — not shape, not prototype — is what decides.
+    const authorityB = otherSurface();
+    expect(() =>
+      GovernedExecutionSurface.assertGenuine({
+        sandboxes: authorityB.sandboxes,
+        verifyExecutionAuthority: surface.verifyExecutionAuthority.bind(surface),
+      }),
+    ).toThrow(ApplicationError);
+    expect(() =>
+      GovernedExecutionSurface.assertGenuine(Object.create(GovernedExecutionSurface.prototype)),
+    ).toThrow(ApplicationError);
+    expect(() => GovernedExecutionSurface.assertGenuine(Object.create(surface))).toThrow(
+      ApplicationError,
+    );
+    // The genuine article passes.
+    expect(() => GovernedExecutionSurface.assertGenuine(surface)).not.toThrow();
     expect(await ledgerKinds()).toEqual([]);
     expect(backendExecutions).toBe(0);
   });
 
   it("refuses a foreign authority's capability before any ledger write, probe, or backend", async () => {
-    const foreignSurface = GovernedExecutionSurface.create({
-      policy: policyEngine,
-      backend: new FlakyReferenceBackend(),
-      workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
-      allowedOperations: SEMANTIC_OPERATION_IDS,
-      resolveWorkspaceRoot: async () => root,
-      generateSandboxId: () => "sandbox:2",
-      now: () => clock,
-    });
-    const plan = await inspectPlan(foreignSurface);
+    const plan = await inspectPlan(otherSurface());
 
     await expect(
       reconciler.runGovernedEffect({ taskId, sandbox, plan, probe: countedApplied }, context),

@@ -37,7 +37,7 @@ import type {
   EffectReconciler,
   EffectReconciliationProbe,
 } from "../../src/autonomy/effect-reconciler.js";
-import { GovernedExecutionSurface } from "../../src/autonomy/governed-execution-surface.js";
+import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
