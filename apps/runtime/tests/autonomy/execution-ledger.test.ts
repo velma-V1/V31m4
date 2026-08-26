@@ -11,7 +11,6 @@ import {
   type SandboxExecutionResult,
   type SandboxHandle,
   SandboxIsolationPolicy,
-  type SandboxPort,
   type WorkspaceHandle,
 } from "@v31m4/application";
 import {
@@ -30,6 +29,7 @@ import {
   WorkspaceExecutionInterlock,
 } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { GovernedSandboxLifecycle } from "../../src/autonomy/authority-capture.js";
 import { SqliteExecutionLedgerRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type {
   EffectPostState,
@@ -82,7 +82,8 @@ let root: string;
 let ledger: SqliteExecutionLedgerRepository;
 let reconciler: EffectReconciler;
 let surface: GovernedExecutionSurface;
-let sandboxes: SandboxPort;
+let backend: CountingReferenceBackend;
+let sandboxes: GovernedSandboxLifecycle;
 let workspace: WorkspaceHandle;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
@@ -98,11 +99,16 @@ let dispatches = 0;
  * Only the backend reaching its work means an effect could have happened.
  */
 class CountingReferenceBackend extends ReferenceSandboxBackend {
+  failNextExecute = false;
   override async execute(
     spec: Parameters<ReferenceSandboxBackend["execute"]>[0],
     plan: Parameters<ReferenceSandboxBackend["execute"]>[1],
   ): Promise<SandboxExecutionResult> {
     dispatches += 1;
+    if (this.failNextExecute) {
+      this.failNextExecute = false;
+      throw new Error("the backend failed after the sandbox was already claimed");
+    }
     return super.execute(spec, plan);
   }
 }
@@ -128,9 +134,10 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   ledger = new SqliteExecutionLedgerRepository(db);
   // One factory builds the Task 1 boundary, the sandbox it governs, and the reconciler that
   // records them. There is no way to hand any of the three a foreign authority.
+  backend = new CountingReferenceBackend();
   surface = GovernedExecutionSurface.create({
     policy: semanticPolicy,
-    backend: new CountingReferenceBackend(),
+    backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
     resolveWorkspaceRoot: async () => root,
@@ -227,13 +234,12 @@ describe("effect lifecycle ordering", () => {
   });
 
   it("records the attempt even when the dispatch itself fails", async () => {
-    // A dispatch the sandbox will refuse, with the issuer beyond doubt: the capability is
-    // canonical but has already been spent at the sink, so the replay is denied there. A foreign
-    // capability could not be used to make this point — it never reaches a ledger write at all.
-    const plan = await inspectPlan();
-    await sandboxes.execute(sandbox, plan, context);
+    // A dispatch that fails inside the backend, with the issuer beyond doubt. There is no longer
+    // any way to reach a sandbox except through this gateway, which is the point: the attempt is
+    // durable first, and a failed dispatch is still not proof that nothing happened.
+    backend.failNextExecute = true;
     const outcome = await reconciler.runGovernedEffect(
-      { taskId, sandbox, plan, probe: notAppliedProbe },
+      { taskId, sandbox, plan: await inspectPlan(), probe: notAppliedProbe },
       context,
     );
     // The dispatch was refused and the probe proved nothing happened.
@@ -1501,7 +1507,20 @@ describe("restart recovery", () => {
       }),
       context,
     );
-    await sandboxes.execute(sandbox, plan, context);
+    // The effect really did reach the backend before the crash. It can only get there through
+    // the one gateway, so dispatch it with a capability for the same intent.
+    await surface
+      .createEffectReconciler({
+        unitOfWork: database.unitOfWork,
+        ledger,
+        generateEntryId: () => "ledger:crashed-outcome",
+        now: () => "2026-08-26T00:00:00.000Z",
+      })
+      .runGovernedEffect(
+        { taskId, sandbox, plan: await inspectPlan(), probe: unknownProbe },
+        context,
+      )
+      .catch(() => undefined);
     database.close();
 
     const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
@@ -1679,10 +1698,9 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
       context,
     );
     expect(dispatches).toBe(1);
-    // The sandbox spent it at the sink; a replay through the sink is refused.
-    await expect(sandboxes.execute(sandbox, plan, context)).rejects.toMatchObject({
-      code: "PERMISSION_DENIED",
-    });
+    // The sandbox spent the capability at the sink. Proving a spent capability cannot be replayed
+    // is Task 1's own invariant and lives in its suites; there is no sandbox execution path here
+    // to attempt it through. What matters for Task 3 is what follows.
 
     // Settling needs no capability at all — spent, unspent, or never issued.
     const settled = await reconciler.reconcileAttempt(

@@ -8,11 +8,17 @@ import {
   type OperationContext,
   reconcileExecutionEffect,
   type SandboxExecutionResult,
-  type SandboxPort,
   type UnitOfWorkTransaction,
 } from "@v31m4/application";
 import { type ContentHash, ExecutionLedgerEntry, type TaskId } from "@v31m4/domain";
 import { SandboxSupervisor } from "@v31m4/infrastructure";
+import {
+  type CapturedSandboxExecute,
+  captureDependencies,
+  captureSandboxExecute,
+  captureSandboxLifecycle,
+  type GovernedSandboxLifecycle,
+} from "./authority-capture.js";
 import type {
   EffectPostState,
   EffectReconcilerDependencies,
@@ -54,27 +60,27 @@ const RECONCILER_CONSTRUCTION: unique symbol = Symbol("v31m4.effect-reconciler")
 /**
  * Runtime authority state for the two objects that carry authority here.
  *
- * Identity alone is not enough, and three revisions were needed to learn why. The first exported
- * the construction credential. The second routed the check through a public static, which a
- * caller could replace. The third branded genuine objects in a `WeakSet` but then *read the
- * authority itself off their public members* — so `Object.defineProperty(surfaceA, "sandboxes",
- * { value: surfaceB.sandboxes })` left a still-genuine object whose verifier and sink came from
- * different authorities, and `dependencies` was an ordinary property a caller could swap for a
- * different ledger.
- *
- * The fix is not another guarded property. Authority does not live on these objects at all: it
- * lives in module-private `WeakMap`s keyed by them, frozen at construction. Membership is the
- * identity brand *and* the source of every privileged value, so shadowing a public member changes
- * what an ordinary caller sees and nothing about what executes. Neither map, nor any operation
- * that writes to one, is exported.
+ * Identity alone was not enough, and neither was a private reference to a public object. Authority
+ * does not live on these objects at all: it lives in module-private `WeakMap`s keyed by them,
+ * holding behaviour captured at construction and frozen. Membership is both the identity brand and
+ * the source of every privileged value, so shadowing a public member — on an instance or on a
+ * prototype — changes what an ordinary caller sees and nothing about what executes. Neither map,
+ * nor any operation that writes to one, is exported. See `authority-capture.ts` for what is
+ * captured and for the trust boundary this stops at.
  */
 interface SurfaceAuthorityState {
-  readonly boundary: SemanticAuthorizationBoundary;
-  readonly sandboxes: SandboxPort;
+  readonly authorize: SemanticAuthorizationBoundary["authorize"];
+  /** Captured at construction: a later prototype or instance patch cannot replace it. */
+  readonly verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) => void;
+  /** The canonical effect sink, bound once. Never reached through a property lookup. */
+  readonly executeSandbox: CapturedSandboxExecute;
+  /** Lifecycle only. There is deliberately no execution path in what callers receive. */
+  readonly lifecycle: GovernedSandboxLifecycle;
 }
 
 interface ReconcilerAuthorityState {
-  readonly surface: GovernedExecutionSurface;
+  readonly surface: SurfaceAuthorityState;
+  /** A private frozen snapshot; the caller's wrapper is never retained. */
   readonly dependencies: EffectReconcilerDependencies;
 }
 
@@ -144,8 +150,15 @@ export class EffectReconciler {
     // property on an exported class, so routing the decision through one would let it be replaced.
     // The surface must be one this module created; its authority is then bound to this
     // reconciler in module-private state, frozen, and never read from a public member again.
-    requireSurfaceState(surface);
-    reconcilerState.set(this, Object.freeze({ surface, dependencies }));
+    // Resolve the surface's authority now and keep *that*, not the surface object: nothing this
+    // reconciler does later depends on a property lookup a caller could redirect.
+    reconcilerState.set(
+      this,
+      Object.freeze({
+        surface: requireSurfaceState(surface),
+        dependencies: captureDependencies(dependencies),
+      }),
+    );
   }
 
   /**
@@ -200,7 +213,7 @@ export class EffectReconciler {
     surface: SurfaceAuthorityState,
     plan: AuthorizedSemanticExecutionPlan,
   ): void {
-    surface.boundary.capabilities.verify(plan);
+    surface.verifyExecutionAuthority(plan);
   }
 
   async runGovernedEffect(
@@ -211,7 +224,7 @@ export class EffectReconciler {
     // on the surface: a constructor-bypassed instance has no state at all, and a genuine object
     // whose public members were redefined still executes against the authority it was built with.
     const state = requireReconcilerState(this);
-    const surface = requireSurfaceState(state.surface);
+    const surface = state.surface;
     const { plan, sandbox, taskId } = request;
     // Then the capability: before the projection this claim reads, before the attempt is
     // appended, and before anything reaches SandboxPort.
@@ -263,7 +276,7 @@ export class EffectReconciler {
     let result: SandboxExecutionResult | null = null;
     let dispatchFailure: string | null = null;
     try {
-      result = await surface.sandboxes.execute(sandbox, plan, context);
+      result = await surface.executeSandbox(sandbox, plan, context);
     } catch (error) {
       // A refused or failed dispatch is not proof that nothing happened; the probe decides.
       dispatchFailure = error instanceof Error ? error.message : "dispatch failed";
@@ -416,13 +429,19 @@ export class GovernedExecutionSurface {
       ...(generateExecutionPlanId === undefined ? {} : { generateExecutionPlanId }),
       ...(now === undefined ? {} : { now }),
     });
+    // The sandbox is paired with this boundary's verifier here and nowhere else.
+    const supervisor = new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities });
+    const capabilities = boundary.capabilities;
     const surface = new GovernedExecutionSurface();
     surfaceState.set(
       surface,
       Object.freeze({
-        boundary,
-        // The sandbox is paired with this boundary's verifier here and nowhere else.
-        sandboxes: new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities }),
+        authorize: boundary.authorize,
+        // Both captured immediately, before anything is exposed: what runs later is what existed
+        // at this instant, whatever is patched onto the supervisor or its prototype afterwards.
+        verifyExecutionAuthority: capabilities.verify.bind(capabilities),
+        executeSandbox: captureSandboxExecute(supervisor),
+        lifecycle: captureSandboxLifecycle(supervisor),
       }),
     );
     return surface;
@@ -446,23 +465,26 @@ export class GovernedExecutionSurface {
    * so redefining a property on this instance cannot redirect it.
    */
   get authorize(): SemanticAuthorizationBoundary["authorize"] {
-    return requireSurfaceState(this).boundary.authorize;
+    return requireSurfaceState(this).authorize;
   }
 
   /**
-   * The sandbox this surface governs, for ordinary callers.
+   * Sandbox **lifecycle** for ordinary callers: prepare, inspect, cancel, destroy.
    *
-   * Shadowing this on an instance is possible and harmless: privileged execution never reads it.
-   * `runGovernedEffect` dispatches through `requireSurfaceState(...).sandboxes`, which no caller
-   * can reach or rewrite.
+   * There is no `execute` here and no way to reach one from this object. That is the point: while
+   * this returned a full `SandboxPort`, a caller holding a canonical plan could dispatch straight
+   * into the backend, so an effect could change the environment with no `effect_attempt` durable
+   * anywhere. Task 3 cannot be optional by convention. Every semantic effect now has exactly one
+   * gateway — `EffectReconciler.runGovernedEffect` — and the sink it uses is captured privately,
+   * so patching anything on this façade cannot redirect it either.
    */
-  get sandboxes(): SandboxPort {
-    return requireSurfaceState(this).sandboxes;
+  get sandboxes(): GovernedSandboxLifecycle {
+    return requireSurfaceState(this).lifecycle;
   }
 
   /** Proves a capability came from this surface's boundary, and that its grant is still current. */
   verifyExecutionAuthority(plan: AuthorizedSemanticExecutionPlan): void {
-    requireSurfaceState(this).boundary.capabilities.verify(plan);
+    requireSurfaceState(this).verifyExecutionAuthority(plan);
   }
 
   /**

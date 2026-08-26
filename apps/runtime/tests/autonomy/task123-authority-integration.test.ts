@@ -9,7 +9,6 @@ import {
   type SandboxExecutionResult,
   type SandboxHandle,
   SandboxIsolationPolicy,
-  type SandboxPort,
   type WorkspaceHandle,
 } from "@v31m4/application";
 import {
@@ -24,10 +23,12 @@ import {
 import {
   ReferenceSandboxBackend,
   type SandboxExecutionSpec,
+  SandboxSupervisor,
   SqliteRuntimeDatabase,
   WorkspaceExecutionInterlock,
 } from "@v31m4/infrastructure";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { GovernedSandboxLifecycle } from "../../src/autonomy/authority-capture.js";
 import { SqliteExecutionLedgerRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type {
   EffectPostState,
@@ -95,6 +96,8 @@ const policyEngine: PolicyEnginePort = {
  */
 class FlakyReferenceBackend extends ReferenceSandboxBackend {
   failNextExecute = false;
+  /** Lets a test observe authoritative state at the exact instant the backend is entered. */
+  onExecute: (() => Promise<void>) | undefined = undefined;
   /** Per-instance count, so a shadowed sandbox would be visible as the wrong backend running. */
   ownExecutions = 0;
   override async execute(
@@ -103,6 +106,7 @@ class FlakyReferenceBackend extends ReferenceSandboxBackend {
   ): Promise<SandboxExecutionResult> {
     backendExecutions += 1;
     this.ownExecutions += 1;
+    await this.onExecute?.();
     if (this.failNextExecute) {
       this.failNextExecute = false;
       throw new Error("the backend failed after the sandbox was already claimed");
@@ -118,7 +122,7 @@ let workspace: WorkspaceHandle;
 let ledger: SqliteExecutionLedgerRepository;
 let reconciler: EffectReconciler;
 let surface: Surface;
-let sandboxes: SandboxPort;
+let sandboxes: GovernedSandboxLifecycle;
 let backend: FlakyReferenceBackend;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
@@ -271,10 +275,15 @@ describe("A: an expired execution grant must not block settling history", () => 
 
     // No fresh authority can be obtained either: minting refuses an already-expired grant.
     await expect(inspectPlan()).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
-    // And the still-unspent capability issued before the lapse no longer reaches the sink.
-    await expect(sandboxes.execute(sandbox, planIssuedBeforeExpiry, context)).rejects.toMatchObject(
-      { code: "PERMISSION_DENIED" },
-    );
+    // And the still-unspent capability issued before the lapse no longer reaches the sink. There
+    // is exactly one way to attempt that — the governed gateway — and it refuses before any
+    // ledger write or dispatch.
+    await expect(
+      reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: planIssuedBeforeExpiry, probe: applied },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
     expect(backendExecutions).toBe(1);
   });
 
@@ -711,6 +720,11 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     Object.defineProperty(surface, "sandboxes", { value: b.surface.sandboxes, configurable: true });
     // The public view really is redirected — this is a genuine shadow, not a no-op.
     expect(surface.sandboxes).toBe(b.surface.sandboxes);
+    Reflect.deleteProperty(surface, "sandboxes");
+    Object.defineProperty(surface, "sandboxes", {
+      value: b.surface.sandboxes,
+      configurable: true,
+    });
     expect(GovernedExecutionSurface.isGenuine(surface)).toBe(true);
 
     const outcome = await reconciler.runGovernedEffect(
@@ -831,6 +845,154 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
       "effect_confirmation",
     ]);
     Reflect.deleteProperty(reconciler, "dependencies");
+  });
+
+  /**
+   * P0-1. While the surface returned a full `SandboxPort`, a caller holding a canonical plan could
+   * dispatch straight into the backend — reaching Task 1's verify/consume and the environment with
+   * no `effect_attempt` durable anywhere. Task 3 was optional by convention. It is now the only
+   * gateway, and the ordering invariant is observed from inside the backend itself.
+   */
+  it("offers no execution path outside the governed gateway, and records the attempt first", async () => {
+    // Nothing reachable from the surface exposes an executable sandbox.
+    const lifecycle = surface.sandboxes as unknown as Record<string, unknown>;
+    expect(typeof lifecycle["execute"]).toBe("undefined");
+    expect(Object.keys(lifecycle).sort()).toEqual(["cancel", "destroy", "inspect", "prepare"]);
+    for (const value of [
+      ...Object.values(lifecycle),
+      ...Object.values(surface as unknown as Record<string, unknown>),
+    ]) {
+      expect((value as { execute?: unknown } | null)?.execute).toBeUndefined();
+    }
+    // Nor through reflection over the whole prototype chain.
+    const reachable = new Set<string>();
+    for (let o: object | null = surface; o !== null; o = Object.getPrototypeOf(o)) {
+      for (const key of Reflect.ownKeys(o)) reachable.add(String(key));
+    }
+    expect(reachable.has("execute")).toBe(false);
+
+    // The ordering invariant, observed from inside the backend at the instant it is entered.
+    let ledgerAtBackendEntry: readonly string[] = [];
+    backend.onExecute = async () => {
+      ledgerAtBackendEntry = await ledgerKinds();
+    };
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+      context,
+    );
+    backend.onExecute = undefined;
+
+    expect(ledgerAtBackendEntry).toEqual(["effect_attempt"]);
+    expect(outcome.outcomeKind).toBe("effect_confirmation");
+    expect(backendExecutions).toBe(1);
+  });
+
+  /**
+   * P0-2. The private state used to hold the supervisor itself, so patching
+   * `SandboxSupervisor.prototype.execute` after construction redirected the sink even though the
+   * reference was unreachable. The sink is now a function value bound at creation.
+   */
+  it("dispatches through the sink captured at creation, not a patched prototype", async () => {
+    let hijacked = 0;
+    const original = Object.getOwnPropertyDescriptor(SandboxSupervisor.prototype, "execute");
+    Object.defineProperty(SandboxSupervisor.prototype, "execute", {
+      value: async () => {
+        hijacked += 1;
+        return { status: "completed", outputArtifactIds: [], logArtifactIds: [], metadata: {} };
+      },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const outcome = await reconciler.runGovernedEffect(
+        { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+        context,
+      );
+      // The canonical Task 1 sink ran: real verification, real consume, real backend.
+      expect(hijacked).toBe(0);
+      expect(backendExecutions).toBe(1);
+      expect(outcome.outcomeKind).toBe("effect_confirmation");
+    } finally {
+      if (original !== undefined) {
+        Object.defineProperty(SandboxSupervisor.prototype, "execute", original);
+      }
+    }
+  });
+
+  /**
+   * P0-3. The frozen wrapper held the caller's dependencies object by reference, so mutating that
+   * original object after construction redirected authoritative state. The reconciler now keeps a
+   * private snapshot built from method values captured at construction.
+   */
+  it("uses the dependencies captured at construction, not the caller's mutated wrapper", async () => {
+    let hostileReads = 0;
+    let hostileWrites = 0;
+    const hostileLedger = {
+      append: async () => {
+        hostileWrites += 1;
+      },
+      getById: async () => {
+        hostileReads += 1;
+        return null;
+      },
+      listForTask: async () => {
+        hostileReads += 1;
+        return { items: [], nextCursor: null };
+      },
+    };
+    // The exact object handed to the factory, kept and mutated afterwards.
+    const deps = {
+      unitOfWork: database.unitOfWork,
+      ledger: ledger as unknown as typeof hostileLedger,
+      generateEntryId: () => `ledger:${++entryCounter}`,
+      now: () => clock,
+    };
+    const own = surface.createEffectReconciler(deps as never);
+    const first = await own.runGovernedEffect(
+      { taskId, sandbox, plan: await inspectPlan(), probe: unknown },
+      context,
+    );
+
+    deps.ledger = hostileLedger;
+    deps.unitOfWork = {
+      execute: async () => {
+        hostileWrites += 1;
+      },
+    } as never;
+    deps.generateEntryId = () => "ledger:hostile";
+    deps.now = () => "1999-01-01T00:00:00.000Z";
+    // Replacing the method properties on the originally supplied port must not matter either:
+    // the canonical method values were captured at construction.
+    const realAppend = ledger.append.bind(ledger);
+    Object.defineProperty(ledger, "append", {
+      value: async () => {
+        hostileWrites += 1;
+      },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const settled = await own.reconcileAttempt(
+        { taskId, attemptEntryId: first.attemptEntryId, probe: applied },
+        context,
+      );
+      expect(settled.outcome).toBe("confirmed");
+      expect(settled.outcomeEntryId).not.toBe("ledger:hostile");
+      expect(hostileReads).toBe(0);
+      expect(hostileWrites).toBe(0);
+    } finally {
+      Object.defineProperty(ledger, "append", {
+        value: realAppend,
+        configurable: true,
+        writable: true,
+      });
+    }
+    // The entry really landed in the real ledger.
+    expect(await ledgerKinds()).toEqual([
+      "effect_attempt",
+      "reconciliation_indeterminate",
+      "effect_confirmation",
+    ]);
   });
 
   it("refuses a foreign authority's capability before any ledger write, probe, or backend", async () => {
