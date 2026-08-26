@@ -93,6 +93,15 @@ function parseDurableId<TId extends DurableId>(kind: string, value: string): TId
   return value as TId;
 }
 
+/**
+ * Reports whether a value uses the one canonical durable-ID syntax. Exposed so entities can
+ * validate opaque identifiers (workspace, DAG node, decision references) against exactly the
+ * same rule the branded parsers use, rather than restating the pattern.
+ */
+export function isCanonicalDurableId(value: unknown): value is string {
+  return typeof value === "string" && value === value.trim() && ID_PATTERN.test(value);
+}
+
 function createParser<TId extends DurableId>(kind: string) {
   return Object.freeze({
     parse(value: string): TId {
