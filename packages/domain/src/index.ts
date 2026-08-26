@@ -40,6 +40,14 @@ export {
   type EvidenceStatus,
 } from "./entities/evidence-record.js";
 export {
+  type EffectIntent,
+  ExecutionLedgerEntry,
+  LEDGER_ENTRY_KINDS,
+  LEDGER_LIMITS,
+  type LedgerEntryKind,
+  type LedgerResourceFact,
+} from "./entities/execution-ledger-entry.js";
+export {
   IssueRecord,
   type IssueSeverity,
   type IssueStatus,
@@ -103,6 +111,15 @@ export {
   type SolverStrategy,
 } from "./entities/solver-candidate.js";
 export {
+  TASK_CAPSULE_LIMITS,
+  TaskCapsule,
+  type TaskCapsuleChanges,
+  type TaskCapsuleInput,
+  type TaskDagNode,
+  type TaskDagNodeInput,
+  type TaskPhase,
+} from "./entities/task-capsule.js";
+export {
   type ToolAutomationMethod,
   ToolProfile,
 } from "./entities/tool-profile.js";
@@ -118,6 +135,12 @@ export {
   type VerificationPlan,
   VerificationResult,
 } from "./entities/verification-result.js";
+export {
+  type CanonicalValue,
+  canonicalFingerprint,
+  canonicalJson,
+  sha256Hex,
+} from "./value-objects/canonical-fingerprint.js";
 export { ContentHash } from "./value-objects/content-hash.js";
 export {
   AchievementRuleId,
@@ -135,6 +158,7 @@ export {
   EventId,
   EvidenceId,
   IssueId,
+  isCanonicalDurableId,
   JobId,
   LedgerEntryId,
   MemoryId,
