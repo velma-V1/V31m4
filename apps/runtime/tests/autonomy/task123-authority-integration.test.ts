@@ -95,11 +95,14 @@ const policyEngine: PolicyEnginePort = {
  */
 class FlakyReferenceBackend extends ReferenceSandboxBackend {
   failNextExecute = false;
+  /** Per-instance count, so a shadowed sandbox would be visible as the wrong backend running. */
+  ownExecutions = 0;
   override async execute(
     spec: SandboxExecutionSpec,
     plan: AuthorizedSemanticExecutionPlan,
   ): Promise<SandboxExecutionResult> {
     backendExecutions += 1;
+    this.ownExecutions += 1;
     if (this.failNextExecute) {
       this.failNextExecute = false;
       throw new Error("the backend failed after the sandbox was already claimed");
@@ -461,17 +464,24 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
    * `GovernedExecutionSurface`, which builds the Task 1 boundary and the sandbox it governs
    * together. There is no configuration of the factory that yields verifier A over sandbox B.
    */
-  /** A second, genuinely canonical surface — authority B. */
-  function otherSurface(): GovernedExecutionSurface {
-    return GovernedExecutionSurface.create({
-      policy: policyEngine,
-      backend: new FlakyReferenceBackend(),
-      workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
-      allowedOperations: SEMANTIC_OPERATION_IDS,
-      resolveWorkspaceRoot: async () => root,
-      generateSandboxId: () => "sandbox:2",
-      now: () => clock,
-    });
+  /** A second, genuinely canonical surface — authority B — with its own countable backend. */
+  function otherSurface(): {
+    readonly surface: GovernedExecutionSurface;
+    readonly backend: FlakyReferenceBackend;
+  } {
+    const other = new FlakyReferenceBackend();
+    return {
+      backend: other,
+      surface: GovernedExecutionSurface.create({
+        policy: policyEngine,
+        backend: other,
+        workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
+        allowedOperations: SEMANTIC_OPERATION_IDS,
+        resolveWorkspaceRoot: async () => root,
+        generateSandboxId: () => "sandbox:2",
+        now: () => clock,
+      }),
+    };
   }
 
   /**
@@ -485,7 +495,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
    */
   it("cannot be assembled from any publicly exported value", async () => {
     const authorityA = surface;
-    const authorityB = otherSurface();
+    const authorityB = otherSurface().surface;
     const ReconcilerClass = Object.getPrototypeOf(reconciler).constructor as new (
       ...args: readonly unknown[]
     ) => EffectReconciler;
@@ -568,7 +578,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
   it("refuses a forged surface even when the sandbox and verifier are both genuine", async () => {
     // Both halves real, but taken from *different* authorities and recombined by hand. Membership
     // in the private registry — not shape, not prototype — is what decides.
-    const authorityB = otherSurface();
+    const authorityB = otherSurface().surface;
     expect(
       GovernedExecutionSurface.isGenuine({
         sandboxes: authorityB.sandboxes,
@@ -645,7 +655,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
    * module-private credential — must still refuse a cross-authority surface.
    */
   it("refuses a forged surface even with the public validator monkey-patched away", async () => {
-    const authorityB = otherSurface();
+    const authorityB = otherSurface().surface;
     const crossAuthorityFake = {
       sandboxes: authorityB.sandboxes,
       verifyExecutionAuthority: (plan: AuthorizedSemanticExecutionPlan) =>
@@ -688,8 +698,143 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     expect(backendExecutions).toBe(0);
   });
 
+  /**
+   * P0-1. A genuine, registered surface whose public `sandboxes` getter has been shadowed with
+   * another authority's sandbox. Identity is untouched — it is still the real object — so an
+   * identity-only brand would let A's verifier admit a plan that then dispatches into B's sink.
+   * Privileged execution reads the sandbox from module-private state, so the shadow is inert.
+   */
+  it("dispatches into its own sandbox even when a genuine surface is re-paired", async () => {
+    const b = otherSurface();
+    const aBackendBefore = backend.ownExecutions;
+
+    Object.defineProperty(surface, "sandboxes", { value: b.surface.sandboxes, configurable: true });
+    // The public view really is redirected — this is a genuine shadow, not a no-op.
+    expect(surface.sandboxes).toBe(b.surface.sandboxes);
+    expect(GovernedExecutionSurface.isGenuine(surface)).toBe(true);
+
+    const outcome = await reconciler.runGovernedEffect(
+      { taskId, sandbox, plan: await inspectPlan(), probe: applied },
+      context,
+    );
+
+    expect(outcome.outcomeKind).toBe("effect_confirmation");
+    // A's own backend ran; B's never saw anything.
+    expect(backend.ownExecutions).toBe(aBackendBefore + 1);
+    expect(b.backend.ownExecutions).toBe(0);
+  });
+
+  /**
+   * P0-2 (surface half). The verifier is the gate that keeps a foreign capability out of the
+   * ledger. Replacing it on a genuine surface — with a no-op, or with another authority's
+   * verifier — must not change what executes.
+   */
+  it("verifies against its own authority even when a genuine surface's verifier is replaced", async () => {
+    const b = otherSurface();
+    const foreignPlan = await inspectPlan(b.surface);
+    const original = Object.getOwnPropertyDescriptor(
+      GovernedExecutionSurface.prototype,
+      "verifyExecutionAuthority",
+    );
+
+    for (const replacement of [
+      () => undefined,
+      (plan: AuthorizedSemanticExecutionPlan) => b.surface.verifyExecutionAuthority(plan),
+    ]) {
+      Object.defineProperty(surface, "verifyExecutionAuthority", {
+        value: replacement,
+        configurable: true,
+      });
+      probeCalls = 0;
+      await expect(
+        reconciler.runGovernedEffect(
+          { taskId, sandbox, plan: foreignPlan, probe: countedApplied },
+          context,
+        ),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      expect(await ledgerKinds()).toEqual([]);
+      expect(probeCalls).toBe(0);
+      expect(backendExecutions).toBe(0);
+    }
+    Reflect.deleteProperty(surface, "verifyExecutionAuthority");
+
+    // The same again from the prototype, which every surface shares.
+    Object.defineProperty(GovernedExecutionSurface.prototype, "verifyExecutionAuthority", {
+      value: () => undefined,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      await expect(
+        reconciler.runGovernedEffect(
+          { taskId, sandbox, plan: foreignPlan, probe: countedApplied },
+          context,
+        ),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      expect(await ledgerKinds()).toEqual([]);
+      expect(backendExecutions).toBe(0);
+    } finally {
+      if (original !== undefined) {
+        Object.defineProperty(
+          GovernedExecutionSurface.prototype,
+          "verifyExecutionAuthority",
+          original,
+        );
+      }
+    }
+  });
+
+  /**
+   * P0-2 (reconciler half). `dependencies` was an ordinary property, so redefining it on a genuine
+   * reconciler would have redirected authoritative settlement to another ledger.
+   */
+  it("uses the ledger it was built with even when a genuine reconciler is re-pointed", async () => {
+    const attemptEntryId = await ambiguousAttempt();
+    let hostileReads = 0;
+    let hostileWrites = 0;
+    const hostileLedger = {
+      listForTask: async () => {
+        hostileReads += 1;
+        return { items: [], nextCursor: null };
+      },
+      append: async () => {
+        hostileWrites += 1;
+      },
+    };
+    Object.defineProperty(reconciler, "dependencies", {
+      value: {
+        unitOfWork: {
+          execute: async () => {
+            hostileWrites += 1;
+          },
+        },
+        ledger: hostileLedger,
+        generateEntryId: () => "ledger:hostile",
+        now: () => "1999-01-01T00:00:00.000Z",
+      },
+      configurable: true,
+    });
+
+    const settled = await reconciler.reconcileAttempt(
+      { taskId, attemptEntryId, probe: applied },
+      context,
+    );
+
+    // The real ledger settled it; the attacker's ledger and unit of work were never touched.
+    expect(settled.outcome).toBe("confirmed");
+    expect(settled.outcomeEntryId).not.toBe("ledger:hostile");
+    expect(hostileReads).toBe(0);
+    expect(hostileWrites).toBe(0);
+    expect(await ledgerKinds()).toEqual([
+      "effect_attempt",
+      "reconciliation_indeterminate",
+      "effect_confirmation",
+    ]);
+    Reflect.deleteProperty(reconciler, "dependencies");
+  });
+
   it("refuses a foreign authority's capability before any ledger write, probe, or backend", async () => {
-    const plan = await inspectPlan(otherSurface());
+    const plan = await inspectPlan(otherSurface().surface);
 
     await expect(
       reconciler.runGovernedEffect({ taskId, sandbox, plan, probe: countedApplied }, context),

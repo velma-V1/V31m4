@@ -22,7 +22,6 @@ import type {
   GovernedEffectOutcome,
   GovernedEffectRequest,
   GovernedExecutionSurfaceOptions,
-  PairedExecutionSurface,
   ReconciliationAttemptDescriptor,
 } from "./effect-reconciler-contracts.js";
 import {
@@ -53,78 +52,71 @@ export * from "./effect-reconciler-contracts.js";
 const RECONCILER_CONSTRUCTION: unique symbol = Symbol("v31m4.effect-reconciler");
 
 /**
- * Runtime authenticity for the two objects that carry authority here.
+ * Runtime authority state for the two objects that carry authority here.
  *
- * Both registries and both predicates are module-private: not exported, not re-exported, not
- * reachable from any public value. That is the whole security property, and it is deliberately
- * *not* delegated to anything a caller can reach or replace.
+ * Identity alone is not enough, and three revisions were needed to learn why. The first exported
+ * the construction credential. The second routed the check through a public static, which a
+ * caller could replace. The third branded genuine objects in a `WeakSet` but then *read the
+ * authority itself off their public members* — so `Object.defineProperty(surfaceA, "sandboxes",
+ * { value: surfaceB.sandboxes })` left a still-genuine object whose verifier and sink came from
+ * different authorities, and `dependencies` was an ordinary property a caller could swap for a
+ * different ledger.
  *
- * Two earlier revisions failed here in different ways. One exported the construction credential,
- * so a caller could import it and wrap a hand-assembled surface. The other routed the check
- * through a public static method — a writable property on an exported class — so replacing that
- * method with a no-op let a forged surface reach the real credential inside
- * `createEffectReconciler`. A security decision that any caller can rewrite is not a decision.
- *
- * Membership, not shape, prototype, `instanceof`, `Object.freeze`, or a TypeScript brand, is what
- * these answer — none of the others survives `Object.create`.
+ * The fix is not another guarded property. Authority does not live on these objects at all: it
+ * lives in module-private `WeakMap`s keyed by them, frozen at construction. Membership is the
+ * identity brand *and* the source of every privileged value, so shadowing a public member changes
+ * what an ordinary caller sees and nothing about what executes. Neither map, nor any operation
+ * that writes to one, is exported.
  */
-const genuineSurfaces = new WeakSet<object>();
-const genuineReconcilers = new WeakSet<object>();
+interface SurfaceAuthorityState {
+  readonly boundary: SemanticAuthorizationBoundary;
+  readonly sandboxes: SandboxPort;
+}
 
-function requireGenuineSurface(candidate: unknown): asserts candidate is GovernedExecutionSurface {
-  if (typeof candidate !== "object" || candidate === null || !genuineSurfaces.has(candidate)) {
+interface ReconcilerAuthorityState {
+  readonly surface: GovernedExecutionSurface;
+  readonly dependencies: EffectReconcilerDependencies;
+}
+
+const surfaceState = new WeakMap<object, SurfaceAuthorityState>();
+const reconcilerState = new WeakMap<object, ReconcilerAuthorityState>();
+
+function requireSurfaceState(candidate: unknown): SurfaceAuthorityState {
+  const state =
+    typeof candidate === "object" && candidate !== null ? surfaceState.get(candidate) : undefined;
+  if (state === undefined) {
     throw new ApplicationError(
       "PERMISSION_DENIED",
       "A governed execution surface must be one this runtime created, so that its Task 1 verifier and the sandbox it governs are provably the same authority.",
       {},
     );
   }
+  return state;
 }
 
 /**
- * Proves `this` is a reconciler whose constructor actually ran against a genuine surface.
+ * The authority behind a reconciler, or a refusal.
  *
- * Without this, `Object.create(EffectReconciler.prototype)` skips the constructor entirely, and
- * because the reconciliation path reads only the ordinary `dependencies` property, assigning that
- * one field would hand an attacker authoritative settlement over recorded history.
+ * A constructor-bypassed `Object.create(EffectReconciler.prototype)` has no entry however many
+ * ordinary properties it carries, and a genuine reconciler whose `dependencies` property has been
+ * redefined still yields the ledger, unit of work, id generator, and clock it was built with.
  */
-function requireGenuineReconciler(candidate: unknown): void {
-  if (typeof candidate !== "object" || candidate === null || !genuineReconcilers.has(candidate)) {
+function requireReconcilerState(candidate: unknown): ReconcilerAuthorityState {
+  const state =
+    typeof candidate === "object" && candidate !== null
+      ? reconcilerState.get(candidate)
+      : undefined;
+  if (state === undefined) {
     throw new ApplicationError(
       "PERMISSION_DENIED",
       "Only an EffectReconciler created by a governed execution surface may read or write authoritative Execution Ledger history.",
       {},
     );
   }
+  return state;
 }
 
-/**
- * The governed effect lifecycle, with the Execution Ledger recording what actually happened.
- *
- * The order is the whole point:
- *
- *   authorize (Task 1) → verify the issuer → append effect_attempt → dispatch through
- *     SandboxPort (which verifies and *spends* the capability) → inspect verified post-state
- *     → append exactly one outcome
- *
- * Issuer verification is this reconciler's own first step, not something it inherits from the
- * sink. The ledger is authoritative history; a capability minted by some other semantic
- * authorization boundary must not be able to write to it, and on the reconciliation path — which
- * never dispatches — the sink would never see it at all.
- *
- * The attempt is durable *before* anything can happen in the environment, so a crash mid-effect
- * leaves an unresolved attempt rather than silence. Nothing here re-authorizes, re-dispatches,
- * or retries: an effect whose result cannot be proved becomes
- * `reconciliation_indeterminate`, which blocks the same intent from being attempted again until
- * something observable resolves it.
- *
- * This composes Task 1 rather than replacing it. Authorization, the semantic operation catalog,
- * `SandboxPort`, and `WorkspaceManagerPort` all still apply; the reconciler only decides what to
- * write down.
- */
 export class EffectReconciler {
-  readonly #surface: PairedExecutionSurface;
-
   /**
    * Not constructible from outside this module.
    *
@@ -138,8 +130,8 @@ export class EffectReconciler {
    */
   constructor(
     token: symbol,
-    surface: PairedExecutionSurface,
-    private readonly dependencies: EffectReconcilerDependencies,
+    surface: GovernedExecutionSurface,
+    dependencies: EffectReconcilerDependencies,
   ) {
     if (token !== RECONCILER_CONSTRUCTION) {
       throw new ApplicationError(
@@ -150,9 +142,10 @@ export class EffectReconciler {
     }
     // The module-private predicate, never the exported diagnostic: a public static is a writable
     // property on an exported class, so routing the decision through one would let it be replaced.
-    requireGenuineSurface(surface);
-    this.#surface = surface;
-    genuineReconcilers.add(this);
+    // The surface must be one this module created; its authority is then bound to this
+    // reconciler in module-private state, frozen, and never read from a public member again.
+    requireSurfaceState(surface);
+    reconcilerState.set(this, Object.freeze({ surface, dependencies }));
   }
 
   /**
@@ -165,7 +158,12 @@ export class EffectReconciler {
     context: OperationContext,
     transaction?: UnitOfWorkTransaction,
   ): Promise<LedgerProjection> {
-    return reconcileExecutionEffect(this.dependencies, taskId, context, transaction);
+    return reconcileExecutionEffect(
+      requireReconcilerState(this).dependencies,
+      taskId,
+      context,
+      transaction,
+    );
   }
 
   /**
@@ -198,21 +196,26 @@ export class EffectReconciler {
    * execution authority there would be wrong — and an already-consumed capability stays
    * authentic, which is what lets the attempt it created be settled later.
    */
-  private requireCanonicalAuthority(plan: AuthorizedSemanticExecutionPlan): void {
-    this.#surface.verifyExecutionAuthority(plan);
+  private static requireCanonicalAuthority(
+    surface: SurfaceAuthorityState,
+    plan: AuthorizedSemanticExecutionPlan,
+  ): void {
+    surface.boundary.capabilities.verify(plan);
   }
 
   async runGovernedEffect(
     request: GovernedEffectRequest,
     context: OperationContext,
   ): Promise<GovernedEffectOutcome> {
-    // This object first: a constructor-bypassed instance has no authority at all, however many
-    // ordinary properties it carries.
-    requireGenuineReconciler(this);
+    // Every privileged value comes from module-private state, never from a property on `this` or
+    // on the surface: a constructor-bypassed instance has no state at all, and a genuine object
+    // whose public members were redefined still executes against the authority it was built with.
+    const state = requireReconcilerState(this);
+    const surface = requireSurfaceState(state.surface);
     const { plan, sandbox, taskId } = request;
     // Then the capability: before the projection this claim reads, before the attempt is
     // appended, and before anything reaches SandboxPort.
-    this.requireCanonicalAuthority(plan);
+    EffectReconciler.requireCanonicalAuthority(surface, plan);
     assertScopedIdentity(request);
     const intentFingerprint = this.intentFingerprintFor(plan);
 
@@ -222,7 +225,7 @@ export class EffectReconciler {
     // the unresolved attempt it must lose to. Nothing may reach the environment until the claim
     // is durable — which is also what makes a crash from here on show up as an unresolved
     // attempt rather than as silence.
-    const attempt = await this.dependencies.unitOfWork.execute(context, async (transaction) => {
+    const attempt = await state.dependencies.unitOfWork.execute(context, async (transaction) => {
       const decision = decideRetry(
         await this.projection(taskId, context, transaction),
         intentFingerprint,
@@ -242,10 +245,10 @@ export class EffectReconciler {
         );
       }
       const claimed = ExecutionLedgerEntry.create({
-        id: this.dependencies.generateEntryId(),
+        id: state.dependencies.generateEntryId(),
         taskId,
         jobId: plan.jobId,
-        recordedAt: this.dependencies.now(),
+        recordedAt: state.dependencies.now(),
         detail: `attempting ${plan.operationId}`,
         kind: "effect_attempt",
         intentFingerprint,
@@ -253,14 +256,14 @@ export class EffectReconciler {
         workspaceId: plan.workspaceId,
         sandboxId: plan.sandboxId,
       });
-      await appendExecutionLedgerEntry(this.dependencies, claimed, context, transaction);
+      await appendExecutionLedgerEntry(state.dependencies, claimed, context, transaction);
       return claimed;
     });
 
     let result: SandboxExecutionResult | null = null;
     let dispatchFailure: string | null = null;
     try {
-      result = await this.#surface.sandboxes.execute(sandbox, plan, context);
+      result = await surface.sandboxes.execute(sandbox, plan, context);
     } catch (error) {
       // A refused or failed dispatch is not proof that nothing happened; the probe decides.
       dispatchFailure = error instanceof Error ? error.message : "dispatch failed";
@@ -268,7 +271,7 @@ export class EffectReconciler {
 
     const post = await observePostState(request, result, context);
     return recordOutcome(
-      this.dependencies,
+      state.dependencies,
       request,
       attempt,
       result,
@@ -306,8 +309,9 @@ export class EffectReconciler {
   ): Promise<EffectReconciliationResult> {
     // Before the ledger read that authorizes this settlement, before the probe, before any
     // append. Settling recorded history is authority, and only a canonically created reconciler
-    // holds it.
-    requireGenuineReconciler(this);
+    // holds it — together with the ledger and clock it was built with, not whichever ones a
+    // caller has since attached to it.
+    const { dependencies } = requireReconcilerState(this);
     const { taskId, attemptEntryId } = request;
     const attempt = requireReconcilableAttempt(await this.projection(taskId, context), request);
     const descriptor = describeAttempt(attempt);
@@ -335,11 +339,11 @@ export class EffectReconciler {
 
     const outcomeKind = LEDGER_KIND_FOR_POST_STATE[post.kind];
     const entry = ExecutionLedgerEntry.create({
-      id: this.dependencies.generateEntryId(),
+      id: dependencies.generateEntryId(),
       taskId,
       // From the recorded attempt, so a reconciliation cannot be filed under another job.
       jobId: attempt.jobId,
-      recordedAt: this.dependencies.now(),
+      recordedAt: dependencies.now(),
       attemptEntryId,
       kind: outcomeKind,
       facts: post.kind === "unknown" ? [] : post.facts,
@@ -351,8 +355,8 @@ export class EffectReconciler {
     // One transaction: the append path folds the attempt's committed state and validates the
     // transition before writing, so exactly one of two concurrent reconciliations can win and the
     // loser gets a deterministic conflict.
-    await this.dependencies.unitOfWork.execute(context, async (transaction) => {
-      await appendExecutionLedgerEntry(this.dependencies, entry, context, transaction);
+    await dependencies.unitOfWork.execute(context, async (transaction) => {
+      await appendExecutionLedgerEntry(dependencies, entry, context, transaction);
     });
 
     return Object.freeze({
@@ -398,17 +402,12 @@ export class EffectReconciler {
  * produces an object that passes it — which is why membership, not shape or prototype, decides.
  */
 export class GovernedExecutionSurface {
-  readonly #boundary: SemanticAuthorizationBoundary;
-  readonly #sandboxes: SandboxPort;
-
-  private constructor(boundary: SemanticAuthorizationBoundary, sandboxes: SandboxPort) {
-    this.#boundary = boundary;
-    this.#sandboxes = sandboxes;
-  }
+  private constructor() {}
 
   /**
-   * Builds the boundary and the sandbox together, from one authority, and records the result as
-   * genuine. This is the only way a `GovernedExecutionSurface` comes into existence.
+   * Builds the boundary and the sandbox together, from one authority, and binds that pairing into
+   * module-private state. This is the only way a `GovernedExecutionSurface` comes into existence,
+   * and the only way anything is ever written to `surfaceState`.
    */
   static create(options: GovernedExecutionSurfaceOptions): GovernedExecutionSurface {
     const { policy, generateExecutionPlanId, now, ...sandbox } = options;
@@ -417,51 +416,61 @@ export class GovernedExecutionSurface {
       ...(generateExecutionPlanId === undefined ? {} : { generateExecutionPlanId }),
       ...(now === undefined ? {} : { now }),
     });
-    const surface = new GovernedExecutionSurface(
-      boundary,
-      // The sandbox is paired with this boundary's verifier here and nowhere else.
-      new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities }),
+    const surface = new GovernedExecutionSurface();
+    surfaceState.set(
+      surface,
+      Object.freeze({
+        boundary,
+        // The sandbox is paired with this boundary's verifier here and nowhere else.
+        sandboxes: new SandboxSupervisor({ ...sandbox, capabilities: boundary.capabilities }),
+      }),
     );
-    genuineSurfaces.add(surface);
     return surface;
   }
 
   /**
    * A **diagnostic** predicate, not the security boundary.
    *
-   * It reports the same answer as the module-private check, but nothing security-relevant calls
-   * it: it is a public static, so it is a writable property on an exported class and a caller can
-   * replace it. Construction consults `requireGenuineSurface` directly, so monkey-patching this
-   * changes what a caller is told and nothing about what is permitted.
+   * It is a public static — a writable property on an exported class — so a caller can replace it.
+   * Nothing security-relevant consults it: privileged code calls `requireSurfaceState` directly,
+   * so monkey-patching this changes what a caller is told and nothing about what is permitted.
    */
   static isGenuine(candidate: unknown): boolean {
-    return typeof candidate === "object" && candidate !== null && genuineSurfaces.has(candidate);
-  }
-
-  /** Requests an execution capability from this surface's own Task 1 boundary. */
-  get authorize(): SemanticAuthorizationBoundary["authorize"] {
-    return this.#boundary.authorize;
+    return typeof candidate === "object" && candidate !== null && surfaceState.has(candidate);
   }
 
   /**
-   * The sandbox this surface governs. Safe to expose: it enforces the same authority, so handing
-   * it out cannot create a mismatched pair — only `createEffectReconciler` decides what an
-   * `EffectReconciler` runs against, and it always passes this surface itself.
+   * Requests an execution capability from this surface's own Task 1 boundary.
+   *
+   * Like every member below, this reads the boundary from private state rather than from a field,
+   * so redefining a property on this instance cannot redirect it.
+   */
+  get authorize(): SemanticAuthorizationBoundary["authorize"] {
+    return requireSurfaceState(this).boundary.authorize;
+  }
+
+  /**
+   * The sandbox this surface governs, for ordinary callers.
+   *
+   * Shadowing this on an instance is possible and harmless: privileged execution never reads it.
+   * `runGovernedEffect` dispatches through `requireSurfaceState(...).sandboxes`, which no caller
+   * can reach or rewrite.
    */
   get sandboxes(): SandboxPort {
-    return this.#sandboxes;
+    return requireSurfaceState(this).sandboxes;
   }
 
   /** Proves a capability came from this surface's boundary, and that its grant is still current. */
   verifyExecutionAuthority(plan: AuthorizedSemanticExecutionPlan): void {
-    this.#boundary.capabilities.verify(plan);
+    requireSurfaceState(this).boundary.capabilities.verify(plan);
   }
 
   /**
-   * The reconciler for this surface. It receives the surface itself, so its authority check and
-   * its dispatch sink are the same authority by construction rather than by convention.
+   * The reconciler for this surface. Its authority is bound from private state, so the two halves
+   * are the same authority by construction rather than by convention.
    */
   createEffectReconciler(options: EffectReconcilerDependencies): EffectReconciler {
+    requireSurfaceState(this);
     return new EffectReconciler(RECONCILER_CONSTRUCTION, this, options);
   }
 }
