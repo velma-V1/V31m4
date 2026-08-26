@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   assessTaskEvidence,
   type TaskEvidenceAssessment,
+  TaskEvidenceScope,
   TaskTransitionPolicy,
   type TaskTransitionProposal,
 } from "../../src/services/task-transition-policy.js";
@@ -224,12 +225,59 @@ describe("TaskTransitionPolicy evidence verification", () => {
   });
 });
 
-describe("assessTaskEvidence", () => {
-  const owning = capsule({
+describe("TaskEvidenceScope", () => {
+  const current = capsule({
     phase: "verify",
-    acceptanceCriterionIds: ["requirement:1"],
-    changeArtifactIds: ["artifact:1"],
+    acceptanceCriterionIds: ["requirement:old"],
+    changeArtifactIds: ["artifact:old"],
   });
+
+  it("derives a capsule's own scope from its identity and subject collections", () => {
+    expect(TaskEvidenceScope.of(current)).toEqual({
+      // The nominal marker is what stops a capsule being passed where a scope is required.
+      scopeKind: "task_evidence_scope",
+      taskId: "task:root",
+      projectId: "project:1",
+      jobId: "job:1",
+      acceptanceCriterionIds: ["requirement:old"],
+      changeArtifactIds: ["artifact:old"],
+    });
+    expect(TaskEvidenceScope.matches(TaskEvidenceScope.of(current), current)).toBe(true);
+  });
+
+  it("takes the proposed subject collections when a change supplies them", () => {
+    const scope = TaskEvidenceScope.prospective(current, {
+      updatedAt: "2026-08-26T00:01:00.000Z",
+      acceptanceCriterionIds: ["requirement:new"],
+    });
+    expect(scope.acceptanceCriterionIds).toEqual(["requirement:new"]);
+    // Anything the change leaves alone keeps the current value.
+    expect(scope.changeArtifactIds).toEqual(["artifact:old"]);
+    expect(scope.taskId).toBe("task:root");
+    expect(scope.projectId).toBe("project:1");
+    expect(scope.jobId).toBe("job:1");
+  });
+
+  it("keeps the current scope when the change touches neither collection", () => {
+    expect(
+      TaskEvidenceScope.prospective(current, { updatedAt: "2026-08-26T00:01:00.000Z" }),
+    ).toEqual(TaskEvidenceScope.of(current));
+  });
+
+  it("reports a scope that does not describe a capsule as not matching", () => {
+    const other = capsule({ phase: "verify", acceptanceCriterionIds: ["requirement:new"] });
+    expect(TaskEvidenceScope.matches(TaskEvidenceScope.of(current), other)).toBe(false);
+  });
+});
+
+describe("assessTaskEvidence", () => {
+  const owning = TaskEvidenceScope.of(
+    capsule({
+      phase: "verify",
+      acceptanceCriterionIds: ["requirement:1"],
+      changeArtifactIds: ["artifact:1"],
+    }),
+  );
 
   function record(overrides: Partial<Parameters<typeof EvidenceRecord.create>[0]> = {}) {
     return EvidenceRecord.create({

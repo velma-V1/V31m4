@@ -336,3 +336,192 @@ describe("observation validity", () => {
     expect(isEntryStillValid(projection, check, { "src/index.ts": hash("patched") })).toBe(false);
   });
 });
+
+/**
+ * `dependsOnEntryIds` is a real validity edge, not a decoration. A conclusion cannot outlive its
+ * premise: a check whose own report file has not moved is still stale once the observation it was
+ * derived from goes stale or is invalidated.
+ *
+ * Every case below keeps the check's own fact on a *different* resource from its dependency's, so
+ * nothing can pass by accident through the check's own fingerprint moving too.
+ */
+describe("check validity dependencies", () => {
+  const REPORT = "reports/targeted-tests.json";
+  const stableReport = { [REPORT]: hash("report-stable") };
+
+  function observationEntry(
+    id: string,
+    locator: string,
+    seed: string,
+    overrides: Record<string, unknown> = {},
+  ): LedgerEntry {
+    return ExecutionLedgerEntry.create({
+      id,
+      taskId: "task:root",
+      jobId: "job:1",
+      recordedAt: "2026-08-26T00:00:00.000Z",
+      detail: `read ${locator}`,
+      kind: "observation",
+      facts: [{ resourceKind: "workspace_file", locator, fingerprint: hash(seed) }],
+      ...overrides,
+    });
+  }
+
+  function checkEntry(
+    id: string,
+    locator: string,
+    seed: string,
+    dependsOnEntryIds: readonly string[],
+    overrides: Record<string, unknown> = {},
+  ): LedgerEntry {
+    return ExecutionLedgerEntry.create({
+      id,
+      taskId: "task:root",
+      jobId: "job:1",
+      recordedAt: "2026-08-26T00:00:01.000Z",
+      detail: "targeted tests passed",
+      kind: "check_result",
+      checkName: "targeted tests",
+      passed: true,
+      facts: [{ resourceKind: "report", locator, fingerprint: hash(seed) }],
+      dependsOnEntryIds,
+      ...overrides,
+    });
+  }
+
+  const source = observationEntry("ledger:observation-source", "src/index.ts", "source-before");
+  const check = checkEntry("ledger:check", REPORT, "report-stable", [source.id]);
+
+  it("keeps a check valid while its dependency is current", () => {
+    const projection = projectLedger([source, check]);
+    expect(
+      isEntryStillValid(projection, check, {
+        ...stableReport,
+        "src/index.ts": hash("source-before"),
+      }),
+    ).toBe(true);
+  });
+
+  it("invalidates a check whose dependency was explicitly invalidated", () => {
+    const projection = projectLedger([
+      source,
+      check,
+      entry({
+        kind: "invalidation",
+        invalidatesEntryIds: [source.id],
+        reason: "the source file moved on",
+      }),
+    ]);
+    // The check's own report is untouched; only the premise was superseded.
+    expect(
+      isEntryStillValid(projection, check, {
+        ...stableReport,
+        "src/index.ts": hash("source-before"),
+      }),
+    ).toBe(false);
+  });
+
+  it("invalidates a check whose dependency's own resource went stale", () => {
+    const projection = projectLedger([source, check]);
+    expect(
+      isEntryStillValid(projection, check, {
+        ...stableReport,
+        "src/index.ts": hash("source-after"),
+      }),
+    ).toBe(false);
+  });
+
+  it("propagates invalidation through a chain of checks", () => {
+    const middle = checkEntry("ledger:check-middle", "reports/unit.json", "unit-stable", [
+      source.id,
+    ]);
+    const outer = checkEntry("ledger:check-outer", REPORT, "report-stable", [middle.id]);
+    const entries = [source, middle, outer];
+    const current = {
+      ...stableReport,
+      "reports/unit.json": hash("unit-stable"),
+      "src/index.ts": hash("source-before"),
+    };
+    expect(isEntryStillValid(projectLedger(entries), outer, current)).toBe(true);
+    // One stale resource two hops away is enough.
+    expect(
+      isEntryStillValid(projectLedger(entries), outer, {
+        ...current,
+        "src/index.ts": hash("source-after"),
+      }),
+    ).toBe(false);
+    // And so is an explicit invalidation two hops away.
+    expect(
+      isEntryStillValid(
+        projectLedger([
+          ...entries,
+          entry({
+            kind: "invalidation",
+            invalidatesEntryIds: [source.id],
+            reason: "superseded",
+          }),
+        ]),
+        outer,
+        current,
+      ),
+    ).toBe(false);
+  });
+
+  it("fails closed when a declared dependency is not in the history at all", () => {
+    const orphan = checkEntry("ledger:orphan", REPORT, "report-stable", ["ledger:missing"]);
+    expect(isEntryStillValid(projectLedger([orphan]), orphan, stableReport)).toBe(false);
+  });
+
+  it("fails closed on a dependency from another task or another job", () => {
+    for (const foreign of [{ taskId: "task:other" }, { jobId: "job:other" }]) {
+      const stranger = observationEntry("ledger:foreign", "src/index.ts", "source-before", foreign);
+      const dependent = checkEntry("ledger:dependent", REPORT, "report-stable", [stranger.id]);
+      expect(
+        isEntryStillValid(projectLedger([stranger, dependent]), dependent, {
+          ...stableReport,
+          "src/index.ts": hash("source-before"),
+        }),
+        JSON.stringify(foreign),
+      ).toBe(false);
+    }
+  });
+
+  it("fails closed on a dependency cycle in corrupted history", () => {
+    // Append refuses a dependency that does not already exist, so a cycle can only reach the fold
+    // through corrupted storage. It must not loop, and it must not be trusted.
+    const left = checkEntry("ledger:cycle-left", "reports/left.json", "left-stable", [
+      "ledger:cycle-right",
+    ]);
+    const right = checkEntry("ledger:cycle-right", "reports/right.json", "right-stable", [
+      "ledger:cycle-left",
+    ]);
+    const current = {
+      "reports/left.json": hash("left-stable"),
+      "reports/right.json": hash("right-stable"),
+    };
+    expect(isEntryStillValid(projectLedger([left, right]), left, current)).toBe(false);
+    expect(isEntryStillValid(projectLedger([left, right]), right, current)).toBe(false);
+  });
+
+  it("judges a non-fact-bearing entry by invalidation alone", () => {
+    // Append refuses to create this shape — an invalidation may only name a fact-bearing entry —
+    // but the fold must still be well defined if corrupted history presents one. It changes no
+    // retry decision either way; `decideRetry` reads attempt outcomes, never the invalidated set.
+    const attemptEntry = attempt("ledger:attempt-validity");
+    expect(isEntryStillValid(projectLedger([attemptEntry]), attemptEntry, {})).toBe(true);
+    expect(
+      isEntryStillValid(
+        projectLedger([
+          attemptEntry,
+          entry({
+            kind: "invalidation",
+            invalidatesEntryIds: [attemptEntry.id],
+            reason: "superseded",
+          }),
+        ]),
+        attemptEntry,
+        {},
+      ),
+    ).toBe(false);
+  });
+});

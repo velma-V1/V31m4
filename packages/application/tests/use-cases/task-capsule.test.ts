@@ -500,6 +500,155 @@ describe("evidence-gated transitions", () => {
   });
 });
 
+/**
+ * Evidence is judged against the state being **committed**, not the one that was read. A single
+ * transition can move the acceptance contract or the change artifacts, and a record that proved a
+ * subject the new capsule no longer owns is not proof about it.
+ */
+describe("evidence is bound to the scope being committed", () => {
+  async function atVerify(
+    scope: Partial<Parameters<typeof createTaskCapsule>[1]> = {},
+  ): Promise<TaskCapsuleType> {
+    const created = await createTaskCapsule(
+      deps(),
+      { ...draft, phase: "verify", ...scope },
+      context,
+    );
+    return created.capsule;
+  }
+
+  function complete(
+    current: TaskCapsuleType,
+    evidenceIds: readonly string[],
+    changes: Record<string, unknown>,
+  ) {
+    return proposeTaskTransition(
+      deps(),
+      proposalFor(current, { from: "verify", to: "complete", evidenceIds }),
+      { updatedAt: "2026-08-26T00:01:00.000Z", ...changes },
+      context,
+    );
+  }
+
+  it("refuses to complete on evidence for a criterion the same transition replaces", async () => {
+    await evidence.append(
+      evidenceRecord({ subjectType: "acceptance_criterion", subjectId: "requirement:old" }),
+    );
+    const current = await atVerify({ acceptanceCriterionIds: ["requirement:old"] });
+    await expect(
+      complete(current, ["evidence:passing"], { acceptanceCriterionIds: ["requirement:new"] }),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+    expect(capsules.head?.value.capsuleRevision).toBe(1);
+  });
+
+  it("refuses to complete on evidence for a criterion the same transition drops", async () => {
+    await evidence.append(
+      evidenceRecord({ subjectType: "acceptance_criterion", subjectId: "requirement:old" }),
+    );
+    const current = await atVerify({ acceptanceCriterionIds: ["requirement:old"] });
+    await expect(
+      complete(current, ["evidence:passing"], { acceptanceCriterionIds: [] }),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+  });
+
+  it("refuses a transition on artifact evidence the same transition replaces", async () => {
+    await evidence.append(evidenceRecord({ subjectType: "artifact", subjectId: "artifact:old" }));
+    const current = await atVerify({ changeArtifactIds: ["artifact:old"] });
+    await expect(
+      complete(current, ["evidence:passing"], { changeArtifactIds: ["artifact:new"] }),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+  });
+
+  it("refuses to carry verified evidence whose subject leaves scope in the same move", async () => {
+    await evidence.append(
+      evidenceRecord({ subjectType: "acceptance_criterion", subjectId: "requirement:old" }),
+    );
+    const created = await createTaskCapsule(
+      deps(),
+      {
+        ...draft,
+        phase: "investigate",
+        acceptanceCriterionIds: ["requirement:old"],
+        verifiedEvidenceIds: ["evidence:passing"],
+      },
+      context,
+    );
+    // The transition cites nothing at all; the carried reference alone must still be revalidated.
+    await expect(
+      proposeTaskTransition(
+        deps(),
+        proposalFor(created.capsule, { from: "investigate", to: "plan" }),
+        {
+          updatedAt: "2026-08-26T00:01:00.000Z",
+          acceptanceCriterionIds: ["requirement:new"],
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect(capsules.revisions.size).toBe(1);
+  });
+
+  it("allows the same move once the out-of-scope reference is explicitly dropped", async () => {
+    await evidence.append(
+      evidenceRecord({ subjectType: "acceptance_criterion", subjectId: "requirement:old" }),
+    );
+    const created = await createTaskCapsule(
+      deps(),
+      {
+        ...draft,
+        phase: "investigate",
+        acceptanceCriterionIds: ["requirement:old"],
+        verifiedEvidenceIds: ["evidence:passing"],
+      },
+      context,
+    );
+    const planned = await proposeTaskTransition(
+      deps(),
+      proposalFor(created.capsule, { from: "investigate", to: "plan" }),
+      {
+        updatedAt: "2026-08-26T00:01:00.000Z",
+        acceptanceCriterionIds: ["requirement:new"],
+        verifiedEvidenceIds: [],
+      },
+      context,
+    );
+    expect(planned.capsule.acceptanceCriterionIds).toEqual(["requirement:new"]);
+    expect(planned.capsule.verifiedEvidenceIds).toEqual([]);
+  });
+
+  it("retains carried evidence that is still in scope after the transition", async () => {
+    await evidence.append(evidenceRecord());
+    const created = await createTaskCapsule(
+      deps(),
+      { ...draft, phase: "investigate", verifiedEvidenceIds: ["evidence:passing"] },
+      context,
+    );
+    const planned = await proposeTaskTransition(
+      deps(),
+      proposalFor(created.capsule, { from: "investigate", to: "plan" }),
+      { updatedAt: "2026-08-26T00:01:00.000Z", planSteps: ["reproduce", "fix"] },
+      context,
+    );
+    expect(planned.capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+  });
+
+  it("allows completing on evidence for a criterion the same transition introduces", async () => {
+    await evidence.append(
+      evidenceRecord({ subjectType: "acceptance_criterion", subjectId: "requirement:new" }),
+    );
+    const current = await atVerify({ acceptanceCriterionIds: ["requirement:old"] });
+    const completed = await complete(current, ["evidence:passing"], {
+      acceptanceCriterionIds: ["requirement:new"],
+    });
+    expect(completed.capsule.phase).toBe("complete");
+    expect(completed.capsule.acceptanceCriterionIds).toEqual(["requirement:new"]);
+    expect(completed.capsule.verifiedEvidenceIds).toEqual(["evidence:passing"]);
+  });
+});
+
 describe("replay without conversation history", () => {
   it("reconstructs the latest state from stored revisions alone", async () => {
     const first = await seed();

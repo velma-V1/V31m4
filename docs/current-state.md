@@ -191,8 +191,29 @@ This file is a concise operational handoff for future Claude Code sessions. It r
     canonical paged walk built on the existing `collectPortPages` mechanism, which follows the
     cursor to exhaustion, rejects a repeated cursor as `INTEGRITY_FAILURE`, and reports its
     defensive page ceiling as a typed non-success rather than pretending history ended.
-  - Gate after repair: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
-    pre-existing info), typecheck 9/9, **791 passing / 16 skipped / 6 todo (813) across 124
+  - **Round 2 (independent re-review of `314604e`).** Two further HIGH findings, both reproduced
+    against the committed code before any repair and both repaired:
+    - **T2-2 — evidence was validated against the previous state.** `proposeTaskTransition`
+      resolved and judged evidence against `current`, then applied `TaskCapsuleChanges` — which may
+      replace `acceptanceCriterionIds` or `changeArtifactIds` in the same move. A record proving a
+      subject the committed capsule no longer owned could therefore authorize the transition, and
+      already-carried `verifiedEvidenceIds` were exempted from revalidation entirely. Evidence is
+      now judged against a typed `TaskEvidenceScope` derived from immutable task/project/job
+      identity plus the proposed changes, **every** reference that will exist afterwards is
+      revalidated (carried ones included), and a post-condition proves the scope evaluated is the
+      scope actually written. The scope carries a nominal marker, so passing a capsule where the
+      committed scope is required is a compile error rather than a silent regression.
+    - **T3-4 — check validity dependencies were not enforced.** `isEntryStillValid` read only the
+      entry's own facts and the invalidated set, so `dependsOnEntryIds` meant nothing: a check
+      whose own report had not moved stayed "current" after the observation it rested on was
+      invalidated or went stale. Validity now requires every declared dependency to exist, be
+      fact-bearing, belong to the same task and job, and itself be valid, chaining transitively and
+      failing closed on a missing, foreign, or cyclic dependency. Reference edges are also hardened
+      at append time: outcome/failure/check/invalidation references must all resolve inside the
+      same task **and** job, and an invalidation may only name a fact-bearing entry — so it can
+      never be aimed at an effect attempt.
+  - Gate after round 2: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **822 passing / 16 skipped / 6 todo (844) across 124
     passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
     is a green regression suite, **not** a passed Task 2 or Task 3 gate.
 

@@ -1,4 +1,10 @@
-import type { ContentHash, ExecutionLedgerEntry, LedgerEntryId, TaskId } from "@v31m4/domain";
+import type {
+  ContentHash,
+  ExecutionLedgerEntry,
+  LedgerEntryId,
+  LedgerResourceFact,
+  TaskId,
+} from "@v31m4/domain";
 import { ApplicationError } from "../application-errors.js";
 import type { OperationContext } from "../operation-context.js";
 import type { ExecutionLedgerRepositoryPort } from "../ports/execution-ledger-repository.port.js";
@@ -26,15 +32,35 @@ export interface AttemptState {
   readonly outcome: AttemptOutcome;
 }
 
+/**
+ * The part of a fact-bearing entry that decides whether it is still current.
+ *
+ * Only `observation` and `check_result` can go stale, so only those are indexed. Keeping a
+ * compact node instead of the whole entry is what lets a dependency be resolved during an
+ * incremental, paged fold without holding every entry of a long history.
+ */
+export interface LedgerValidityNode {
+  readonly entryId: string;
+  readonly kind: "observation" | "check_result";
+  readonly taskId: string;
+  readonly jobId: string;
+  readonly facts: readonly LedgerResourceFact[];
+  /** Entries this one's validity depends on; empty for an observation. */
+  readonly dependsOnEntryIds: readonly string[];
+}
+
 export interface LedgerProjection {
   readonly attempts: readonly AttemptState[];
   /** Entries explicitly invalidated by a later `invalidation` entry. */
   readonly invalidatedEntryIds: ReadonlySet<string>;
+  /** Every fact-bearing entry, so a declared validity dependency can actually be resolved. */
+  readonly validityNodes: ReadonlyMap<string, LedgerValidityNode>;
 }
 
 interface LedgerFold {
   readonly attempts: Map<string, { state: AttemptState; resolved: boolean }>;
   readonly invalidated: Set<string>;
+  readonly validityNodes: Map<string, LedgerValidityNode>;
 }
 
 /**
@@ -42,7 +68,11 @@ interface LedgerFold {
  * nothing is mutated, and the same entries always fold to the same projection.
  */
 export function projectLedger(entries: readonly ExecutionLedgerEntry[]): LedgerProjection {
-  const fold: LedgerFold = { attempts: new Map(), invalidated: new Set() };
+  const fold: LedgerFold = {
+    attempts: new Map(),
+    invalidated: new Set(),
+    validityNodes: new Map(),
+  };
   foldLedgerPage(fold, entries);
   return finishFold(fold);
 }
@@ -57,6 +87,16 @@ function foldLedgerPage(fold: LedgerFold, entries: readonly ExecutionLedgerEntry
   const invalidated = fold.invalidated;
 
   for (const entry of entries) {
+    if (entry.kind === "observation" || entry.kind === "check_result") {
+      fold.validityNodes.set(entry.id, {
+        entryId: entry.id,
+        kind: entry.kind,
+        taskId: entry.taskId,
+        jobId: entry.jobId,
+        facts: entry.facts,
+        dependsOnEntryIds: entry.kind === "check_result" ? entry.dependsOnEntryIds : [],
+      });
+    }
     switch (entry.kind) {
       case "effect_attempt":
         attempts.set(entry.id, {
@@ -98,6 +138,7 @@ function finishFold(fold: LedgerFold): LedgerProjection {
   return Object.freeze({
     attempts: Object.freeze([...fold.attempts.values()].map((held) => held.state)),
     invalidatedEntryIds: fold.invalidated,
+    validityNodes: fold.validityNodes,
   });
 }
 
@@ -186,19 +227,90 @@ function blocked(
   });
 }
 
+/** The only entry kinds a check's validity may depend on. */
+const DEPENDENCY_KINDS: ReadonlySet<string> = new Set(["observation", "check_result"]);
+
 /**
- * An observation or check is usable only if nothing later invalidated it **and** every resource
- * it recorded still carries the fingerprint it had when observed. A fact about a file that has
- * since changed is history, not evidence.
+ * An observation or check is usable only if nothing later invalidated it, every resource it
+ * recorded still carries the fingerprint it had when observed, **and** every validity dependency
+ * it declared is itself still usable.
+ *
+ * That last clause is what makes `dependsOnEntryIds` mean something. A check whose own report file
+ * has not moved is not current if the observation it was derived from has gone stale or been
+ * invalidated — the conclusion outlived its premise. Dependencies chain, so invalidating one
+ * observation propagates through every check that transitively rests on it.
+ *
+ * Every ambiguity fails closed: a dependency that is missing, belongs to another task or job, is
+ * not a fact-bearing kind, or sits on a cycle in corrupted history makes the dependent unusable
+ * rather than trusted.
  */
 export function isEntryStillValid(
   projection: LedgerProjection,
   entry: ExecutionLedgerEntry,
   currentFingerprints: Readonly<Record<string, string>>,
 ): boolean {
-  if (projection.invalidatedEntryIds.has(entry.id)) return false;
-  if (entry.kind !== "observation" && entry.kind !== "check_result") return true;
-  return entry.facts.every((fact) => currentFingerprints[fact.locator] === fact.fingerprint);
+  if (entry.kind !== "observation" && entry.kind !== "check_result") {
+    return !projection.invalidatedEntryIds.has(entry.id);
+  }
+  return isNodeStillValid(
+    projection,
+    {
+      entryId: entry.id,
+      kind: entry.kind,
+      taskId: entry.taskId,
+      jobId: entry.jobId,
+      facts: entry.facts,
+      dependsOnEntryIds: entry.kind === "check_result" ? entry.dependsOnEntryIds : [],
+    },
+    currentFingerprints,
+    new Map(),
+    new Set(),
+  );
+}
+
+function isNodeStillValid(
+  projection: LedgerProjection,
+  node: LedgerValidityNode,
+  currentFingerprints: Readonly<Record<string, string>>,
+  decided: Map<string, boolean>,
+  visiting: Set<string>,
+): boolean {
+  const cached = decided.get(node.entryId);
+  if (cached !== undefined) return cached;
+  // A cycle can only come from corrupted history — append refuses a dependency that does not
+  // already exist — so treat it as unusable rather than looping or trusting it.
+  if (visiting.has(node.entryId)) return false;
+
+  const valid = evaluateNode(projection, node, currentFingerprints, decided, visiting);
+  decided.set(node.entryId, valid);
+  return valid;
+}
+
+function evaluateNode(
+  projection: LedgerProjection,
+  node: LedgerValidityNode,
+  currentFingerprints: Readonly<Record<string, string>>,
+  decided: Map<string, boolean>,
+  visiting: Set<string>,
+): boolean {
+  if (projection.invalidatedEntryIds.has(node.entryId)) return false;
+  if (!node.facts.every((fact) => currentFingerprints[fact.locator] === fact.fingerprint)) {
+    return false;
+  }
+  if (node.dependsOnEntryIds.length === 0) return true;
+
+  visiting.add(node.entryId);
+  try {
+    return node.dependsOnEntryIds.every((dependencyId) => {
+      const dependency = projection.validityNodes.get(dependencyId);
+      if (dependency === undefined) return false;
+      if (!DEPENDENCY_KINDS.has(dependency.kind)) return false;
+      if (dependency.taskId !== node.taskId || dependency.jobId !== node.jobId) return false;
+      return isNodeStillValid(projection, dependency, currentFingerprints, decided, visiting);
+    });
+  } finally {
+    visiting.delete(node.entryId);
+  }
 }
 
 export interface ReconcileExecutionEffectDependencies {
@@ -246,7 +358,11 @@ export async function reconcileExecutionEffect(
   context: OperationContext,
   transaction?: UnitOfWorkTransaction,
 ): Promise<LedgerProjection> {
-  const fold: LedgerFold = { attempts: new Map(), invalidated: new Set() };
+  const fold: LedgerFold = {
+    attempts: new Map(),
+    invalidated: new Set(),
+    validityNodes: new Map(),
+  };
   await scanTaskLedger(
     dependencies.ledger,
     taskId,

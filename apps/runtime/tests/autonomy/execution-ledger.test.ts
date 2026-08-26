@@ -4,6 +4,9 @@ import { join } from "node:path";
 import {
   ApplicationError,
   appendExecutionLedgerEntry,
+  decideRetry,
+  isEntryStillValid,
+  projectLedger,
   type SandboxHandle,
   SandboxIsolationPolicy,
   type SandboxPort,
@@ -388,6 +391,258 @@ describe("append-only history", () => {
 });
 
 /**
+ * A ledger reference is an authoritative edge, and `getById` is a global lookup by identifier. If
+ * an edge could cross a task or job boundary, another job's outcome could finalize this job's
+ * attempt, or a check could rest on history this task never produced.
+ */
+describe("references may not cross scope", () => {
+  const facts = [
+    {
+      resourceKind: "workspace_file",
+      locator: "target.ts",
+      fingerprint: ContentHash.parse(sha256Hex("after")),
+    },
+  ];
+
+  async function seedAttempt(): Promise<void> {
+    await appendExecutionLedgerEntry(
+      { unitOfWork: database.unitOfWork, ledger },
+      ExecutionLedgerEntry.create({
+        id: "ledger:scoped-attempt",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "attempting code.inspect",
+        kind: "effect_attempt",
+        intentFingerprint: ContentHash.parse(sha256Hex("a scoped intent")),
+        operationId: "code.inspect",
+        workspaceId: workspace.id,
+        sandboxId: sandbox.id,
+      }),
+      context,
+    );
+  }
+
+  async function seedObservation(overrides: Record<string, unknown>): Promise<void> {
+    await appendExecutionLedgerEntry(
+      { unitOfWork: database.unitOfWork, ledger },
+      ExecutionLedgerEntry.create({
+        id: "ledger:scoped-observation",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "read target.ts",
+        kind: "observation",
+        facts,
+        ...overrides,
+      }),
+      context,
+    );
+  }
+
+  function appended(entry: Parameters<typeof appendExecutionLedgerEntry>[1]) {
+    return appendExecutionLedgerEntry({ unitOfWork: database.unitOfWork, ledger }, entry, context);
+  }
+
+  it("refuses a same-task wrong-job outcome for an attempt", async () => {
+    await seedAttempt();
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:wrong-job-outcome",
+          taskId,
+          jobId: JobId.parse("job:other"),
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "an outcome recorded under a different job",
+          kind: "effect_confirmation",
+          attemptEntryId: "ledger:scoped-attempt",
+          facts,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    // The attempt is still unresolved, so the intent stays blocked rather than looking finished.
+    const projection = await reconciler.projection(taskId, context);
+    expect(projection.attempts[0]?.outcome).toBe("unresolved");
+  });
+
+  it("refuses a same-task wrong-job failure for an attempt", async () => {
+    await seedAttempt();
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:wrong-job-failure",
+          taskId,
+          jobId: JobId.parse("job:other"),
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "a failure recorded under a different job",
+          kind: "failure",
+          attemptEntryId: "ledger:scoped-attempt",
+          reason: "the process died",
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect((await reconciler.projection(taskId, context)).attempts[0]?.outcome).toBe("unresolved");
+  });
+
+  it("refuses a wrong-task failure for an attempt", async () => {
+    await seedAttempt();
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:wrong-task-failure",
+          taskId: TaskId.parse("task:other"),
+          jobId,
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "a failure recorded under a different task",
+          kind: "failure",
+          attemptEntryId: "ledger:scoped-attempt",
+          reason: "the process died",
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+  });
+
+  it("refuses a check that depends on another task's or job's entry", async () => {
+    for (const [index, foreign] of [
+      { taskId: TaskId.parse("task:other") },
+      { jobId: JobId.parse("job:other") },
+    ].entries()) {
+      database.close();
+      database = runtimeDatabase();
+      await wire(database);
+      await seedObservation(foreign);
+      await expect(
+        appended(
+          ExecutionLedgerEntry.create({
+            id: `ledger:foreign-check-${index}`,
+            taskId,
+            jobId,
+            recordedAt: "2026-08-26T00:00:01.000Z",
+            detail: "targeted tests passed",
+            kind: "check_result",
+            checkName: "targeted tests",
+            passed: true,
+            facts,
+            dependsOnEntryIds: ["ledger:scoped-observation"],
+          }),
+        ),
+        JSON.stringify(foreign),
+      ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    }
+  });
+
+  it("refuses an invalidation that reaches into another task's history", async () => {
+    await seedObservation({ taskId: TaskId.parse("task:other") });
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:cross-invalidation",
+          taskId,
+          jobId,
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "invalidating something this task does not own",
+          kind: "invalidation",
+          invalidatesEntryIds: ["ledger:scoped-observation"],
+          reason: "not mine to supersede",
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+  });
+
+  it("refuses a check that depends on an entry which carries no facts", async () => {
+    await seedAttempt();
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:check-on-attempt",
+          taskId,
+          jobId,
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "targeted tests passed",
+          kind: "check_result",
+          checkName: "targeted tests",
+          passed: true,
+          facts,
+          dependsOnEntryIds: ["ledger:scoped-attempt"],
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+  });
+
+  it("refuses an invalidation aimed at an effect attempt", async () => {
+    // An attempt that may have changed the world is resolved by an observed outcome, never
+    // annulled. Accepting this shape would put a retry-unblocking move within reach of a caller.
+    await seedAttempt();
+    await expect(
+      appended(
+        ExecutionLedgerEntry.create({
+          id: "ledger:invalidate-attempt",
+          taskId,
+          jobId,
+          recordedAt: "2026-08-26T00:00:01.000Z",
+          detail: "trying to annul an attempt",
+          kind: "invalidation",
+          invalidatesEntryIds: ["ledger:scoped-attempt"],
+          reason: "wishing it away",
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+  });
+
+  it("keeps a blocked intent blocked even if such an invalidation were in the history", async () => {
+    // Defence in depth: the append path refuses the entry above, and the fold ignores it anyway —
+    // `decideRetry` reads attempt outcomes, never the invalidated set.
+    await seedAttempt();
+    const projection = projectLedger([
+      ExecutionLedgerEntry.create({
+        id: "ledger:scoped-attempt",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "attempting code.inspect",
+        kind: "effect_attempt",
+        intentFingerprint: ContentHash.parse(sha256Hex("a scoped intent")),
+        operationId: "code.inspect",
+        workspaceId: workspace.id,
+        sandboxId: sandbox.id,
+      }),
+      ExecutionLedgerEntry.create({
+        id: "ledger:forged-invalidation",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:01.000Z",
+        detail: "a forged annulment",
+        kind: "invalidation",
+        invalidatesEntryIds: ["ledger:scoped-attempt"],
+        reason: "wishing it away",
+      }),
+    ]);
+    expect(decideRetry(projection, ContentHash.parse(sha256Hex("a scoped intent"))).allowed).toBe(
+      false,
+    );
+  });
+
+  it("accepts a check that depends on its own task and job's observation", async () => {
+    await seedObservation({});
+    const stored = await appended(
+      ExecutionLedgerEntry.create({
+        id: "ledger:in-scope-check",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:01.000Z",
+        detail: "targeted tests passed",
+        kind: "check_result",
+        checkName: "targeted tests",
+        passed: true,
+        facts,
+        dependsOnEntryIds: ["ledger:scoped-observation"],
+      }),
+    );
+    expect(stored.value.id).toBe("ledger:in-scope-check");
+  });
+});
+
+/**
  * Claiming an intent is atomic. Checking the history and appending the attempt used to be two
  * steps, so two callers could both look, both see nothing blocking, and both go ahead.
  */
@@ -670,6 +925,78 @@ describe("decisions read the whole ledger", () => {
     expect(first).toEqual(second);
     expect(first.attempts).toHaveLength(1);
     expect(first.attempts[0]?.attemptEntryId).toBe("ledger:paged");
+  });
+
+  it("resolves a check's dependency across the page boundary and survives a restart", async () => {
+    // The observation sits on page one and the check that depends on it past the boundary, so a
+    // truncated read would lose the edge rather than the entry.
+    const deps = { unitOfWork: database.unitOfWork, ledger };
+    const sourceFact = {
+      resourceKind: "workspace_file",
+      locator: "target.ts",
+      fingerprint: ContentHash.parse(sha256Hex("source-before")),
+    };
+    const reportFact = {
+      resourceKind: "report",
+      locator: "reports/targeted-tests.json",
+      fingerprint: ContentHash.parse(sha256Hex("report-stable")),
+    };
+    await appendExecutionLedgerEntry(
+      deps,
+      ExecutionLedgerEntry.create({
+        id: "ledger:paged-observation",
+        taskId,
+        jobId,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        detail: "read target.ts",
+        kind: "observation",
+        facts: [sourceFact],
+      }),
+      context,
+    );
+    await fillHistory(LONG_HISTORY);
+    const check = ExecutionLedgerEntry.create({
+      id: "ledger:paged-check",
+      taskId,
+      jobId,
+      recordedAt: "2026-08-26T00:00:02.000Z",
+      detail: "targeted tests passed",
+      kind: "check_result",
+      checkName: "targeted tests",
+      passed: true,
+      facts: [reportFact],
+      dependsOnEntryIds: ["ledger:paged-observation"],
+    });
+    await appendExecutionLedgerEntry(deps, check, context);
+
+    const current = {
+      "target.ts": sourceFact.fingerprint,
+      "reports/targeted-tests.json": reportFact.fingerprint,
+    };
+    expect(isEntryStillValid(await reconciler.projection(taskId, context), check, current)).toBe(
+      true,
+    );
+    // The premise goes stale while the check's own report does not move at all.
+    expect(
+      isEntryStillValid(await reconciler.projection(taskId, context), check, {
+        ...current,
+        "target.ts": ContentHash.parse(sha256Hex("source-after")),
+      }),
+    ).toBe(false);
+
+    database.close();
+    const { SqliteRuntimeDatabase } = await import("@v31m4/infrastructure");
+    database = new SqliteRuntimeDatabase(databasePath);
+    await wire(database);
+
+    const recovered = await reconciler.projection(taskId, context);
+    expect(isEntryStillValid(recovered, check, current)).toBe(true);
+    expect(
+      isEntryStillValid(recovered, check, {
+        ...current,
+        "target.ts": ContentHash.parse(sha256Hex("source-after")),
+      }),
+    ).toBe(false);
   });
 
   it("keeps a >500-entry history blocking under two concurrent identical intents", async () => {

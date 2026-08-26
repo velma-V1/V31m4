@@ -12,7 +12,7 @@ import type {
   TaskCapsuleRepositoryPort,
 } from "../ports/task-capsule-repository.port.js";
 import type { UnitOfWorkPort } from "../ports/unit-of-work.port.js";
-import { assessTaskEvidence } from "../services/task-transition-policy.js";
+import { assessTaskEvidence, TaskEvidenceScope } from "../services/task-transition-policy.js";
 import { resolveTaskEvidence } from "./task-evidence.js";
 
 export interface CreateTaskCapsuleDependencies {
@@ -44,7 +44,8 @@ export async function createTaskCapsule(
   return dependencies.unitOfWork.execute(context, async (transaction) => {
     if (capsule.verifiedEvidenceIds.length > 0) {
       const assessment = assessTaskEvidence(
-        capsule,
+        // The first revision is the state being committed, so it is its own prospective scope.
+        TaskEvidenceScope.of(capsule),
         capsule.verifiedEvidenceIds,
         await resolveTaskEvidence(
           dependencies.evidence,

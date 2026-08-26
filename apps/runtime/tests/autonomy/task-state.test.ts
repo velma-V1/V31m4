@@ -377,6 +377,59 @@ describe("evidence-backed transitions against the real evidence store", () => {
     // And it is durable, not just returned.
     expect((await manager.loadCurrent(taskId, context))?.capsule.phase).toBe("complete");
   });
+
+  it("refuses to complete on evidence for a criterion the same move replaces", async () => {
+    // Against the real store: the record exists and passed, but the revision being committed no
+    // longer owns the criterion it proved.
+    await storeEvidence({ subjectType: "acceptance_criterion", subjectId: "requirement:old" });
+    const created = await manager.createTask(
+      { ...draft, phase: "verify", acceptanceCriterionIds: ["requirement:old"] },
+      context,
+    );
+    await expect(
+      manager.proposeTransition(
+        proposalFor(created.capsule, created.head.revision, {
+          from: "verify",
+          to: "complete",
+          evidenceIds: ["evidence:passing"],
+        }),
+        {
+          updatedAt: "2026-08-26T00:04:00.000Z",
+          acceptanceCriterionIds: ["requirement:new"],
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    const current = await manager.loadCurrent(taskId, context);
+    expect(current?.capsule.phase).toBe("verify");
+    expect(current?.capsule.acceptanceCriterionIds).toEqual(["requirement:old"]);
+  });
+
+  it("refuses to carry durable verified evidence out of its scope", async () => {
+    await storeEvidence({ subjectType: "acceptance_criterion", subjectId: "requirement:old" });
+    const created = await manager.createTask(
+      {
+        ...draft,
+        acceptanceCriterionIds: ["requirement:old"],
+        verifiedEvidenceIds: ["evidence:passing"],
+      },
+      context,
+    );
+    await expect(
+      manager.proposeTransition(
+        proposalFor(created.capsule, created.head.revision, {
+          from: "investigate",
+          to: "plan",
+        }),
+        {
+          updatedAt: "2026-08-26T00:01:00.000Z",
+          acceptanceCriterionIds: ["requirement:new"],
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_INPUT" });
+    expect((await manager.loadCurrent(taskId, context))?.capsule.capsuleRevision).toBe(1);
+  });
 });
 
 describe("DAG readiness", () => {

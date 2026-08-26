@@ -2,6 +2,7 @@ import {
   type EvidenceRecord,
   isCanonicalDurableId,
   type TaskCapsule,
+  type TaskCapsuleChanges,
   type TaskPhase,
 } from "@v31m4/domain";
 
@@ -98,34 +99,122 @@ export interface TaskEvidenceAssessment {
 }
 
 /**
- * Subjects a task's evidence may be about, and how each one is tied back to this exact capsule.
+ * The exact state evidence is judged against.
+ *
+ * Deliberately a value rather than a capsule: what matters is not the revision a proposer read but
+ * the revision that is about to be committed. A transition may replace the acceptance criteria or
+ * the change artifacts in the very same move, and evidence that proved a subject the *new* capsule
+ * no longer owns is not proof of anything about it.
+ */
+export interface TaskEvidenceScope {
+  /**
+   * Nominal marker. A `TaskCapsule` structurally carries every other field here, so without it a
+   * caller could pass the capsule it read and silently reintroduce exactly the "validated against
+   * previous state" defect this type exists to prevent. A scope can only come from the factories
+   * below.
+   */
+  readonly scopeKind: "task_evidence_scope";
+  readonly taskId: string;
+  readonly projectId: string;
+  readonly jobId: string;
+  readonly acceptanceCriterionIds: readonly string[];
+  readonly changeArtifactIds: readonly string[];
+}
+
+function freezeScope(
+  taskId: string,
+  projectId: string,
+  jobId: string,
+  acceptanceCriterionIds: readonly string[],
+  changeArtifactIds: readonly string[],
+): TaskEvidenceScope {
+  return Object.freeze({
+    scopeKind: "task_evidence_scope" as const,
+    taskId,
+    projectId,
+    jobId,
+    acceptanceCriterionIds: Object.freeze([...acceptanceCriterionIds]),
+    changeArtifactIds: Object.freeze([...changeArtifactIds]),
+  });
+}
+
+function sameMembers(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const known = new Set(right);
+  return left.every((value) => known.has(value));
+}
+
+export const TaskEvidenceScope = Object.freeze({
+  /** The scope a capsule revision establishes on its own. */
+  of(capsule: TaskCapsule): TaskEvidenceScope {
+    return freezeScope(
+      capsule.taskId,
+      capsule.projectId,
+      capsule.jobId,
+      capsule.acceptanceCriterionIds,
+      capsule.changeArtifactIds,
+    );
+  },
+
+  /**
+   * The scope the revision *being committed* will establish. Task, project, and job identity are
+   * immutable across revisions — `TaskCapsuleChanges` cannot express them — so only the two
+   * subject collections can move, and each takes its proposed value when the change supplies one.
+   */
+  prospective(current: TaskCapsule, changes: TaskCapsuleChanges): TaskEvidenceScope {
+    return freezeScope(
+      current.taskId,
+      current.projectId,
+      current.jobId,
+      changes.acceptanceCriterionIds ?? current.acceptanceCriterionIds,
+      changes.changeArtifactIds ?? current.changeArtifactIds,
+    );
+  },
+
+  /**
+   * Whether a constructed capsule really establishes this scope. Used as a post-condition so a
+   * prospective scope can never silently drift from the revision actually written.
+   */
+  matches(scope: TaskEvidenceScope, capsule: TaskCapsule): boolean {
+    return (
+      scope.taskId === capsule.taskId &&
+      scope.projectId === capsule.projectId &&
+      scope.jobId === capsule.jobId &&
+      sameMembers(scope.acceptanceCriterionIds, capsule.acceptanceCriterionIds) &&
+      sameMembers(scope.changeArtifactIds, capsule.changeArtifactIds)
+    );
+  },
+});
+
+/**
+ * Subjects a task's evidence may be about, and how each one is tied back to the committed scope.
  * Evidence about some other project's candidate is not proof about this task, however real the
  * record is — that is the wrong-scope hole this closes.
  */
-function subjectInScope(capsule: TaskCapsule, record: EvidenceRecord): boolean {
+function subjectInScope(scope: TaskEvidenceScope, record: EvidenceRecord): boolean {
   switch (record.subjectType) {
     case "task":
-      return record.subjectId === capsule.taskId;
+      return record.subjectId === scope.taskId;
     case "acceptance_criterion":
     case "requirement":
-      return (capsule.acceptanceCriterionIds as readonly string[]).includes(record.subjectId);
+      return scope.acceptanceCriterionIds.includes(record.subjectId);
     case "artifact":
-      return (capsule.changeArtifactIds as readonly string[]).includes(record.subjectId);
+      return scope.changeArtifactIds.includes(record.subjectId);
     default:
       return false;
   }
 }
 
 /**
- * Deterministically decides which resolved evidence records may back a transition of this capsule.
+ * Deterministically decides which resolved evidence records may back the scope being committed.
  *
  * This is a pure predicate over records the caller already loaded through the authoritative
  * `EvidenceRepositoryPort`; it performs no I/O and consults no model. A record must exist, have
- * passed, belong to the capsule's project, agree with the capsule's job when it names one, and be
- * about a subject this capsule actually owns.
+ * passed, belong to the scope's project, agree with its job when it names one, and be about a
+ * subject that scope actually owns.
  */
 export function assessTaskEvidence(
-  capsule: TaskCapsule,
+  scope: TaskEvidenceScope,
   citedEvidenceIds: readonly string[],
   resolved: ReadonlyMap<string, EvidenceRecord>,
 ): TaskEvidenceAssessment {
@@ -145,15 +234,15 @@ export function assessTaskEvidence(
       reject(evidenceId, "not_passed");
       continue;
     }
-    if (record.projectId !== capsule.projectId) {
+    if (record.projectId !== scope.projectId) {
       reject(evidenceId, "wrong_project");
       continue;
     }
-    if (record.jobId !== undefined && record.jobId !== capsule.jobId) {
+    if (record.jobId !== undefined && record.jobId !== scope.jobId) {
       reject(evidenceId, "wrong_job");
       continue;
     }
-    if (!subjectInScope(capsule, record)) {
+    if (!subjectInScope(scope, record)) {
       reject(evidenceId, "wrong_subject");
       continue;
     }
