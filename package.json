@@ -18,6 +18,7 @@
     "dev": "node scripts/dev.mjs",
     "prove:general-coding": "node scripts/prove-general-coding-real.mjs",
     "prove:autonomous-repair": "node scripts/prove-autonomous-repair-real.mjs",
+    "prove:agent-turn": "node scripts/prove-agent-turn-real.mjs",
     "prove:model-routing": "node scripts/prove-model-routing-real.mjs"
   },
   "devDependencies": {

@@ -1,11 +1,32 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
+import {
+  AGENT_TURN_CONTRACT_VERSION,
+  agentInstructions,
+  agentTurnResponseSchema,
+  parseAgentTurn,
+  reasoningOptions,
+  requireAgentInvocation,
+} from "./agent-turn-protocol.mjs";
 import { requireCanonicalId, requirePlainObject, runRpcHost } from "./rpc-host.mjs";
 
+/** The legacy one-shot ceiling. Unchanged: existing verified workflows depend on it exactly. */
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+/**
+ * The agent path's hard byte ceiling, configurable per deployment instead of frozen at 64 KiB.
+ *
+ * It is a ceiling, not a target: the effective limit for one invocation is the tighter of this and
+ * the caller's own `contextBudget.maxPromptBytes`, and exceeding it fails the invocation. Nothing
+ * truncates — a shortened context is a different task than the one that was assembled.
+ */
+const DEFAULT_AGENT_MAX_PROMPT_BYTES = 256 * 1024;
+const agentMaxPromptBytes = optionalPositiveInteger(
+  optionalEnvironment("V31M4_AGENT_MAX_PROMPT_BYTES"),
+  DEFAULT_AGENT_MAX_PROMPT_BYTES,
+);
 const root = resolve(requiredEnvironment("V31M4_STAGE4_ROOT"));
 const endpoint = parseEndpoint(requiredEnvironment("V31M4_OLLAMA_ENDPOINT"));
 const model = requiredEnvironment("V31M4_OLLAMA_MODEL");
@@ -23,6 +44,8 @@ runRpcHost({
   },
   "model.list": discoverModels,
   "model.invoke": invokeModel,
+  // Protocol 1.1 only. The legacy method above is untouched.
+  "model.invoke_agent": invokeAgentTurn,
 });
 
 async function discoverModels() {
@@ -78,20 +101,7 @@ async function invokeModel(raw) {
       }),
       signal: controller.signal,
     });
-    if (!response.ok) throw retryable(`Ollama returned HTTP ${response.status}.`);
-    const declared = Number(response.headers.get("content-length") ?? "0");
-    if (declared > MAX_RESPONSE_BYTES) throw new Error("Ollama response exceeds limit.");
-    const text = await response.text();
-    if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES)
-      throw new Error("Ollama response exceeds limit.");
-    const envelope = JSON.parse(text);
-    if (
-      envelope?.done !== true ||
-      envelope?.model !== modelId ||
-      typeof envelope?.response !== "string"
-    ) {
-      throw new Error("Ollama response envelope is malformed.");
-    }
+    const envelope = await readEnvelope(response, modelId);
     const output = parseStructuredOutput(JSON.parse(envelope.response), softwareProduction);
     const outputPath = contained(outputs, `${invocationId}.txt`);
     await atomicWrite(outputPath, output);
@@ -125,6 +135,112 @@ async function invokeModel(raw) {
   } finally {
     active.delete(invocationId);
   }
+}
+
+/**
+ * One structured agent turn.
+ *
+ * Everything provider-specific happens here and nowhere above: the reasoning policy becomes an
+ * Ollama `think` flag (or no flag at all), the caller's token budget becomes `num_ctx`, and the
+ * agent-turn contract becomes a constrained-decoding schema. Whatever the runtime produces while
+ * reasoning is read from nothing, returned in nothing, and written to nothing.
+ */
+async function invokeAgentTurn(raw) {
+  const params = requirePlainObject(raw, "model.invoke_agent params");
+  const invocationId = requireCanonicalId(params.invocationId, "invocationId");
+  const jobId = requireCanonicalId(params.jobId, "jobId");
+  const modelId = requireCanonicalId(params.modelId, "modelId");
+  const promptArtifactId = requireCanonicalId(params.promptArtifactId, "promptArtifactId");
+  const invocation = requireAgentInvocation(params);
+  const installed = await discoverInstalledModels();
+  const entry = installed.find((candidate) => candidate.modelId === modelId);
+  if (entry === undefined) throw new Error("Requested model is not installed.");
+  const think = reasoningOptions(invocation.reasoningPolicy, entry.capabilities);
+  const cached = await readCached(invocationId);
+  if (cached !== null) return cached;
+
+  // The tighter of the deployment ceiling and this caller's own budget. Oversize is a refusal.
+  const ceiling = Math.min(agentMaxPromptBytes, invocation.maxPromptBytes);
+  const promptPath = contained(inputs, `${promptArtifactId}.txt`);
+  const promptStat = await lstat(promptPath);
+  if (!promptStat.isFile() || promptStat.isSymbolicLink()) {
+    throw new Error("Agent context materialization is invalid.");
+  }
+  if (promptStat.size > ceiling) {
+    throw new Error(
+      `Agent context is oversized: ${promptStat.size} bytes exceeds the ${ceiling} byte ceiling.`,
+    );
+  }
+  const prompt = await readFile(promptPath, "utf8");
+  const controller = new AbortController();
+  active.set(invocationId, controller);
+  const started = performance.now();
+  try {
+    const response = await fetch(new URL("/api/generate", endpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: modelId,
+        stream: false,
+        ...think,
+        prompt: agentInstructions(prompt, invocation.allowedOperations),
+        format: agentTurnResponseSchema(),
+        options: { temperature: 0, num_ctx: invocation.maxPromptTokens },
+      }),
+      signal: controller.signal,
+    });
+    const envelope = await readEnvelope(response, modelId);
+    // `envelope.thinking` is deliberately never read, never returned, and never written.
+    const turn = parseAgentTurn(JSON.parse(envelope.response), invocation.allowedOperations);
+    const result = {
+      invocationId,
+      modelId,
+      outputContractVersion: AGENT_TURN_CONTRACT_VERSION,
+      turn,
+      usage: {
+        inputTokens: optionalCount(envelope.prompt_eval_count),
+        outputTokens: optionalCount(envelope.eval_count),
+        wallClockMs: Math.max(1, Math.round(performance.now() - started)),
+      },
+      metadata: {
+        adapterId: "ollama-local-supervised",
+        realInference: true,
+        model: modelId,
+        jobId,
+      },
+    };
+    await atomicWrite(contained(outputs, `${invocationId}.txt`), JSON.stringify(turn));
+    await atomicWrite(contained(outputs, `${invocationId}.json`), JSON.stringify(result));
+    return result;
+  } catch (error) {
+    if (error?.name === "AbortError") throw retryable("Ollama invocation was cancelled.");
+    if (error instanceof SyntaxError) {
+      throw new Error("Ollama agent response is not valid structured JSON.");
+    }
+    throw error;
+  } finally {
+    active.delete(invocationId);
+  }
+}
+
+/** Shared envelope validation for both invocation paths. */
+async function readEnvelope(response, modelId) {
+  if (!response.ok) throw retryable(`Ollama returned HTTP ${response.status}.`);
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_RESPONSE_BYTES) throw new Error("Ollama response exceeds limit.");
+  const text = await response.text();
+  if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) {
+    throw new Error("Ollama response exceeds limit.");
+  }
+  const envelope = JSON.parse(text);
+  if (
+    envelope?.done !== true ||
+    envelope?.model !== modelId ||
+    typeof envelope?.response !== "string"
+  ) {
+    throw new Error("Ollama response envelope is malformed.");
+  }
+  return envelope;
 }
 
 async function discoverInstalledModels() {
@@ -167,6 +283,9 @@ async function discoverInstalledModels() {
       {
         modelId,
         ...(contextLimit === undefined ? {} : { contextLimit }),
+        // Kept internal: reasoning-policy translation needs it, and `ModelProfile` deliberately
+        // carries only *measured* capabilities, never a provider's self-report.
+        capabilities: Object.freeze([...capabilities]),
         modalities: Object.freeze(["text", ...(capabilities.includes("vision") ? ["vision"] : [])]),
       },
     ];
@@ -262,6 +381,20 @@ async function readCached(invocationId) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+}
+
+function optionalEnvironment(key) {
+  const value = process.env[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function optionalPositiveInteger(value, fallback) {
+  if (value === undefined || value.length === 0) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error("V31M4_AGENT_MAX_PROMPT_BYTES must be a positive integer.");
+  }
+  return parsed;
 }
 
 function requiredEnvironment(key) {

@@ -13,6 +13,13 @@ import {
   rpcIdSchema,
 } from "./adapter-rpc.schemas.js";
 import {
+  agentContextBudgetSchema,
+  agentOperationIdSchema,
+  agentReasoningPolicySchema,
+  agentTurnContractVersionSchema,
+  agentTurnSchema,
+} from "./agent-turn.schemas.js";
+import {
   ADAPTER_PROTOCOL_VERSION,
   adapterIdSchema,
   artifactIdSchema,
@@ -20,6 +27,7 @@ import {
   guardForbiddenKeys,
   invocationIdSchema,
   jobIdSchema,
+  modelIdSchema,
   resourceBudgetSchema,
   runtimeIdSchema,
   safeJsonObjectSchema,
@@ -35,8 +43,8 @@ import {
  * parser still rejects every construct defined here.
  *
  * 1.1 exists because strict 1.0 cannot express task/workspace/sandbox scope for a governed
- * semantic operation. Autonomous agent-turn and embedding capabilities are deliberately not
- * defined here; they belong to their own later program phases.
+ * semantic operation, nor a structured agent invocation. Embedding capabilities are deliberately
+ * still absent; they belong to their own later program phase.
  */
 export const ADAPTER_PROTOCOL_VERSION_1_1 = "1.1.0" as const;
 
@@ -66,15 +74,12 @@ export const sandboxIdSchema = z.custom<SandboxIdType>((value) => SandboxId.is(v
  * of operations is owned by the runtime `SemanticOperationDefinition` registry; duplicating
  * that list here would create a second source of truth, so the wire contract validates form
  * only and the registry rejects any unknown operation.
+ *
+ * The definition itself lives with the agent-turn contract, which is the other 1.1 surface that
+ * names an operation. One schema, so a turn and a scoped invocation cannot disagree about what a
+ * well-formed operation ID is.
  */
-export const semanticOperationIdSchema = z
-  .string()
-  .min(3)
-  .max(64)
-  .regex(
-    /^[a-z][a-z0-9]*\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/u,
-    "Semantic operation ID must be a lowercase `group.operation` pair.",
-  );
+export const semanticOperationIdSchema = agentOperationIdSchema;
 
 /** Opaque workspace identifier assigned by `WorkspaceManagerPort`; never a host path. */
 export const workspaceScopeIdSchema = z
@@ -155,9 +160,72 @@ export const toolInvokeScopedV1_1ResultSchema = z
   })
   .strict();
 
+/**
+ * Provider-neutral structured agent invocation.
+ *
+ * A distinct method, exactly like `tool.invoke_scoped`: the published 1.0 `model.invoke` keeps its
+ * shape, so a 1.0 peer rejects this outright instead of understanding half of it. Everything the
+ * agent path needs that 1.0 cannot express travels here — which bounded task this turn belongs to,
+ * which agent-turn output contract the runtime expects back, the role manifest of operations the
+ * adapter may offer, the provider-neutral reasoning policy, and an explicit context budget.
+ *
+ * There is deliberately no provider extension bag and no reasoning field in either direction.
+ */
+export const modelInvokeAgentV1_1RequestSchema = z
+  .object({
+    ...rpcRequestBaseShape,
+    method: z.literal("model.invoke_agent"),
+    params: z
+      .object({
+        invocationId: invocationIdSchema,
+        jobId: jobIdSchema,
+        taskId: taskIdSchema,
+        modelId: modelIdSchema,
+        promptArtifactId: artifactIdSchema,
+        outputContractVersion: agentTurnContractVersionSchema,
+        allowedOperations: z.array(semanticOperationIdSchema).min(1).max(64),
+        reasoningPolicy: agentReasoningPolicySchema,
+        contextBudget: agentContextBudgetSchema,
+        resourceBudget: resourceBudgetSchema,
+      })
+      .strict()
+      .superRefine((value, context) => {
+        if (new Set(value.allowedOperations).size !== value.allowedOperations.length) {
+          context.addIssue({
+            code: "custom",
+            message: "Allowed operations must be unique.",
+            path: ["allowedOperations"],
+          });
+        }
+      }),
+  })
+  .strict();
+
+/**
+ * Exactly one structured turn, its usage, and nothing else. The turn is re-validated by the
+ * runtime after this parse: adapter-side validation is a courtesy, never the authority.
+ */
+export const modelInvokeAgentV1_1ResultSchema = z
+  .object({
+    invocationId: invocationIdSchema,
+    modelId: modelIdSchema,
+    outputContractVersion: agentTurnContractVersionSchema,
+    turn: agentTurnSchema,
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+        outputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+        wallClockMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict(),
+    metadata: safeJsonObjectSchema,
+  })
+  .strict();
+
 export const adapterRpcV1_1RequestSchema = z.discriminatedUnion("method", [
   adapterInitializeV1_1RequestSchema,
   toolInvokeScopedV1_1RequestSchema,
+  modelInvokeAgentV1_1RequestSchema,
 ]);
 
 export const adapterRpcV1_1NotificationSchema = z.discriminatedUnion("method", [
@@ -209,6 +277,8 @@ export function negotiateAdapterProtocolVersion(
 
 export type AdapterInitializeV1_1Request = z.infer<typeof adapterInitializeV1_1RequestSchema>;
 export type ToolInvokeScopedV1_1Request = z.infer<typeof toolInvokeScopedV1_1RequestSchema>;
+export type ModelInvokeAgentV1_1Request = z.infer<typeof modelInvokeAgentV1_1RequestSchema>;
+export type ModelInvokeAgentV1_1Result = z.infer<typeof modelInvokeAgentV1_1ResultSchema>;
 export type ToolInvokeScopedV1_1Result = z.infer<typeof toolInvokeScopedV1_1ResultSchema>;
 export type AdapterRpcV1_1Request = z.infer<typeof adapterRpcV1_1RequestSchema>;
 export type AdapterRpcV1_1Message = z.infer<typeof adapterRpcV1_1MessageSchema>;

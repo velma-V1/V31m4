@@ -180,6 +180,11 @@ export {
   VerificationPlanId,
   VerificationResultId,
 } from "./value-objects/ids.js";
+export {
+  containsPrivateReasoningKey,
+  isPrivateReasoningKey,
+  PRIVATE_REASONING_KEYS,
+} from "./value-objects/private-reasoning.js";
 export { ResourceBudget } from "./value-objects/resource-budget.js";
 export { SafePath } from "./value-objects/safe-path.js";
 export { Score } from "./value-objects/score.js";

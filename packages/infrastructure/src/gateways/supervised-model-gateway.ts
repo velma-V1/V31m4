@@ -1,6 +1,8 @@
 import {
+  type AgentModelGatewayPort,
+  type AgentTurnInvocationRequest,
+  type AgentTurnInvocationResult,
   ApplicationError,
-  type ModelGatewayPort,
   type ModelInvocationRequest,
   type ModelInvocationResult,
   type OperationContext,
@@ -11,6 +13,7 @@ import {
 import { type ModelId, ModelProfile } from "@v31m4/domain";
 import { parsePaginationCursor } from "../pagination-cursor.js";
 import { type AdapterBinding, invokeAdapter, selectInvoker } from "./adapter-invoker.js";
+import { parseAgentTurnResult } from "./agent-turn-result.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -20,8 +23,13 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  * `model.invoke` adapter call, the result is returned as-is, and any transport failure is
  * classified as a retryable dependency failure. A model with no available adapter is a
  * dependency-unavailable outcome, never a silent success.
+ *
+ * Adapters that negotiate protocol 1.1 additionally speak the structured agent-turn contract, so
+ * this gateway implements `AgentModelGatewayPort`. Legacy `invoke` is untouched: the agent path is
+ * a distinct adapter method, and an adapter that does not implement it fails as a dependency
+ * rather than silently degrading into the legacy path.
  */
-export class SupervisedModelGateway implements ModelGatewayPort {
+export class SupervisedModelGateway implements AgentModelGatewayPort {
   readonly #profiles = new Map<string, ModelProfile>();
   readonly #bindings: ReadonlyMap<string, AdapterBinding>;
   #discoveryLoaded = false;
@@ -64,21 +72,37 @@ export class SupervisedModelGateway implements ModelGatewayPort {
     context: OperationContext,
   ): Promise<ModelInvocationResult> {
     await this.#ensureDiscovery(context);
-    const binding =
-      this.#bindings.get(request.modelId) ??
-      (this.#profiles.has(request.modelId) ? this.discoveryBinding : undefined);
-    if (binding === undefined) {
-      throw new ApplicationError("DEPENDENCY_UNAVAILABLE", "No adapter is bound to this model.", {
-        details: { modelId: request.modelId },
-        retryable: true,
-      });
-    }
+    const binding = this.#bindingFor(request.modelId);
     const invoker = selectInvoker(binding, request.modelId);
     const { metadata: _metadata, ...adapterRequest } = request;
     return invokeAdapter<ModelInvocationResult>(invoker, "model.invoke", adapterRequest, {
       timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
       signal: context.signal,
     });
+  }
+
+  /**
+   * One provider-neutral agent turn.
+   *
+   * The gateway translates and validates; it decides nothing. Reasoning policy travels as intent
+   * and is translated by the adapter, the context budget travels explicitly rather than being
+   * compiled into a provider, and the answer is checked against the request that produced it
+   * before it is handed back. What comes out is still an untrusted proposal the runtime
+   * revalidates.
+   */
+  async invokeAgentTurn(
+    request: AgentTurnInvocationRequest,
+    context: OperationContext,
+  ): Promise<AgentTurnInvocationResult> {
+    await this.#ensureDiscovery(context);
+    const binding = this.#bindingFor(request.modelId);
+    const invoker = selectInvoker(binding, request.modelId);
+    const { metadata: _metadata, ...adapterRequest } = request;
+    const raw = await invokeAdapter<unknown>(invoker, "model.invoke_agent", adapterRequest, {
+      timeoutMs: remainingTimeout(context, this.defaultTimeoutMs),
+      signal: context.signal,
+    });
+    return parseAgentTurnResult(raw, request);
   }
 
   async cancel(invocationId: string, context: OperationContext): Promise<void> {
@@ -111,6 +135,19 @@ export class SupervisedModelGateway implements ModelGatewayPort {
       checkedAt: new Date().toISOString(),
       details: { modelId },
     });
+  }
+
+  #bindingFor(modelId: ModelId): AdapterBinding {
+    const binding =
+      this.#bindings.get(modelId) ??
+      (this.#profiles.has(modelId) ? this.discoveryBinding : undefined);
+    if (binding === undefined) {
+      throw new ApplicationError("DEPENDENCY_UNAVAILABLE", "No adapter is bound to this model.", {
+        details: { modelId },
+        retryable: true,
+      });
+    }
+    return binding;
   }
 
   async #ensureDiscovery(context: OperationContext | undefined): Promise<void> {

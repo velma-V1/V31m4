@@ -23,6 +23,7 @@ Program: `V31M4-AUTONOMY-001 / 1.1.0`.
 - Same-date non-v2 autonomy spec/plan files are historical only.
 - Task 0 baseline evidence: `docs/reviews/autonomy-baseline-v2.md`.
 - Task 1 target-host evidence: `docs/reviews/autonomy-task1-phase1-evidence.md`.
+- Task 4 evidence: `docs/reviews/autonomy-task4-agent-turn-evidence.md`.
 
 ## Autonomy program status
 
@@ -35,7 +36,7 @@ TASK123_FINAL_INTEGRATION        := COMPLETE
 TASK123_PROMOTION_TO_MAIN        := COMPLETE
 MAIN_POST_MERGE_CI               := PASS
 
-TASK_4_STRUCTURED_AGENT_TURNS    := AUTHORIZED_NOT_STARTED
+TASK_4_STRUCTURED_AGENT_TURNS    := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
 TASK_5_MANAGER_EXECUTOR_AUDITOR  := NOT_STARTED
 TASK_6_EVIDENCE_EFFECTS          := NOT_STARTED
 TASK_7_PROJECT_INTELLIGENCE      := NOT_STARTED
@@ -133,17 +134,43 @@ Status: **COMPLETE**.
 - CI performs frozen-lockfile install, typecheck, test, lint, and build.
 - Target-host proofs are separate evidence and are not inferred from ordinary CI.
 
-## Next phase — Task 4
+## Current phase — Task 4
 
-Task 4 is now **authorized but not started**.
+Task 4 is **implemented on `autonomy-task4-agent-turns` and awaiting its independent gate**. It is
+not promoted and must not be merged before that review.
 
-Task 4 implements structured agent turns and local-adapter modernization. The governing plan/spec must be read before implementation. The intended boundary is a provider-neutral agent-turn contract built around explicit structured outcomes such as tool call / finish / defer rather than persisted chain-of-thought.
+Implemented:
 
-The runtime loop should rebuild context from authoritative state after governed operations rather than treating model output as authority. Model output remains an untrusted proposal that the runtime validates before effects occur.
+- `packages/contracts/src/agent-turn.schemas.ts` — the provider-neutral agent-turn output contract
+  `tool_call | finish | defer`, versioned separately from the adapter protocol, with no
+  chain-of-thought field.
+- `packages/domain/src/value-objects/private-reasoning.ts` — the one frozen list of
+  private-reasoning property names, enforced at every boundary that accepts model output.
+- Adapter protocol 1.1 gained an additive `model.invoke_agent` method carrying the reasoning policy,
+  the output-contract version, the allowed operation IDs, and a bounded context budget. Protocol
+  1.0 is byte-identical and still rejects every 1.1 construct.
+- `ModelGatewayPort` gained the `AgentModelGatewayPort` capability beside its unchanged legacy
+  `invoke`; `SupervisedModelGateway` implements it and strictly validates the adapter's answer.
+- `apps/runtime/src/autonomy/agent-turn-loop.ts` — the governed loop. Context is rebuilt from the
+  authoritative Task Capsule and folded Ledger before every turn, the runtime revalidates every
+  turn, and turn/tool/defer/refusal/context budgets bound the run. `finish` returns
+  `ready_for_verification` and certifies nothing.
+- `adapters/local-supervised/model-adapter.mjs` serves the structured agent path beside its
+  preserved legacy path: reasoning policy translated to `think` only inside the adapter, a
+  configurable hard byte ceiling replacing the fixed 64 KiB autonomy limit, an explicit token
+  budget as `num_ctx`, oversize refused rather than truncated, and no reasoning trace persisted.
+- `scripts/prove-agent-turn-real.mjs` (`pnpm prove:agent-turn`) proves the whole real path on the
+  target host and reports `BLOCKED_ENVIRONMENT` honestly when a prerequisite is missing.
 
-For the selected local model path, the practical working target remains a 32K context window; any 64K use requires measured host proof rather than assumption.
+Target-host status:
 
-Do not start Task 5 while Task 4 is still under implementation or review.
+- The plan's Qwen3.8-27B Q4_K_M is **not installed** on this host, so the mandated proof is
+  `BLOCKED_ENVIRONMENT`. Pulling it was not authorized. No Qwen3.8-27B measurement is claimed.
+- The same proof passed 8/8 twice against an installed real Qwen (`qwen3:14b`, Q4_K_M) as non-target
+  evidence, including a measured 29,881-token context against a 32,768-token budget.
+- 64K remains unpromoted and requires its own measured target-host evidence.
+
+Do not start Task 5 while Task 4 is still under review.
 
 ## Later phase order
 

@@ -69,10 +69,10 @@ packages/
 └── department-host/                     # Post-core: generic removable-department/plugin host SDK (lifecycle, isolation, rollback) on the core ports
 
 adapters/
-└── local-supervised/                    # Optional dynamic Ollama/OpenAI-compatible model, contained kernel, and verifier JSON-RPC children
+└── local-supervised/                    # Optional dynamic Ollama/OpenAI-compatible model (legacy one-shot plus protocol-1.1 structured agent turns), contained kernel, and verifier JSON-RPC children
 
 apps/
-├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local composition; src/autonomy/ owns the 19-operation catalog and canonical policy-backed capability authorizer
+├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local composition; src/autonomy/ owns the 19-operation catalog, the canonical policy-backed capability authorizer, and the governed agent-turn loop
 └── departments-integration/             # Post-core: independence-matrix integration tests (core-only / both departments / after removal)
 
 plugins/
@@ -218,7 +218,7 @@ per-tool capability matrix.
 - **Layer 7–9** real-infrastructure regression: **41 passing cases across 13 test files** (persistence/artifacts/backup, supervised processes/JSON-RPC/adapters, plus L9 path policy, rule-based policy engine, plugin registry, and supervised model/tool gateways with provider fallback and failure classification).
 - **Layer 10** authoritative runtime regression: **29 passing cases across 6 test files** (5 runtime + the infrastructure replay store) — external-command idempotency (run-once retry, payload/type conflict, version-conflict with no stored record), durable event replay (ordering, internal-gap refusal, retention `refresh_required`), the event-stream coordinator (replay-before-live boundary, bounded slow-consumer disconnect with a resumable cursor), config validation, the live HTTP surface (auth denial, idempotent write + query, version conflict, SSE replay, cross-restart durable-log recovery + health), and the integrated hardening pass (hostile input, concurrent idempotent/conflicting writers, and transactional rollback). See `docs/reviews/integrated-hardening-ledger.md`.
 - **Typecheck / Build:** the frozen audited L1–10 core (5 packages: domain, contracts, application, infrastructure, runtime) is **5/5** typecheck and **5/5** build; the current full post-core workspace (9 packages, adding department-host and the three department/integration packages) is **9/9** typecheck and **9/9** build (each package compiles under `tsc --noEmit`).
-- **Static:** largest source file **468 lines** (`packages/contracts/src/common.schemas.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
+- **Static:** largest source file **499 lines** (`apps/runtime/src/job-command-surface.ts`); **0 explicit type `any`** across Layers 1–6 source; no provider SDK imports; all source files remain below 500 lines.
 - **Layer 6 improvements:** seven recorded corrections covering workspace identity, contract parity, transaction phasing, pagination, approval expiry, resume validation, and finish-stop safety (see `docs/reviews/layers-1-6-improvement-ledger.md`).
 
 ### Native gate status
@@ -233,7 +233,7 @@ earlier no-network layer branches was cleared in an isolated formatting-only com
 Biome rules that genuinely conflict with the tsconfig / intentional code were resolved
 (`useLiteralKeys` off — conflicts with `noPropertyAccessFromIndexSignature`; a justified
 `biome-ignore` for the safe-path control-character regex). Contracts and application both
-enforce the 500-line source limit via a `source-size` test; the largest source file is 468
+enforce the 500-line source limit via a `source-size` test; the largest source file is 499
 lines and no file exceeds 500.
 
 ### Not implemented

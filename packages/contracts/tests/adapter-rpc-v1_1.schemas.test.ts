@@ -7,11 +7,15 @@ import {
   adapterRpcV1_1RequestSchema,
   assertAdapterProtocolVersionSupported,
   isAdapterProtocolVersionSupported,
+  modelInvokeAgentV1_1RequestSchema,
+  modelInvokeAgentV1_1ResultSchema,
   negotiateAdapterProtocolVersion,
   SUPPORTED_ADAPTER_PROTOCOL_VERSIONS,
+  semanticOperationIdSchema,
   toolInvokeScopedV1_1RequestSchema,
   toolInvokeScopedV1_1ResultSchema,
 } from "../src/adapter-rpc-v1_1.schemas.js";
+import { agentOperationIdSchema } from "../src/agent-turn.schemas.js";
 import { ADAPTER_PROTOCOL_VERSION } from "../src/common.schemas.js";
 
 const budget = {
@@ -186,5 +190,108 @@ describe("adapter protocol version negotiation", () => {
       expect(isAdapterProtocolVersionSupported(version)).toBe(false);
       expect(() => assertAdapterProtocolVersionSupported(version)).toThrow();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 — additive agent invocation on 1.1, with 1.0 preserved byte-for-byte.
+// ---------------------------------------------------------------------------
+
+const v1ModelInvokeRequest = {
+  jsonrpc: "2.0",
+  id: "rpc:5",
+  method: "model.invoke",
+  params: {
+    invocationId: "invocation:3",
+    jobId: "job:1",
+    modelId: "model:qwen",
+    promptArtifactId: "artifact:prompt",
+    configuration: {
+      modelId: "model:qwen",
+      strategy: "direct",
+      contextArtifactIds: [],
+      toolIds: [],
+      constraints: [],
+    },
+    resourceBudget: budget,
+  },
+} as const;
+
+const v1_1AgentRequest = {
+  jsonrpc: "2.0",
+  id: "rpc:6",
+  method: "model.invoke_agent",
+  params: {
+    invocationId: "invocation:4",
+    jobId: "job:1",
+    taskId: "task:root",
+    modelId: "model:qwen",
+    promptArtifactId: "artifact:prompt",
+    outputContractVersion: "1.0.0",
+    allowedOperations: ["repo.search", "code.inspect"],
+    reasoningPolicy: "auto",
+    contextBudget: { maxPromptBytes: 131_072, maxPromptTokens: 32_768 },
+    resourceBudget: budget,
+  },
+} as const;
+
+describe("agent invocation is a 1.1-only addition", () => {
+  it("leaves the v1.0 model invocation exactly as published", () => {
+    expect(adapterRpcRequestSchema.parse(v1ModelInvokeRequest)).toEqual(v1ModelInvokeRequest);
+    expect(adapterRpcMessageSchema.parse(v1ModelInvokeRequest)).toEqual(v1ModelInvokeRequest);
+    expect(adapterRpcRequestSchema.options).toHaveLength(11);
+  });
+
+  it("is rejected by every v1.0 parser, as a method and as a field", () => {
+    expect(adapterRpcRequestSchema.safeParse(v1_1AgentRequest).success).toBe(false);
+    expect(adapterRpcMessageSchema.safeParse(v1_1AgentRequest).success).toBe(false);
+    for (const v1_1Only of [
+      { reasoningPolicy: "auto" },
+      { outputContractVersion: "1.0.0" },
+      { allowedOperations: ["repo.search"] },
+      { contextBudget: { maxPromptBytes: 1_024, maxPromptTokens: 512 } },
+      { taskId: "task:root" },
+    ]) {
+      expect(
+        adapterRpcRequestSchema.safeParse({
+          ...v1ModelInvokeRequest,
+          params: { ...v1ModelInvokeRequest.params, ...v1_1Only },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("parses on the 1.1 request union without disturbing the 1.1 scoped tool method", () => {
+    expect(modelInvokeAgentV1_1RequestSchema.parse(v1_1AgentRequest)).toEqual(v1_1AgentRequest);
+    expect(adapterRpcV1_1RequestSchema.parse(v1_1AgentRequest)).toEqual(v1_1AgentRequest);
+    expect(adapterRpcV1_1MessageSchema.parse(v1_1AgentRequest)).toEqual(v1_1AgentRequest);
+    expect(adapterRpcV1_1RequestSchema.parse(v1_1ScopedToolRequest)).toEqual(v1_1ScopedToolRequest);
+    expect(adapterRpcV1_1RequestSchema.options).toHaveLength(3);
+  });
+
+  it("returns one structured turn and never a reasoning trace", () => {
+    const result = {
+      invocationId: "invocation:4",
+      modelId: "model:qwen",
+      outputContractVersion: "1.0.0",
+      turn: { kind: "finish", summary: "ready for verification" },
+      usage: { wallClockMs: 1_200 },
+      metadata: {},
+    } as const;
+    expect(modelInvokeAgentV1_1ResultSchema.parse(result).turn).toEqual(result.turn);
+    expect(
+      modelInvokeAgentV1_1ResultSchema.safeParse({ ...result, thinking: "step 1 ..." }).success,
+    ).toBe(false);
+    expect(
+      modelInvokeAgentV1_1ResultSchema.safeParse({
+        ...result,
+        turn: { ...result.turn, reasoning: "step 1 ..." },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the semantic operation ID syntax a single shared definition", () => {
+    expect(semanticOperationIdSchema.parse("repo.search")).toBe("repo.search");
+    expect(semanticOperationIdSchema).toBe(agentOperationIdSchema);
   });
 });
