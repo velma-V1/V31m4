@@ -188,9 +188,9 @@ function missingFrom(
  * Every way a later contract is weaker than the frozen one.
  *
  * A recompiled contract may be *stronger* — more checks, more evidence, more prohibitions — because
- * raising the bar after the fact harms nobody. Dropping any requirement, or changing what the task
- * was about, is redefinition of success and is reported here so a caller can refuse it. An empty
- * result means nothing was given up.
+ * raising the bar after the fact harms nobody. Dropping any requirement, changing what the task was
+ * about, or rebinding the workspace the promise was made in is redefinition of success and is
+ * reported here so a caller can refuse it. An empty result means nothing was given up.
  */
 export function detectAcceptanceWeakening(
   frozen: EntryAcceptanceSnapshot,
@@ -199,6 +199,14 @@ export function detectAcceptanceWeakening(
   const weakened: string[] = [];
   if (frozen.taskId !== proposed.taskId) weakened.push("taskId");
   if (frozen.objective !== proposed.objective) weakened.push("objective");
+  // Workspace identity is part of the contract: the work was promised in *this* workspace.
+  // Rebinding it points the same acceptance criteria at a different tree, which is a weaker
+  // claim wearing the original's fingerprint. Its *contents* legitimately change as work
+  // happens, so only losing the binding entirely counts.
+  if (frozen.workspaceId !== proposed.workspaceId) weakened.push("workspaceId");
+  if (frozen.workspaceFingerprint !== null && proposed.workspaceFingerprint === null) {
+    weakened.push("workspaceFingerprint: the frozen workspace state was unbound");
+  }
   weakened.push(
     ...missingFrom(
       "acceptanceCriterionIds",

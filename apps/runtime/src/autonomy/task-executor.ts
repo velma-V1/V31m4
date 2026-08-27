@@ -1,9 +1,12 @@
 import {
-  type AgentReasoningPolicy,
+  ApplicationError,
   appendExecutionLedgerEntry,
   assertEntryAcceptanceContract,
+  assertHandoffStillCurrent,
+  assertRoleHandoff,
   type EntryAcceptanceSnapshot,
   type OperationContext,
+  type RoleHandoff,
   type SandboxHandle,
   type WorkspaceHandle,
 } from "@v31m4/application";
@@ -11,7 +14,7 @@ import {
   type ContentHash,
   ExecutionLedgerEntry,
   type JobId,
-  type ModelId,
+  ModelId,
   type ResourceBudget,
   type TaskId,
 } from "@v31m4/domain";
@@ -35,12 +38,17 @@ import type { SemanticOperationId } from "./semantic-operation-catalog.js";
 /**
  * The Executor: one fresh bounded context, one governed agent-turn loop, one recorded invocation.
  *
- * It is deliberately thin. Everything that decides anything already exists — the frozen acceptance
- * contract says what done means, the manifest says what this role may do, and the agent-turn loop
- * owns validation, authorization, and the Ledger. What this adds is the role boundary: the contract
- * is proved before the model is asked anything, the operations the model is offered come from a
- * minted manifest rather than from the caller's request, and the invocation itself is written into
- * durable history as ordinary observed facts.
+ * It is deliberately thin. Everything that decides anything already exists — the Manager's handoff
+ * says which capsule, workspace, model, skills, operations, and context budget this run is bound
+ * to, the frozen acceptance contract says what done means, and the agent-turn loop owns validation,
+ * authorization, and the Ledger. What this adds is the role boundary.
+ *
+ * The Executor accepts *no* policy from its caller. Model, operations, skills, reasoning policy,
+ * turn budget, and the capsule identity all come from the handoff, whose fingerprint is verified
+ * against the dispatch it was sent with — so widening any of them is a refusal rather than a
+ * quieter run. It then re-reads authoritative state and proves the handoff still describes it:
+ * selection happened at one moment and execution happens at another, and a capsule or workspace
+ * that moved in between makes the frozen contract a description of a world that no longer exists.
  *
  * The Executor cannot complete a task. It proposes no transition, writes no evidence, and returns
  * at best `ready_for_verification` — which is a request for an independent audit, not a result.
@@ -50,19 +58,16 @@ export interface TaskExecutorDependencies extends AgentTurnLoopDependencies {}
 export interface TaskExecutorRequest {
   readonly taskId: TaskId;
   readonly jobId: JobId;
-  readonly modelId: ModelId;
   readonly snapshot: EntryAcceptanceSnapshot;
+  /** The Manager's dispatch. Every policy this run uses is read from here, and only from here. */
+  readonly handoff: RoleHandoff;
   /**
-   * The contract fingerprint this Executor was dispatched with. Supplied separately from the
-   * snapshot on purpose: comparing the two is what catches a swapped contract.
+   * The dispatch fingerprint this Executor was sent with. Mandatory and supplied separately from
+   * the handoff on purpose: a value taken from the handoff itself would prove nothing.
    */
-  readonly expectedContractFingerprint?: ContentHash;
-  readonly capsuleFingerprint: ContentHash;
-  readonly allowedOperations: readonly SemanticOperationId[];
-  readonly skillVersions: readonly string[];
-  readonly harnessVersion: string;
-  readonly reasoningPolicy: AgentReasoningPolicy;
-  readonly budget: AgentTurnBudget;
+  readonly expectedHandoffFingerprint: ContentHash;
+  /** The workspace state as observed now, for the time-of-use check against the frozen entry. */
+  readonly observedWorkspaceFingerprint: ContentHash | null;
   readonly resourceBudget: ResourceBudget;
   readonly workspace: WorkspaceHandle;
   readonly sandbox: SandboxHandle;
@@ -97,21 +102,44 @@ export async function runTaskExecutor(
   request: TaskExecutorRequest,
   context: OperationContext,
 ): Promise<TaskExecutorResult> {
-  // Before anything is compiled or asked: this must be the contract we were sent to satisfy, and
-  // these must be operations an Executor may hold.
-  assertEntryAcceptanceContract(
-    request.snapshot,
-    request.expectedContractFingerprint ?? request.snapshot.contractFingerprint,
+  const { handoff } = request;
+  // Before anything is compiled or asked. The dispatch first, because everything below is read
+  // from it; then the contract it names; then the operations an Executor may hold at all.
+  assertRoleHandoff(handoff, request.expectedHandoffFingerprint);
+  if (handoff.role !== "executor" || handoff.taskId !== request.taskId) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "This handoff does not dispatch this Executor.",
+      {
+        details: { role: handoff.role, taskId: handoff.taskId, requested: request.taskId },
+      },
+    );
+  }
+  assertEntryAcceptanceContract(request.snapshot, handoff.acceptanceContractFingerprint);
+  const allowedOperations = assertRoleInvocationPermitted(
+    "executor",
+    handoff.allowedOperations as readonly SemanticOperationId[],
   );
-  assertRoleInvocationPermitted("executor", request.allowedOperations);
 
   const current = await dependencies.tasks.loadCurrent(request.taskId, context);
+  if (current === null) {
+    throw new ApplicationError("NOT_FOUND", "There is no task capsule to execute against.", {
+      details: { taskId: request.taskId },
+    });
+  }
+  // Time of use. Selection read one world; this must still be that world, or the step is reselected.
+  assertHandoffStillCurrent(handoff, {
+    capsule: current.capsule,
+    workspaceId: request.workspace.id,
+    workspaceFingerprint: request.observedWorkspaceFingerprint,
+  });
+
   const entry = await dependencies.buildContext(
     {
       taskId: request.taskId,
       jobId: request.jobId,
       turnIndex: 0,
-      capsule: current?.capsule ?? (undefined as never),
+      capsule: current.capsule,
       projection: await dependencies.reconciler.projection(request.taskId, context),
       lastObservation: null,
     },
@@ -121,13 +149,14 @@ export async function runTaskExecutor(
   const manifest = mintRoleInvocationManifest({
     role: "executor",
     taskId: request.taskId,
-    capsuleFingerprint: request.capsuleFingerprint,
+    // The authoritative capsule just proved current, never a fingerprint a caller named.
+    capsuleFingerprint: current.capsule.fingerprint,
     contextFingerprint: entry.contextFingerprint,
-    modelId: request.modelId,
-    allowedOperations: request.allowedOperations,
-    skillVersions: request.skillVersions,
-    harnessVersion: request.harnessVersion,
-    acceptanceContractFingerprint: request.snapshot.contractFingerprint,
+    modelId: ModelId.parse(handoff.modelId),
+    allowedOperations,
+    skillVersions: handoff.skillVersions,
+    harnessVersion: handoff.harnessVersion,
+    acceptanceContractFingerprint: handoff.acceptanceContractFingerprint,
   });
   const observationEntryId = await recordRoleInvocation(dependencies, request, manifest, context);
 
@@ -136,12 +165,13 @@ export async function runTaskExecutor(
     {
       taskId: request.taskId,
       jobId: request.jobId,
-      modelId: request.modelId,
+      modelId: manifest.modelId,
       role: "executor",
       // From the manifest, never from the request: one canonical, already-checked set.
       allowedOperations: manifest.allowedOperations,
-      reasoningPolicy: request.reasoningPolicy,
-      budget: request.budget,
+      reasoningPolicy: handoff.reasoningPolicy,
+      // The Manager's context policy. `AgentTurnBudget` remains the shape the loop enforces.
+      budget: handoff.contextPolicy satisfies AgentTurnBudget,
       resourceBudget: request.resourceBudget,
       workspace: request.workspace,
       sandbox: request.sandbox,

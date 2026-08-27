@@ -45,6 +45,7 @@ export * from "./services/improvement-policy.js";
 export * from "./services/manager-routing.js";
 export * from "./services/model-router.js";
 export * from "./services/practice-selector.js";
+export * from "./services/role-handoff.js";
 export * from "./services/task-transition-policy.js";
 export * from "./use-cases/append-execution-ledger.js";
 export * from "./use-cases/audit-task-result.js";

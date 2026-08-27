@@ -2,6 +2,7 @@ import type {
   ContentHash,
   EvidenceKind,
   ExecutionLedgerEntry,
+  JobId,
   TaskCapsule,
   TaskId,
 } from "@v31m4/domain";
@@ -14,6 +15,11 @@ import {
   freezeEntryAcceptanceSnapshot,
 } from "../services/entry-acceptance-snapshot.js";
 import { type ManagerRoute, routeNextStep } from "../services/manager-routing.js";
+import {
+  issueExecutorHandoff,
+  type RoleExecutionPolicy,
+  type RoleHandoff,
+} from "../services/role-handoff.js";
 import { projectLedger, scanTaskLedger } from "./reconcile-execution-effect.js";
 
 /**
@@ -35,11 +41,17 @@ export interface SelectNextTaskDependencies {
 
 export interface SelectNextTaskCommand {
   readonly taskId: TaskId;
+  readonly jobId: JobId;
   /** What this class of task requires deterministically; the capsule cannot express it. */
   readonly requiredChecks: readonly string[];
   readonly requiredEvidenceKinds: readonly EvidenceKind[];
   readonly riskPolicyIds: readonly string[];
   readonly workspaceFingerprint: ContentHash | null;
+  /**
+   * The role, model, skill, operation, and context policy the next Executor runs under. The
+   * Manager freezes it into the handoff; no later role may restate an equivalent-looking one.
+   */
+  readonly executorPolicy: RoleExecutionPolicy;
   /** Current fingerprints of observed resources, so a stale check is not read as an answer. */
   readonly currentFingerprints: Readonly<Record<string, string>>;
   readonly frozenAt: string;
@@ -54,6 +66,11 @@ export interface NextTaskSelection {
   readonly selectedNodeId: string | null;
   readonly snapshot: EntryAcceptanceSnapshot;
   readonly route: ManagerRoute;
+  /**
+   * The immutable dispatch for the next Executor, or `null` on a route that calls for no execution.
+   * A role consumes this whole; it never assembles the parts itself.
+   */
+  readonly handoff: RoleHandoff | null;
 }
 
 /**
@@ -85,6 +102,12 @@ export function readyDagNodeIds(capsule: TaskCapsule): readonly string[] {
     capsule.dagNodes.filter((node) => !isBlocked(node.id)).map((node) => node.id),
   );
 }
+
+/** The routes that put an Executor to work; the rest dispatch nothing. */
+const EXECUTING_ROUTES: ReadonlySet<ManagerRoute["kind"]> = new Set<ManagerRoute["kind"]>([
+  "deterministic_check",
+  "model_turn",
+]);
 
 /** Every `check_result` in this task's history, in append order, read to exhaustion. */
 async function loadHistory(
@@ -134,6 +157,13 @@ export async function selectNextTask(
     frozenAt: command.frozenAt,
   });
   const readyNodeIds = readyDagNodeIds(capsule);
+  const route = routeNextStep({
+    snapshot,
+    projection: projectLedger(history),
+    checkResults: history.filter((entry) => entry.kind === "check_result"),
+    readyNodeIds,
+    currentFingerprints: command.currentFingerprints,
+  });
 
   return Object.freeze({
     taskId: command.taskId,
@@ -142,12 +172,18 @@ export async function selectNextTask(
     readyNodeIds,
     selectedNodeId: readyNodeIds[0] ?? null,
     snapshot,
-    route: routeNextStep({
-      snapshot,
-      projection: projectLedger(history),
-      checkResults: history.filter((entry) => entry.kind === "check_result"),
-      readyNodeIds,
-      currentFingerprints: command.currentFingerprints,
-    }),
+    route,
+    // Only a route that actually calls for Executor work is dispatched. An audit or a blocked
+    // task has no execution to authorise, and minting a handoff anyway would leave a valid
+    // dispatch lying around for work nobody selected.
+    handoff: EXECUTING_ROUTES.has(route.kind)
+      ? issueExecutorHandoff({
+          snapshot,
+          capsule,
+          jobId: command.jobId,
+          policy: command.executorPolicy,
+          issuedAt: command.frozenAt,
+        })
+      : null,
   });
 }

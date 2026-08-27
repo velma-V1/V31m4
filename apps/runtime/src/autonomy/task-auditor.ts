@@ -2,18 +2,28 @@ import {
   type AgentModelGatewayPort,
   type AgentReasoningPolicy,
   ApplicationError,
+  type AuditedWorkspace,
   type AuditVerdict,
   assertEntryAcceptanceContract,
+  assertHandoffResultStateCompatible,
+  assertRoleHandoff,
   auditTaskResult,
   type EntryAcceptanceSnapshot,
   type EvidenceRepositoryPort,
   type ExecutionLedgerRepositoryPort,
   type OperationContext,
+  type RoleHandoff,
   type SandboxHandle,
   type UnitOfWorkPort,
   type WorkspaceHandle,
 } from "@v31m4/application";
-import type { ContentHash, JobId, ModelId, ResourceBudget, TaskId } from "@v31m4/domain";
+import {
+  type ContentHash,
+  type JobId,
+  ModelId,
+  type ResourceBudget,
+  type TaskId,
+} from "@v31m4/domain";
 import type {
   AgentLoopOutcome,
   AgentTurnBudget,
@@ -48,7 +58,8 @@ import type { TaskManager } from "./task-manager.js";
  * pass.
  *
  * The role is read-only. The manifest is minted for `auditor`, which derives `readOnly` and refuses
- * every write, execute, and network-effect operation before the run begins.
+ * every write, execute, and network-effect operation before the run begins — and the operations it
+ * is offered come from the Manager's audit dispatch, not from whoever called it.
  */
 export interface TaskAuditorDependencies {
   readonly evidence: EvidenceRepositoryPort;
@@ -94,12 +105,15 @@ export type AuditorContextSource = (
 export interface TaskAuditorRequest {
   readonly taskId: TaskId;
   readonly jobId: JobId;
-  readonly modelId: ModelId;
   readonly snapshot: EntryAcceptanceSnapshot;
-  readonly expectedContractFingerprint: ContentHash;
-  readonly allowedOperations: readonly SemanticOperationId[];
-  readonly skillVersions: readonly string[];
-  readonly harnessVersion: string;
+  /**
+   * The Auditor's own dispatch, derived after execution from the frozen contract and the
+   * authoritative result state. Nothing of the Executor's run reaches the Auditor through it.
+   */
+  readonly handoff: RoleHandoff;
+  readonly expectedHandoffFingerprint: ContentHash;
+  /** The workspace the audited result lives in, observed now. */
+  readonly observedWorkspace: AuditedWorkspace;
   readonly currentFingerprints: Readonly<Record<string, string>>;
   readonly changedPaths: readonly string[];
   readonly executorOutcome: "ready_for_verification" | "deferred" | "stopped";
@@ -121,10 +135,25 @@ export async function runTaskAuditor(
   request: TaskAuditorRequest,
   context: OperationContext,
 ): Promise<TaskAuditorResult> {
-  // The contract this Auditor was dispatched against, before it reads anything at all.
-  assertEntryAcceptanceContract(request.snapshot, request.expectedContractFingerprint);
+  const { handoff } = request;
+  // The dispatch first: everything below is read from it rather than from the caller.
+  assertRoleHandoff(handoff, request.expectedHandoffFingerprint);
+  if (handoff.role !== "auditor" || handoff.taskId !== request.taskId) {
+    throw new ApplicationError(
+      "PERMISSION_DENIED",
+      "This handoff does not dispatch this Auditor.",
+      {
+        details: { role: handoff.role, taskId: handoff.taskId, requested: request.taskId },
+      },
+    );
+  }
+  // The contract it was dispatched against, before it reads anything at all.
+  assertEntryAcceptanceContract(request.snapshot, handoff.acceptanceContractFingerprint);
   // And the operations it may hold, before a manifest exists to hold them.
-  assertRoleInvocationPermitted("auditor", request.allowedOperations);
+  const allowedOperations = assertRoleInvocationPermitted(
+    "auditor",
+    handoff.allowedOperations as readonly SemanticOperationId[],
+  );
 
   const current = await dependencies.tasks.loadCurrent(request.taskId, context);
   if (current === null) {
@@ -132,13 +161,21 @@ export async function runTaskAuditor(
       details: { taskId: request.taskId },
     });
   }
+  // A capsule that advanced during execution is the ordinary case. One that regressed, or a
+  // workspace that was rebound, cannot be the result of the execution this audit follows.
+  assertHandoffResultStateCompatible(handoff, {
+    capsule: current.capsule,
+    workspaceId: request.observedWorkspace.workspaceId,
+    workspaceFingerprint: request.observedWorkspace.workspaceFingerprint,
+  });
 
   const verdict = await auditTaskResult(
     { evidence: dependencies.evidence, ledger: dependencies.ledger },
     {
       snapshot: request.snapshot,
-      expectedContractFingerprint: request.expectedContractFingerprint,
+      expectedContractFingerprint: handoff.acceptanceContractFingerprint,
       capsule: current.capsule,
+      workspace: request.observedWorkspace,
       currentFingerprints: request.currentFingerprints,
       changedPaths: request.changedPaths,
       executorOutcome: request.executorOutcome,
@@ -153,11 +190,11 @@ export async function runTaskAuditor(
     capsuleFingerprint: current.capsule.fingerprint,
     contextFingerprint:
       advisory?.turns[0]?.contextFingerprint ?? (verdict.contractFingerprint as ContentHash),
-    modelId: request.modelId,
-    allowedOperations: request.allowedOperations,
-    skillVersions: request.skillVersions,
-    harnessVersion: request.harnessVersion,
-    acceptanceContractFingerprint: request.snapshot.contractFingerprint,
+    modelId: ModelId.parse(handoff.modelId),
+    allowedOperations,
+    skillVersions: handoff.skillVersions,
+    harnessVersion: handoff.harnessVersion,
+    acceptanceContractFingerprint: handoff.acceptanceContractFingerprint,
   });
 
   const observationEntryId =
@@ -258,10 +295,10 @@ async function runAdvisoryAudit(
     {
       taskId: request.taskId,
       jobId: request.jobId,
-      modelId: request.modelId,
+      modelId: ModelId.parse(request.handoff.modelId),
       role: "auditor",
-      allowedOperations: request.allowedOperations,
-      reasoningPolicy: dependencies.reasoningPolicy ?? "disabled",
+      allowedOperations: request.handoff.allowedOperations as readonly SemanticOperationId[],
+      reasoningPolicy: request.handoff.reasoningPolicy,
       budget,
       resourceBudget,
       workspace,

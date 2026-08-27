@@ -38,7 +38,7 @@ TASK123_PROMOTION_TO_MAIN        := COMPLETE
 MAIN_POST_MERGE_CI               := PASS
 
 TASK_4_STRUCTURED_AGENT_TURNS    := COMPLETE
-TASK_5_MANAGER_EXECUTOR_AUDITOR  := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
+TASK_5_MANAGER_EXECUTOR_AUDITOR  := REPAIRED_AWAITING_INDEPENDENT_GATE
 TASK_6_EVIDENCE_EFFECTS          := NOT_STARTED
 TASK_7_PROJECT_INTELLIGENCE      := NOT_STARTED
 TASK_8_SKILLS_MCP                := NOT_STARTED
@@ -154,10 +154,33 @@ context against a 32,768-token budget. 64K remains unpromoted.
 
 ## Current phase — Task 5
 
-Task 5 is **implemented on `autonomy-task5-role-harness` and awaiting its independent gate**. It is
-not promoted and must not be merged before that review.
+Task 5 is **implemented and repaired on `autonomy-task5-role-harness`, and awaiting its independent
+gate**. It is not promoted and must not be merged before that review.
+
+The first Task 5 implementation (`728c908`) returned `TASK5_INDEPENDENT_REVIEW=FAIL` on three
+defects, all now repaired with regressions:
+
+1. **Manager ownership was incomplete.** The Manager selected the bounded task but not the role,
+   model, skill, operation, or context policy, so the Executor accepted all of that from whoever
+   called it. There is now one immutable, fingerprinted `RoleHandoff` — issued by the Manager from
+   authoritative state, consumed whole by a role, and verified against the dispatch fingerprint it
+   was sent with. The Auditor's handoff is derived afresh after execution from the frozen contract
+   and the authoritative result state; nothing of the Executor's context crosses over.
+2. **Time-of-check to time-of-use.** Selection read authoritative state at one moment and the
+   Executor acted at another, and nothing re-read state in between; the acceptance-contract binding
+   also defaulted to the supplied snapshot itself, so it proved nothing. The Executor now re-reads
+   the authoritative capsule and proves capsule and workspace identity still match the Manager-frozen
+   entry state before any model invocation, and the expected dispatch fingerprint is mandatory.
+   Drift fails closed with `CONFLICT` and requires reselection.
+3. **Audit identity.** The audit recompiled the contract using the frozen snapshot's own workspace
+   fingerprint, which made workspace drift structurally invisible. It now recompiles against the
+   workspace observed at audit time, and workspace identity is part of what may not be weakened or
+   rebound. Strengthening acceptance requirements remains allowed.
 
 Implemented:
+
+- `role-handoff.ts` — the immutable, fingerprinted Manager→role dispatch, plus the entry-state and
+  result-state currency checks that make a stale or substituted dispatch fail closed.
 
 - `entry-acceptance-snapshot.ts` — the verification contract compiled from authoritative Task
   Capsule state and frozen/fingerprinted before significant Executor work. Neither the Executor nor
@@ -166,7 +189,8 @@ Implemented:
   sufficient; a model turn is requested only where adaptive reasoning materially helps. No new
   authority surface.
 - `select-next-task.ts` — the Manager. Deterministic dependency-ready selection that performs no
-  write and cannot mark completion.
+  write and cannot mark completion, and issues the Executor handoff on a route that calls for
+  execution (never on an audit or a blocked task).
 - `audit-task-result.ts` — the deterministic audit verdict over the frozen contract, the
   authoritative Evidence store, and the Execution Ledger, reusing the existing evidence assessment
   rather than inventing a second taxonomy.
@@ -180,7 +204,8 @@ The Task 5-assigned deferred role-assignment item was resolved: `browser.verify`
 auditor-permitted as an explicit operation-level assignment; `browser.inspect` deliberately is not.
 
 Task 10's matching Exit Gate and Quality Floor were **not** implemented, and Tasks 7/9 context
-layering was **not** implemented.
+layering was **not** implemented. The repair kept both out of scope, left `autonomy-task4-agent-turns`
+untouched at `914a0e8`, and preserved the already-resolved Task 5 deferred item.
 
 Do not start Task 6 while Task 5 is still under review.
 

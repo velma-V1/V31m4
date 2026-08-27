@@ -2,6 +2,7 @@ import {
   type ContentHash,
   EvidenceRecord,
   ExecutionLedgerEntry,
+  JobId,
   sha256Hex,
   TaskCapsule,
   type TaskCapsuleInput,
@@ -16,6 +17,7 @@ import {
   type ExecutionLedgerRepositoryPort,
   freezeEntryAcceptanceSnapshot,
   type PortPage,
+  type RoleExecutionPolicy,
   readyDagNodeIds,
   type SelectNextTaskCommand,
   selectNextTask,
@@ -166,13 +168,35 @@ function unchanged(): Record<string, string> {
   return current;
 }
 
+const WORKSPACE_ENTRY = sha256Hex("workspace-entry") as ContentHash;
+const WORKSPACE_AFTER = sha256Hex("workspace-after") as ContentHash;
+
+const executorPolicy: RoleExecutionPolicy = Object.freeze({
+  modelId: "qwen-role:14b",
+  allowedOperations: ["code.inspect", "code.patch"],
+  skillVersions: ["skill:repair@1.0.0"],
+  reasoningPolicy: "disabled" as const,
+  harnessVersion: "v31m4-autonomy-1.1.0",
+  contextPolicy: Object.freeze({
+    maxTurns: 4,
+    maxToolCalls: 3,
+    maxDefers: 1,
+    maxRefusedTurns: 2,
+    maxNoProgressTurns: 1,
+    maxPromptBytes: 131_072,
+    maxPromptTokens: 32_768,
+  }),
+});
+
 function selectCommand(overrides: Partial<SelectNextTaskCommand> = {}): SelectNextTaskCommand {
   return {
     taskId,
+    jobId: JobId.parse("job:1"),
     requiredChecks: ["build.check"],
     requiredEvidenceKinds: ["unit_test"],
     riskPolicyIds: [],
-    workspaceFingerprint: null,
+    workspaceFingerprint: WORKSPACE_ENTRY,
+    executorPolicy,
     currentFingerprints: unchanged(),
     frozenAt: T0,
     ...overrides,
@@ -243,6 +267,45 @@ describe("the Manager selects, and cannot complete", () => {
     );
   });
 
+  it("issues one fingerprinted handoff carrying the role, model, skill, operation, and context policy", async () => {
+    const selection = await selectNextTask({ capsules, ledger }, selectCommand(), context);
+    expect(selection.handoff).toMatchObject({
+      handoffKind: "manager_to_executor",
+      role: "executor",
+      capsuleFingerprint: capsule.fingerprint,
+      workspaceId: "workspace-1",
+      workspaceFingerprint: WORKSPACE_ENTRY,
+      acceptanceContractFingerprint: selection.snapshot.contractFingerprint,
+      modelId: "qwen-role:14b",
+    });
+    expect([...(selection.handoff?.allowedOperations ?? [])]).toEqual([
+      "code.inspect",
+      "code.patch",
+    ]);
+    expect(selection.handoff?.contextPolicy.maxToolCalls).toBe(3);
+  });
+
+  it("re-derives a byte-identical handoff from the same durable state", async () => {
+    const first = await selectNextTask({ capsules, ledger }, selectCommand(), context);
+    const second = await selectNextTask({ capsules, ledger }, selectCommand(), context);
+    expect(second.handoff?.handoffFingerprint).toBe(first.handoff?.handoffFingerprint);
+  });
+
+  it("issues no executor handoff on a route that calls for no execution", async () => {
+    ledgerEntries = [checkResult("build.check", true)];
+    const audit = await selectNextTask({ capsules, ledger }, selectCommand(), context);
+    expect(audit.route.kind).toBe("audit");
+    expect(audit.handoff).toBeNull();
+
+    capsule = capsuleOf({
+      dagNodes: [{ id: "node:root", title: "Execute", dependsOn: [], blocked: true }],
+    });
+    ledgerEntries = [];
+    const blocked = await selectNextTask({ capsules, ledger }, selectCommand(), context);
+    expect(blocked.route.kind).toBe("blocked");
+    expect(blocked.handoff).toBeNull();
+  });
+
   it("refuses a task whose head names a missing revision rather than guessing", async () => {
     const detached: TaskCapsuleRepositoryPort = {
       ...capsules,
@@ -266,13 +329,14 @@ describe("the Auditor judges the frozen contract, and cannot be talked out of it
       requiredChecks: ["build.check"],
       requiredEvidenceKinds: ["unit_test"],
       riskPolicyIds: [],
-      workspaceFingerprint: null,
+      workspaceFingerprint: WORKSPACE_ENTRY,
       frozenAt: T0,
     });
     return {
       snapshot,
       expectedContractFingerprint: snapshot.contractFingerprint,
       capsule,
+      workspace: { workspaceId: "workspace-1", workspaceFingerprint: WORKSPACE_AFTER },
       currentFingerprints: unchanged(),
       changedPaths: [],
       executorOutcome: "ready_for_verification",
@@ -400,6 +464,67 @@ describe("the Auditor judges the frozen contract, and cannot be talked out of it
     );
     expect(verdict.kind).toBe("rejected");
     expect(verdict.reasons.join(" ")).toMatch(/weaken|redefin/iu);
+  });
+
+  it("rejects a workspace identity that was rebound after the contract was frozen", async () => {
+    satisfy();
+    const verdict = await auditTaskResult(
+      { evidence, ledger },
+      auditCommand({
+        workspace: { workspaceId: "workspace-2", workspaceFingerprint: WORKSPACE_AFTER },
+      }),
+      context,
+    );
+    expect(verdict.kind).toBe("rejected");
+    expect(verdict.reasons.join(" ")).toMatch(/workspace/iu);
+  });
+
+  it("rejects a capsule whose workspace binding was dropped or moved", async () => {
+    satisfy();
+    const moved = capsuleOf({
+      workspaceId: "workspace-2",
+      verifiedEvidenceIds: evidenceRecords.map((record) => record.id),
+    });
+    const verdict = await auditTaskResult(
+      { evidence, ledger },
+      auditCommand({ capsule: moved }),
+      context,
+    );
+    expect(verdict.kind).toBe("rejected");
+    expect(verdict.reasons.join(" ")).toMatch(/workspace/iu);
+  });
+
+  it("rejects an audit that unbinds the frozen workspace state entirely", async () => {
+    satisfy();
+    const verdict = await auditTaskResult(
+      { evidence, ledger },
+      auditCommand({ workspace: { workspaceId: "workspace-1", workspaceFingerprint: null } }),
+      context,
+    );
+    expect(verdict.kind).toBe("rejected");
+    expect(verdict.reasons.join(" ")).toMatch(/workspace/iu);
+  });
+
+  it("still accepts a workspace that merely changed because the work happened in it", async () => {
+    satisfy();
+    const verdict = await auditTaskResult({ evidence, ledger }, auditCommand(), context);
+    expect(verdict.kind).toBe("accepted");
+  });
+
+  it("allows a later contract to be stronger, never weaker", async () => {
+    satisfy();
+    const stronger = capsuleOf({
+      acceptanceCriterionIds: ["requirement:one", "requirement:two"],
+      forbiddenChanges: ["packages/domain/src/index.ts", "packages/contracts/src/index.ts"],
+      verifiedEvidenceIds: evidenceRecords.map((record) => record.id),
+    });
+    const verdict = await auditTaskResult(
+      { evidence, ledger },
+      { ...auditCommand(), capsule: stronger },
+      context,
+    );
+    // Rejected for the unbacked new criterion, never for "the contract changed".
+    expect(verdict.reasons.join(" ")).not.toMatch(/weaken|redefin/iu);
   });
 
   it("has no channel through which Executor reasoning could reach it", async () => {

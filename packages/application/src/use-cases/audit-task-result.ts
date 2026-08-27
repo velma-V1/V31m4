@@ -24,9 +24,10 @@ import { resolveTaskEvidence } from "./task-evidence.js";
  * Three properties matter and each is structural rather than a matter of discipline.
  *
  * First, it judges the *frozen* contract. The fingerprint it was dispatched with is checked before
- * anything else, and the contract is recompiled from the current capsule and compared, so a task
- * that quietly dropped a criterion or a prohibition after the implementation was seen is a
- * rejection rather than an easier pass.
+ * anything else, and the contract is recompiled from the current capsule and the workspace as
+ * observed now, so a task that quietly dropped a criterion or a prohibition after the
+ * implementation was seen — or moved the work into a different workspace — is a rejection rather
+ * than an easier pass.
  *
  * Second, it never reads model output. There is no field on this command through which an
  * Executor's summary, transcript, or reasoning could arrive — only the capsule, the frozen
@@ -46,6 +47,13 @@ export interface AuditTaskResultCommand {
   readonly expectedContractFingerprint: ContentHash;
   /** The current authoritative revision, which may have advanced during execution. */
   readonly capsule: TaskCapsule;
+  /**
+   * The workspace the audited result actually lives in, observed now.
+   *
+   * Its identity is part of the frozen contract and may not be rebound; its contents are expected
+   * to differ, because that is what the Executor was for.
+   */
+  readonly workspace: AuditedWorkspace;
   readonly currentFingerprints: Readonly<Record<string, string>>;
   /** Workspace-relative paths the change touched, for the forbidden-change prohibition. */
   readonly changedPaths: readonly string[];
@@ -54,6 +62,11 @@ export interface AuditTaskResultCommand {
    * claim of readiness, never of success, and no summary text accompanies it here.
    */
   readonly executorOutcome: "ready_for_verification" | "deferred" | "stopped";
+}
+
+export interface AuditedWorkspace {
+  readonly workspaceId: string | null;
+  readonly workspaceFingerprint: ContentHash | null;
 }
 
 export type AuditVerdict = Readonly<{
@@ -161,11 +174,18 @@ export async function auditTaskResult(
     requiredChecks: snapshot.requiredChecks,
     requiredEvidenceKinds: snapshot.requiredEvidenceKinds,
     riskPolicyIds: snapshot.riskPolicyIds,
-    workspaceFingerprint: snapshot.workspaceFingerprint,
+    // Observed, never copied from the contract being judged: copying it forward would make
+    // workspace drift structurally invisible to the very check meant to catch it.
+    workspaceFingerprint: command.workspace.workspaceFingerprint,
     frozenAt: snapshot.frozenAt,
   });
   for (const weakened of detectAcceptanceWeakening(snapshot, recompiled)) {
     reasons.push(`the task was redefined more weakly after the contract was frozen: ${weakened}`);
+  }
+  if (command.workspace.workspaceId !== snapshot.workspaceId) {
+    reasons.push(
+      `the audited workspace ${command.workspace.workspaceId ?? "(none)"} is not the workspace the contract was frozen against`,
+    );
   }
 
   if (command.executorOutcome !== "ready_for_verification") {
