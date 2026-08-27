@@ -4,7 +4,7 @@ import type {
   TaskCapsuleRepositoryPort,
 } from "@v31m4/application";
 import {
-  type EvidenceRecord,
+  EvidenceRecord,
   type ExecutionLedgerEntry,
   ExecutionLedgerEntry as LedgerEntry,
   sha256Hex,
@@ -24,6 +24,11 @@ import {
  * Deliberately the production gate, not a stub: it resolves the same policy from the same catalog
  * and evaluates the same predicate, so a test that passes proves the gate allowed the operation
  * rather than that the gate was absent. Only the storage is in memory.
+ *
+ * This exists for tests whose subject is something *other* than evidence acquisition — the
+ * authorization boundary, the ledger, policy binding. That the governed investigation genuinely
+ * produces these facts is proven end to end in `evidence-conditioned-effects.test.ts` and
+ * `agent-turn-loop.test.ts`, never here.
  */
 export class PreconditionWorld {
   capsule: TaskCapsule | null = null;
@@ -100,7 +105,12 @@ export class PreconditionWorld {
     return current;
   }
 
-  withCapsule(taskId: string, jobId: string, phase: TaskPhase = "execute"): this {
+  withCapsule(
+    taskId: string,
+    jobId: string,
+    phase: TaskPhase = "execute",
+    verifiedEvidenceIds: readonly string[] = [],
+  ): this {
     this.capsule = TaskCapsule.create({
       taskId,
       jobId,
@@ -113,6 +123,7 @@ export class PreconditionWorld {
       dagNodes: [{ id: "node:root", title: "Execute", dependsOn: [] }],
       workspaceId: "workspace-1",
       stopCondition: "stop after three attempts",
+      verifiedEvidenceIds: [...verifiedEvidenceIds],
       updatedAt: "2026-08-27T00:00:00.000Z",
     } as TaskCapsuleInput);
     return this;
@@ -138,26 +149,13 @@ export class PreconditionWorld {
     );
     return this;
   }
-
-  /** Everything `code.patch` needs: definition, impact, and the tests that will speak to it. */
-  withPatchPrerequisites(taskId: string, jobId: string): this {
-    return this.observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.symbolDefinition)
-      .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.impactAnalysis)
-      .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.testSelection);
-  }
-
-  /** Everything the raw escape hatch needs: the union of every gate, plus its own failure. */
-  withEscapeHatchPrerequisites(taskId: string, jobId: string): this {
-    return this.withPatchPrerequisites(taskId, jobId)
-      .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.verificationTarget)
-      .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.failureReport);
-  }
 }
 
 const worlds = new Map<string, PreconditionWorld>();
 
 /**
- * A world already carrying a capsule and every prerequisite, for tests about something else.
+ * A world already carrying a capsule, a verified record, and every observation, for tests about
+ * something else.
  *
  * Memoised per task so the gate and the observed fingerprints a caller passes describe the same
  * recorded facts. Two worlds would record the same observations under different entry ids and the
@@ -167,9 +165,28 @@ export function satisfiedPreconditions(taskId: string, jobId: string): Precondit
   const key = `${taskId}|${jobId}`;
   const existing = worlds.get(key);
   if (existing !== undefined) return existing;
-  const world = new PreconditionWorld()
-    .withCapsule(taskId, jobId)
-    .withEscapeHatchPrerequisites(taskId, jobId);
+  const world = new PreconditionWorld().withCapsule(taskId, jobId, "execute", [
+    "evidence:verified",
+  ]);
+  world.records.push(
+    EvidenceRecord.create({
+      id: "evidence:verified",
+      projectId: "project:1",
+      jobId,
+      kind: "unit_test",
+      subjectType: "acceptance_criterion",
+      subjectId: "requirement:one",
+      status: "passed",
+      summary: "requirement:one is backed by a passing unit test",
+      artifactIds: ["artifact-verified"],
+      verifierId: "verifier:deterministic",
+      verifierVersion: "1.0.0",
+      createdAt: "2026-08-27T00:00:00.000Z",
+    }),
+  );
+  world
+    .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.workspaceFile, "target.ts")
+    .observe(taskId, jobId, PRECONDITION_RESOURCE_KINDS.browseTarget, "http://localhost:1/");
   worlds.set(key, world);
   return world;
 }

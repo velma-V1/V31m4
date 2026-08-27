@@ -1,4 +1,10 @@
-import type { EvidenceKind, EvidenceRecord, ExecutionLedgerEntry, TaskId } from "@v31m4/domain";
+import type {
+  EvidenceKind,
+  EvidenceRecord,
+  ExecutionLedgerEntry,
+  JobId,
+  TaskId,
+} from "@v31m4/domain";
 import { ApplicationError } from "../application-errors.js";
 import {
   isEntryStillValid,
@@ -47,10 +53,21 @@ export interface EvidencePreconditionPolicy {
 /** Everything the predicate reads. All of it is authoritative state, none of it is a model claim. */
 export interface EvidencePreconditionState {
   readonly taskId: TaskId;
+  /**
+   * The job the authoritative capsule belongs to.
+   *
+   * Facts are scoped to a task *and* a job. A ledger entry recorded against the same task under a
+   * different job describes a different run of it, and letting one run's observations satisfy
+   * another's gate would be the scope confusion this check exists to prevent.
+   */
+  readonly jobId: JobId;
   /** This task's Ledger history in append order. */
   readonly history: readonly ExecutionLedgerEntry[];
   readonly projection: LedgerProjection;
-  /** Evidence records this task owns, already resolved from the authoritative store. */
+  /**
+   * Evidence this task owns, already resolved *and scoped* by the canonical `assessTaskEvidence`
+   * assessment. Passing anything looser here would be a second scope rule.
+   */
   readonly evidence: readonly EvidenceRecord[];
   /**
    * Current fingerprints of observed resources. A locator that is absent is *not* current: the
@@ -85,8 +102,8 @@ function currentFactFor(
     const entry = state.history[index];
     if (entry === undefined) continue;
     if (entry.kind !== "observation" && entry.kind !== "check_result") continue;
-    // Facts recorded against another task or job are another task's business.
-    if (entry.taskId !== state.taskId) continue;
+    // Facts recorded against another task, or another job of the same task, are another run's.
+    if (entry.taskId !== state.taskId || entry.jobId !== state.jobId) continue;
     if (entry.kind === "check_result" && !entry.passed) continue;
     if (!entry.facts.some((fact) => fact.resourceKind === resourceKind)) continue;
     if (!isEntryStillValid(state.projection, entry, state.currentFingerprints)) continue;
@@ -104,6 +121,7 @@ function describeMissingObservation(
     (entry) =>
       (entry.kind === "observation" || entry.kind === "check_result") &&
       entry.taskId === state.taskId &&
+      entry.jobId === state.jobId &&
       entry.facts.some((fact) => fact.resourceKind === resourceKind),
   );
   if (recorded.length === 0) {

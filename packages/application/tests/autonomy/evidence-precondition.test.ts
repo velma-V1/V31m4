@@ -2,6 +2,7 @@ import {
   type ContentHash,
   EvidenceRecord,
   ExecutionLedgerEntry,
+  JobId,
   sha256Hex,
   TaskId,
 } from "@v31m4/domain";
@@ -28,6 +29,7 @@ import {
  */
 const T0 = "2026-08-27T00:00:00.000Z";
 const taskId = TaskId.parse("task:gate");
+const jobId = JobId.parse("job:1");
 
 let entries: ExecutionLedgerEntry[];
 let records: EvidenceRecord[];
@@ -81,6 +83,7 @@ function currentFingerprints(): Record<string, string> {
 function state(overrides: Partial<EvidencePreconditionState> = {}): EvidencePreconditionState {
   return {
     taskId,
+    jobId,
     history: entries,
     projection: projectLedger(entries),
     evidence: records,
@@ -307,6 +310,29 @@ describe("a denial is actionable and non-retryable until the state changes", () 
 });
 
 describe("facts from another task or job never satisfy this task's gate", () => {
+  it("ignores an observation recorded under a different job of the same task", () => {
+    entries = [
+      ExecutionLedgerEntry.create({
+        id: "ledger:other-job",
+        taskId: "task:gate",
+        jobId: "job:2",
+        recordedAt: T0,
+        kind: "observation",
+        detail: "symbol_definition observed in another run",
+        facts: [
+          {
+            resourceKind: "symbol_definition",
+            locator: "src/target.ts#run",
+            fingerprint: sha256Hex("v1") as ContentHash,
+          },
+        ],
+      }),
+    ];
+    expect(evaluateEvidencePrecondition(policyOf(needsDefinition), state()).kind).toBe(
+      "unsatisfied",
+    );
+  });
+
   it("ignores an observation recorded against a different task", () => {
     entries = [
       ExecutionLedgerEntry.create({

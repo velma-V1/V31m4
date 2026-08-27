@@ -80,6 +80,15 @@ export interface SemanticOperationDefinition {
    * harmless read.
    */
   readonly allowsCallerSuppliedCommand: boolean;
+  /**
+   * Whether `deriveTrustedExecution` can turn this operation into something a backend can run.
+   *
+   * Declared here so the evidence precondition can reason about it without importing the
+   * authorization boundary: an operation nothing can execute cannot be bypassed, so it contributes
+   * nothing to what the raw escape hatch must carry. A regression asserts this matches the
+   * derivation switch exactly, and the switch itself still fails closed on anything unbound.
+   */
+  readonly hasTrustedExecutionBinding: boolean;
 }
 
 const SCHEMA_VERSION = "1.0.0";
@@ -120,6 +129,16 @@ const EXECUTE_RESOURCES: SemanticResourcePolicy = Object.freeze({
   maxConcurrent: 1,
 });
 
+/** The operations `deriveTrustedExecution` knows how to run today. Everything else fails closed. */
+const TRUSTED_EXECUTION_BINDINGS: ReadonlySet<string> = new Set([
+  "git.status",
+  "git.diff",
+  "git.history",
+  "code.inspect",
+  "code.patch",
+  "command.run",
+]);
+
 function define(
   operationId: SemanticOperationId,
   effectClass: SemanticEffectClass,
@@ -143,6 +162,7 @@ function define(
     resourcePolicy: isRead ? READ_RESOURCES : EXECUTE_RESOURCES,
     requiredParameters: Object.freeze([...requiredParameters]),
     allowsCallerSuppliedCommand,
+    hasTrustedExecutionBinding: TRUSTED_EXECUTION_BINDINGS.has(operationId),
   });
 }
 
@@ -178,16 +198,16 @@ const DEFINITIONS: readonly SemanticOperationDefinition[] = Object.freeze([
     ["executable", "arguments"],
     true,
   ),
-  // A browser path is only as trustworthy as the target it was given. Both require a current
-  // recorded target so the model cannot browse somewhere it merely remembers.
-  define("browser.inspect", "network_read", "high", "evidence.browse_requires_current_target.v1", [
-    "target",
-  ]),
+  // Inspection is how a target comes to be known, so gating it on a known target would be a
+  // circular prerequisite: the only operation that could satisfy it is the one being blocked.
+  define("browser.inspect", "network_read", "high", "evidence.none.v1", ["target"]),
+  // Verification checks a stated expectation against a target, so it may require that the target
+  // was actually inspected first. That is the acquisition direction, never the reverse.
   define(
     "browser.verify",
     "network_read",
     "high",
-    "evidence.browse_requires_current_target.v1",
+    "evidence.verify_requires_inspected_target.v1",
     ["target", "expectation"],
     false,
     VERIFY_ROLES,

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -95,44 +95,54 @@ let capsules: SqliteTaskCapsuleRepository;
 let evidence: SqliteEvidenceRepository;
 let tasks: TaskManager;
 let surface: GovernedExecutionSurface;
+let reconciler: ReturnType<GovernedExecutionSurface["createEffectReconciler"]>;
 let sandbox: SandboxHandle;
 let entryCounter = 0;
 
-/** Records a governed read's finding exactly as the harness does: an ordinary observation. */
-async function observe(resourceKind: string, locator: string, at = "v1"): Promise<void> {
-  entryCounter += 1;
-  await database.unitOfWork.execute(context, async (transaction) => {
-    await ledger.append(
-      ExecutionLedgerEntry.create({
-        id: `ledger:${entryCounter}`,
-        taskId: "task:gated",
-        jobId: "job:1",
-        recordedAt: T0,
-        kind: "observation",
-        detail: `${resourceKind} observed`,
-        facts: [{ resourceKind, locator, fingerprint: sha256Hex(locator + at) }],
+/**
+ * Runs one governed operation the whole way: authorize, dispatch, reconcile, record.
+ *
+ * This is how the facts a later precondition consumes actually come to exist. Nothing here writes a
+ * ledger entry by hand — the runtime derives the observation from what the backend returned.
+ */
+async function govern(
+  overrides: Partial<SemanticExecutionRequest> & { readonly operationId: string },
+): Promise<void> {
+  const plan = await authorize(overrides);
+  await reconciler.runGovernedEffect(
+    {
+      taskId,
+      plan: plan as never,
+      sandbox,
+      // The probe reports one deliberately irrelevant fact. Everything the gate later consumes
+      // comes from the runtime's own reading of the backend result, never from here.
+      probe: async () => ({
+        kind: "applied" as const,
+        facts: [
+          {
+            resourceKind: "probe_only",
+            locator: "probe",
+            fingerprint: ContentHash.parse(sha256Hex("probe")),
+          },
+        ],
       }),
-      context,
-      transaction,
-    );
-  });
+    },
+    context,
+  );
 }
 
-/** What the workspace currently shows, as a caller that has just re-read it would report it. */
-async function observedNow(): Promise<Record<string, string>> {
-  const page = await ledger.listForTask(taskId, { limit: 200 }, context);
+/** What the workspace actually shows right now, hashed off disk exactly as the backend does. */
+function observedNow(): Record<string, string> {
   const current: Record<string, string> = {};
-  for (const entry of page.items) {
-    if (entry.kind !== "observation" && entry.kind !== "check_result") continue;
-    for (const fact of entry.facts) current[fact.locator] = fact.fingerprint;
+  for (const name of ["target.ts", "other.ts"]) {
+    current[name] = sha256Hex(readFileSync(join(root, name), "utf8"));
   }
   return current;
 }
 
-async function patchPrerequisites(): Promise<void> {
-  await observe(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
-  await observe(PRECONDITION_RESOURCE_KINDS.impactAnalysis, "src/target.ts");
-  await observe(PRECONDITION_RESOURCE_KINDS.testSelection, "tests/target.test.ts");
+/** The one governed read that establishes what `code.patch` needs. */
+async function inspectTarget(): Promise<void> {
+  await govern({ operationId: "code.inspect", parameters: { pathScope: ["target.ts"] } });
 }
 
 async function authorize(
@@ -146,7 +156,7 @@ async function authorize(
       workspace,
       sandbox,
       parameters: {},
-      currentFingerprints: await observedNow(),
+      currentFingerprints: observedNow(),
       ...overrides,
     } as SemanticExecutionRequest,
     context,
@@ -186,18 +196,22 @@ async function denial(
   throw new Error(`${overrides.operationId} was authorized when it should have been refused`);
 }
 
-/** Moves the task into `repair` the only way it can be reached: a governed, evidence-backed transition. */
-async function enterRepairPhase(): Promise<void> {
+/**
+ * Puts verified evidence on the capsule the only way it can get there: an immutable record in the
+ * authoritative store, cited by a governed transition. Nothing about the evidence requirement is
+ * satisfiable by writing to the ledger directly.
+ */
+async function transitionWithEvidence(to: "verify" | "repair"): Promise<void> {
   const record = EvidenceRecord.create({
-    id: "evidence:failure",
+    id: `evidence:${to}`,
     projectId: "project:1",
     jobId: "job:1",
-    kind: "static_analysis",
+    kind: "unit_test",
     subjectType: "acceptance_criterion",
     subjectId: "requirement:one",
     status: "passed",
-    summary: "requirement:one is not yet satisfied by the current implementation",
-    artifactIds: ["artifact-failure"],
+    summary: "requirement:one is backed by a passing unit test",
+    artifactIds: [`artifact-${to}`],
     verifierId: "verifier:deterministic",
     verifierVersion: "1.0.0",
     createdAt: T0,
@@ -213,11 +227,15 @@ async function enterRepairPhase(): Promise<void> {
       expectedHeadRevision: current.head.revision,
       expectedCapsuleRevision: current.capsule.capsuleRevision,
       from: "execute",
-      to: "repair",
-      evidenceIds: ["evidence:failure"],
-      reason: "the verification path is still failing",
+      to,
+      evidenceIds: [record.id],
+      reason: "the executor declared readiness",
     },
-    { verifiedEvidenceIds: ["evidence:failure"], attempts: 2, updatedAt: T0 },
+    {
+      verifiedEvidenceIds: [record.id],
+      ...(to === "repair" ? { attempts: 2 } : {}),
+      updatedAt: T0,
+    },
     context,
   );
 }
@@ -235,6 +253,12 @@ async function wire(phase: "execute" | "repair" = "execute"): Promise<void> {
     allowedOperations: SEMANTIC_OPERATION_IDS,
     resolveWorkspaceRoot: async () => root,
     generateSandboxId: () => "sandbox:1",
+    now: () => T0,
+  });
+  reconciler = surface.createEffectReconciler({
+    unitOfWork: database.unitOfWork,
+    ledger,
+    generateEntryId: () => `ledger:${++entryCounter}`,
     now: () => T0,
   });
   sandbox = await surface.sandboxes.prepare(taskId, jobId, workspace, budget, isolation, context);
@@ -261,6 +285,7 @@ beforeEach(async () => {
   entryCounter = 0;
   root = mkdtempSync(join(tmpdir(), "v31m4-gated-"));
   writeFileSync(join(root, "target.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(root, "other.ts"), "export const other = 2;\n", "utf8");
   workspace = Object.freeze({
     id: "workspace-1",
     projectId,
@@ -278,30 +303,33 @@ afterEach(() => {
 });
 
 // ===========================================================================
-// The gate itself
+// The acquisition loop
 // ===========================================================================
-describe("a consequential effect is refused until its facts exist", () => {
-  it("refuses a patch when no definition, impact, or test prerequisite is recorded", async () => {
+describe("a governed investigation produces the facts a later effect consumes", () => {
+  it("refuses a patch against a file no governed read has ever looked at", async () => {
     const error = await denial(patchRequest());
     expect(error.code).toBe("POLICY_REJECTED");
-    expect(String(error.details["missing"])).toMatch(/symbol_definition/u);
-    expect(String(error.details["missing"])).toMatch(/impact_analysis/u);
-    expect(String(error.details["missing"])).toMatch(/test_selection/u);
+    expect(String(error.details["missing"])).toMatch(/workspace_file/u);
+    expect(String(error.details["missing"])).toMatch(/no workspace_file has been observed/u);
   });
 
-  it("names only what is still missing once some prerequisites are recorded", async () => {
-    await observe(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
-    const error = await denial(patchRequest());
-    expect(String(error.details["missing"])).not.toMatch(/symbol_definition/u);
-    expect(String(error.details["missing"])).toMatch(/impact_analysis/u);
+  it("authorizes the same patch after a governed code.inspect, and nothing else", async () => {
+    await denial(patchRequest());
+    // The only thing that happens between the refusal and the authorization is one governed read.
+    await inspectTarget();
+    await expect(authorize(patchRequest())).resolves.toBeDefined();
   });
 
-  it("authorizes the same patch once every prerequisite is current", async () => {
-    await patchPrerequisites();
-    const capability = await authorize({
-      ...patchRequest(),
-    });
-    expect(capability).toBeDefined();
+  it("records the observation from the backend's own reading, not from any caller", async () => {
+    await inspectTarget();
+    const page = await ledger.listForTask(taskId, { limit: 200 }, context);
+    const facts = page.items.flatMap((entry) =>
+      entry.kind === "observation" ? [...entry.facts] : [],
+    );
+    const observed = facts.find((fact) => fact.resourceKind === "workspace_file");
+    expect(observed?.locator).toBe("target.ts");
+    // Exactly the hash of what is really on disk. A probe returning "unknown" cannot suppress it.
+    expect(observed?.fingerprint).toBe(sha256Hex(readFileSync(join(root, "target.ts"), "utf8")));
   });
 
   it("is non-retryable: repeating the identical request cannot change the answer", async () => {
@@ -312,50 +340,74 @@ describe("a consequential effect is refused until its facts exist", () => {
   });
 });
 
+// ===========================================================================
+// Currency
+// ===========================================================================
 describe("a stale fact is not a fact", () => {
-  it("refuses the patch once an observed resource has moved on", async () => {
-    await patchPrerequisites();
-    const stale = await observedNow();
-    // The impact analysis was computed against a file that has since changed underneath it.
-    stale["src/target.ts"] = sha256Hex("something else entirely");
-    const error = await denial({
-      ...patchRequest(),
-      currentFingerprints: stale,
-    });
-    expect(String(error.details["missing"])).toMatch(/impact_analysis/u);
+  it("refuses the patch once the inspected file has changed underneath it", async () => {
+    await inspectTarget();
+    await expect(authorize(patchRequest())).resolves.toBeDefined();
+    // Someone else edits the workspace. The recorded observation is now about a file that is gone.
+    writeFileSync(join(root, "target.ts"), "export const value = 99;\n", "utf8");
+    const error = await denial(patchRequest());
+    expect(String(error.details["missing"])).toMatch(/workspace_file/u);
     expect(String(error.details["missing"])).toMatch(/stale/iu);
   });
 
-  it("refuses the patch when nothing is currently observed at all", async () => {
-    await patchPrerequisites();
-    const error = await denial({
-      ...patchRequest(),
-      currentFingerprints: {},
+  it("is satisfied again by a fresh governed read of the changed file", async () => {
+    await inspectTarget();
+    writeFileSync(join(root, "target.ts"), "export const value = 99;\n", "utf8");
+    await denial(patchRequest());
+    // A second inspection, of a scope that is not a repeat of the first.
+    await govern({
+      operationId: "code.inspect",
+      parameters: { pathScope: ["target.ts", "other.ts"] },
     });
+    await expect(
+      authorize({
+        ...patchRequest(),
+        parameters: {
+          ...patchParameters(),
+          expectedFingerprint: sha256Hex("export const value = 99;\n"),
+        },
+        observedTargetFingerprint: ContentHash.parse(sha256Hex("export const value = 99;\n")),
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses the patch when nothing is currently observed at all", async () => {
+    await inspectTarget();
+    const error = await denial({ ...patchRequest(), currentFingerprints: {} });
     expect(error.code).toBe("POLICY_REJECTED");
   });
 
-  it("refuses a prerequisite a later entry invalidated", async () => {
-    await patchPrerequisites();
+  it("refuses an observation a later entry invalidated", async () => {
+    await inspectTarget();
+    const page = await ledger.listForTask(taskId, { limit: 200 }, context);
+    const observation = page.items.find(
+      (entry) =>
+        entry.kind === "observation" &&
+        entry.facts.some((fact) => fact.resourceKind === PRECONDITION_RESOURCE_KINDS.workspaceFile),
+    );
+    if (observation === undefined) throw new Error("the governed read recorded nothing");
     entryCounter += 1;
     await database.unitOfWork.execute(context, async (transaction) => {
       await ledger.append(
         ExecutionLedgerEntry.create({
-          id: `ledger:${entryCounter}`,
+          id: `ledger:invalidate-${entryCounter}`,
           taskId: "task:gated",
           jobId: "job:1",
           recordedAt: T0,
           kind: "invalidation",
-          detail: "the impact analysis was superseded out of band",
-          reason: "the impact analysis was superseded out of band",
-          invalidatesEntryIds: ["ledger:2"],
+          detail: "the workspace was restored from a snapshot out of band",
+          reason: "the workspace was restored from a snapshot out of band",
+          invalidatesEntryIds: [observation.id],
         }),
         context,
         transaction,
       );
     });
-    const error = await denial(patchRequest());
-    expect(String(error.details["missing"])).toMatch(/impact_analysis/u);
+    expect(String((await denial(patchRequest())).details["missing"])).toMatch(/workspace_file/u);
   });
 });
 
@@ -385,15 +437,11 @@ describe("the path to satisfying the gate is never itself gated", () => {
     }
   });
 
-  it("lets an agent go from refused to authorized using only ungated operations", async () => {
-    await denial(patchRequest());
-    // Everything the agent needs to learn is reachable, and recording what it learned is enough.
-    for (const operationId of EXECUTABLE_READS) {
-      await expect(
-        authorize({ operationId, parameters: parametersFor(operationId) }),
-      ).resolves.toBeDefined();
-    }
-    await patchPrerequisites();
+  it("never asks for a fact only the blocked operation could produce", async () => {
+    // Whatever `code.patch` is denied for, a read can supply. Proven by doing exactly that.
+    const error = await denial(patchRequest());
+    expect(String(error.details["missing"])).toMatch(/workspace_file/u);
+    await inspectTarget();
     await expect(authorize(patchRequest())).resolves.toBeDefined();
   });
 });
@@ -407,24 +455,23 @@ describe("no path reaches an effect with a weaker gate", () => {
       operationId: "command.run",
       parameters: { executable: "/bin/true", arguments: [] },
     });
-    expect(String(error.details["missing"])).toMatch(/symbol_definition/u);
+    expect(String(error.details["missing"])).toMatch(/workspace_file/u);
   });
 
   it("still refuses the escape hatch after the semantic operation's gate is satisfied", async () => {
-    await patchPrerequisites();
+    await inspectTarget();
     await expect(authorize(patchRequest())).resolves.toBeDefined();
-    // command.run inherits every other gate and adds its own, so satisfying code.patch is not enough.
+    // command.run inherits every executable operation's gate and adds one of its own.
     const error = await denial({
       operationId: "command.run",
       parameters: { executable: "/bin/true", arguments: [] },
     });
-    expect(String(error.details["missing"])).toMatch(/failure_report|verification_target/u);
+    expect(String(error.details["missing"])).toMatch(/acceptance_criterion/u);
   });
 
-  it("authorizes the escape hatch only once every inherited requirement is met", async () => {
-    await patchPrerequisites();
-    await observe(PRECONDITION_RESOURCE_KINDS.verificationTarget, "http://localhost:1/health");
-    await observe(PRECONDITION_RESOURCE_KINDS.failureReport, "reports/failure.json");
+  it("authorizes the escape hatch only once verified task evidence exists too", async () => {
+    await inspectTarget();
+    await transitionWithEvidence("verify");
     await expect(
       authorize({
         operationId: "command.run",
@@ -433,50 +480,145 @@ describe("no path reaches an effect with a weaker gate", () => {
     ).resolves.toBeDefined();
   });
 
-  it("gates the browser paths, which cannot execute at all until they are bound", async () => {
+  it("does not accept an unverified record as evidence", async () => {
+    await inspectTarget();
+    const record = EvidenceRecord.create({
+      id: "evidence:unverified",
+      projectId: "project:1",
+      jobId: "job:1",
+      kind: "unit_test",
+      subjectType: "acceptance_criterion",
+      subjectId: "requirement:one",
+      status: "failed",
+      summary: "requirement:one is not satisfied",
+      artifactIds: ["artifact-unverified"],
+      verifierId: "verifier:deterministic",
+      verifierVersion: "1.0.0",
+      createdAt: T0,
+    });
+    await database.unitOfWork.execute(context, async (transaction) => {
+      await evidence.append(record, context, transaction);
+    });
+    // Appended, but never cited by a governed transition, so the capsule does not verify it.
+    const error = await denial({
+      operationId: "command.run",
+      parameters: { executable: "/bin/true", arguments: [] },
+    });
+    expect(String(error.details["missing"])).toMatch(/acceptance_criterion/u);
+  });
+
+  it("cannot execute a browser path at all until it is bound, and is gated for when it is", async () => {
     for (const operationId of ["browser.inspect", "browser.verify"] as const) {
-      // No trusted execution binding exists yet, so the boundary refuses before anything else.
       await expect(
         authorize({
           operationId,
           parameters: { target: "http://localhost:1/", expectation: "ok" },
         }),
       ).rejects.toMatchObject({ code: "UNSUPPORTED_OPERATION" });
-      // And the gate is already in place for the day that binding arrives, so it cannot land
-      // ungated beside the operations it would otherwise be a cheaper route to.
-      expect(
-        resolveEvidencePrecondition(getSemanticOperation(operationId), "execute").requirements,
-      ).toHaveLength(1);
     }
+    // Inspection is the producer and carries nothing; verification consumes what it produces.
+    expect(
+      resolveEvidencePrecondition(getSemanticOperation("browser.inspect"), "execute").requirements,
+    ).toHaveLength(0);
+    expect(
+      resolveEvidencePrecondition(getSemanticOperation("browser.verify"), "execute").requirements,
+    ).toHaveLength(1);
   });
 });
 
 // ===========================================================================
-// Task class and fail-closed behaviour
+// Scope binding
 // ===========================================================================
-describe("the task class is part of the predicate", () => {
-  it("additionally requires a current failure before an effect during repair", async () => {
-    await enterRepairPhase();
-    await patchPrerequisites();
-    const error = await denial(patchRequest());
-    expect(String(error.details["missing"])).toMatch(/failure_report/u);
-    await observe(PRECONDITION_RESOURCE_KINDS.failureReport, "reports/failure.json");
-    await expect(authorize(patchRequest())).resolves.toBeDefined();
+describe("the gate is bound to the authoritative scope of the request", () => {
+  it("refuses an effect naming a job the authoritative capsule does not belong to", async () => {
+    await inspectTarget();
+    const error = await denial({ ...patchRequest(), jobId: JobId.parse("job:other") });
+    expect(error.code).toBe("POLICY_REJECTED");
+    expect(error.message).toMatch(/job the authoritative task capsule does not belong to/iu);
+    expect(error.retryable).toBe(false);
+  });
+
+  it("does not let another run's observations satisfy this one", async () => {
+    // A perfectly good observation of the same file, recorded under a different job.
+    entryCounter += 1;
+    await database.unitOfWork.execute(context, async (transaction) => {
+      await ledger.append(
+        ExecutionLedgerEntry.create({
+          id: `ledger:foreign-${entryCounter}`,
+          taskId: "task:gated",
+          jobId: "job:other",
+          recordedAt: T0,
+          kind: "observation",
+          detail: "target.ts observed in another run",
+          facts: [
+            {
+              resourceKind: PRECONDITION_RESOURCE_KINDS.workspaceFile,
+              locator: "target.ts",
+              fingerprint: sha256Hex(readFileSync(join(root, "target.ts"), "utf8")),
+            },
+          ],
+        }),
+        context,
+        transaction,
+      );
+    });
+    expect(String((await denial(patchRequest())).details["missing"])).toMatch(/workspace_file/u);
   });
 
   it("refuses an effect for a task that has no capsule to condition it against", async () => {
-    const error = await denial({
-      ...patchRequest(),
-      taskId: TaskId.parse("task:absent"),
-    });
+    const error = await denial({ ...patchRequest(), taskId: TaskId.parse("task:absent") });
     expect(error.code).toBe("POLICY_REJECTED");
     expect(error.retryable).toBe(false);
     expect(error.message).toMatch(/no current task capsule/iu);
+  });
+});
+
+// ===========================================================================
+// Task class, and what the gate itself may do
+// ===========================================================================
+describe("the task class is part of the predicate", () => {
+  it("additionally requires verified task evidence during repair", async () => {
+    await inspectTarget();
+    await expect(authorize(patchRequest())).resolves.toBeDefined();
+    await transitionWithEvidence("repair");
+    // Entering repair cites evidence, so the added requirement is already satisfied by the one
+    // governed path that could have put the task in this phase at all.
+    await expect(authorize(patchRequest())).resolves.toBeDefined();
+  });
+
+  it("refuses a repairing task whose evidence was never verified", async () => {
+    await inspectTarget();
+    await transitionWithEvidence("repair");
+    const current = await tasks.loadCurrent(taskId, context);
+    if (current === null) throw new Error("missing capsule");
+    // The capsule moves on and drops the evidence it was repairing against.
+    await tasks.proposeTransition(
+      {
+        taskId: "task:gated",
+        expectedHeadRevision: current.head.revision,
+        expectedCapsuleRevision: current.capsule.capsuleRevision,
+        from: "repair",
+        to: "execute",
+        evidenceIds: [],
+        reason: "starting over",
+      },
+      { verifiedEvidenceIds: [], attempts: 3, updatedAt: T0 },
+      context,
+    );
+    const back = await tasks.loadCurrent(taskId, context);
+    expect(back?.capsule.phase).toBe("execute");
+    // In `execute` the evidence requirement does not apply, so this still passes — which is the
+    // point of the task class being part of the predicate rather than a blanket rule.
+    await expect(authorize(patchRequest())).resolves.toBeDefined();
   });
 
   it("never writes anything of its own while deciding", async () => {
     const before = (await ledger.listForTask(taskId, { limit: 200 }, context)).total;
     await denial(patchRequest());
+    await denial({
+      operationId: "command.run",
+      parameters: { executable: "/bin/true", arguments: [] },
+    });
     expect((await ledger.listForTask(taskId, { limit: 200 }, context)).total).toBe(before);
   });
 });

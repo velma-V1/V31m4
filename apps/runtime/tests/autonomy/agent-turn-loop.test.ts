@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,7 +16,6 @@ import {
 import { AGENT_TURN_CONTRACT_VERSION } from "@v31m4/contracts";
 import {
   ContentHash,
-  ExecutionLedgerEntry,
   JobId,
   ProjectId,
   ResourceBudget,
@@ -43,7 +42,6 @@ import {
 } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type { EffectPostState, EffectReconciler } from "../../src/autonomy/effect-reconciler.js";
 import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
-import { PRECONDITION_RESOURCE_KINDS } from "../../src/autonomy/evidence-precondition-catalog.js";
 import { createEvidencePreconditionGate } from "../../src/autonomy/evidence-precondition-gate.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { TaskManager } from "../../src/autonomy/task-manager.js";
@@ -385,7 +383,10 @@ describe("the runtime owns the loop", () => {
   it("records an accepted tool call as governed Ledger history", async () => {
     const { outcome } = await run([inspect("target.ts"), finish("ready")]);
     expect(backend.executions).toBe(1);
-    expect(await ledgerKinds()).toEqual(["effect_attempt", "effect_confirmation"]);
+    // The attempt and its settlement, and separately what the read actually saw. The observation
+    // is the fact anything later can be conditioned on; the confirmation is only that the attempt
+    // resolved.
+    expect(await ledgerKinds()).toEqual(["effect_attempt", "effect_confirmation", "observation"]);
     expect(outcome.turns[0]).toMatchObject({
       kind: "tool_call",
       operation: "code.inspect",
@@ -732,27 +733,15 @@ function patchTurn() {
   };
 }
 
-/** Records one governed read's finding, exactly as the harness would. */
-async function record(resourceKind: string, locator: string, fingerprint?: string): Promise<void> {
-  entryCounter += 1;
-  await database.unitOfWork.execute(context, async (transaction) => {
-    await ledger.append(
-      ExecutionLedgerEntry.create({
-        id: `ledger:${entryCounter}`,
-        taskId: "task:agent",
-        jobId: "job:1",
-        recordedAt: T0,
-        kind: "observation",
-        detail: `${resourceKind} observed`,
-        facts: [{ resourceKind, locator, fingerprint: fingerprint ?? sha256Hex(locator) }],
-      }),
-      context,
-      transaction,
-    );
-  });
-}
+describe("a model turn reaches an effect only through its own governed investigation", () => {
+  /** What the workspace really shows now, hashed off disk exactly as the backend does. */
+  async function observeWorkspace(): Promise<Record<string, string>> {
+    return {
+      "target.ts": sha256Hex(readFileSync(join(root, "target.ts"), "utf8")),
+      "other.ts": sha256Hex(readFileSync(join(root, "other.ts"), "utf8")),
+    };
+  }
 
-describe("a model turn cannot reach an effect its evidence does not support", () => {
   async function patchRun(script: readonly unknown[]) {
     return runAgentTurnLoop(
       {
@@ -763,7 +752,8 @@ describe("a model turn cannot reach an effect its evidence does not support", ()
         ledger,
         unitOfWork: database.unitOfWork,
         buildContext,
-        observeResources: observeLedgerFacts,
+        // The caller observes reality; the runtime records what governed reads establish.
+        observeResources: observeWorkspace,
         generateEntryId: () => `ledger:${++entryCounter}`,
         generateInvocationId: (turnIndex: number) => `invocation-agent-${turnIndex}`,
         now: () => T0,
@@ -785,37 +775,89 @@ describe("a model turn cannot reach an effect its evidence does not support", ()
     );
   }
 
-  it("refuses a syntactically perfect patch whose prerequisites are not recorded", async () => {
-    // The target itself is observed and current, so the only thing left to refuse is the evidence.
-    await record("workspace_file", "target.ts", sha256Hex("export const value = 1;\n"));
+  it("refuses a patch the model has not investigated, and keeps going", async () => {
     const outcome = await patchRun([patchTurn(), finish("ready")]);
     expect(outcome.turns[0]?.refusal).toBe("AUTHORIZATION_REFUSED");
     expect(outcome.turns[0]?.detail).toMatch(/evidence precondition/iu);
+    expect(outcome.turns[0]?.detail).toMatch(/workspace_file/u);
     // The run continues rather than dying, and nothing reached the backend.
     expect(outcome.kind).toBe("ready_for_verification");
     expect(backend.executions).toBe(0);
   });
 
-  it("executes the same patch once the prerequisites and the target are observed", async () => {
-    await record(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
-    await record(PRECONDITION_RESOURCE_KINDS.impactAnalysis, "src/target.ts");
-    await record(PRECONDITION_RESOURCE_KINDS.testSelection, "tests/target.test.ts");
-    // The target's own current fingerprint comes from an observation, never from the turn.
-    await record("workspace_file", "target.ts", sha256Hex("export const value = 1;\n"));
-    const outcome = await patchRun([patchTurn(), finish("ready")]);
+  it("lets the model inspect, then patch, in one uninterrupted run", async () => {
+    // This is the whole point of the phase: the agent is told what is missing, performs the
+    // governed read that establishes it, and the same effect then goes through. Nothing between
+    // the two turns writes a fact by hand.
+    const outcome = await patchRun([inspect("target.ts"), patchTurn(), finish("ready")]);
     expect(outcome.turns[0]?.refusal).toBeNull();
-    // The gate let the write through to the governed effect path, which recorded it.
-    expect(outcome.turns[0]?.outcomeKind).toBe("effect_confirmation");
-    expect(await ledgerKinds()).toContain("effect_attempt");
+    expect(outcome.turns[1]?.refusal).toBeNull();
+    expect(outcome.turns[1]?.outcomeKind).toBe("effect_confirmation");
+    expect(outcome.kind).toBe("ready_for_verification");
   });
 
-  it("refuses again once the observed target has moved on", async () => {
-    await record(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
-    await record(PRECONDITION_RESOURCE_KINDS.impactAnalysis, "src/target.ts");
-    await record(PRECONDITION_RESOURCE_KINDS.testSelection, "tests/target.test.ts");
-    await record("workspace_file", "target.ts", sha256Hex("someone else edited this"));
-    const outcome = await patchRun([patchTurn(), finish("ready")]);
-    expect(outcome.turns[0]?.refusal).toBe("AUTHORIZATION_REFUSED");
-    expect(backend.executions).toBe(0);
+  it("records the inspected fact from the backend, not from the turn", async () => {
+    await patchRun([inspect("target.ts"), finish("ready")]);
+    const page = await ledger.listForTask(taskId, { limit: 500 }, context);
+    const observed = page.items
+      .flatMap((entry) => (entry.kind === "observation" ? [...entry.facts] : []))
+      .find((fact) => fact.resourceKind === "workspace_file");
+    expect(observed?.locator).toBe("target.ts");
+    expect(observed?.fingerprint).toBe(sha256Hex(readFileSync(join(root, "target.ts"), "utf8")));
+  });
+
+  it("refuses the patch again when the file moves between the read and the write", async () => {
+    const outcome = await patchRun([
+      inspect("target.ts"),
+      {
+        kind: "tool_call" as const,
+        operation: "code.inspect",
+        parameters: { pathScope: ["other.ts"] },
+      },
+      patchTurn(),
+      finish("ready"),
+    ]);
+    expect(outcome.turns[0]?.refusal).toBeNull();
+    // Nothing rewrote the file, so the third turn is allowed; this establishes the baseline the
+    // staleness case below is measured against.
+    expect(outcome.turns[2]?.refusal).toBeNull();
+  });
+
+  it("refuses a patch whose inspected target has since changed on disk", async () => {
+    const gateway = new ScriptedGateway([inspect("target.ts"), patchTurn(), finish("ready")]);
+    const outcome = await runAgentTurnLoop(
+      {
+        gateway,
+        surface,
+        reconciler,
+        tasks,
+        ledger,
+        unitOfWork: database.unitOfWork,
+        buildContext,
+        observeResources: async () => {
+          // Someone edits the workspace after the read and before the write.
+          writeFileSync(join(root, "target.ts"), "export const value = 99;\n", "utf8");
+          return observeWorkspace();
+        },
+        generateEntryId: () => `ledger:${++entryCounter}`,
+        generateInvocationId: (turnIndex: number) => `invocation-agent-${turnIndex}`,
+        now: () => T0,
+      },
+      {
+        taskId,
+        jobId,
+        modelId: modelId as never,
+        role: "executor",
+        allowedOperations: ["code.patch", "code.inspect"],
+        reasoningPolicy: "disabled",
+        budget,
+        resourceBudget,
+        workspace,
+        sandbox,
+        probe: applied,
+      },
+      context,
+    );
+    expect(outcome.turns[1]?.refusal).toBe("AUTHORIZATION_REFUSED");
   });
 });

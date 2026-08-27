@@ -232,6 +232,9 @@ describe("effect lifecycle ordering", () => {
     expect(page.items.map((entry) => entry.kind)).toEqual([
       "effect_attempt",
       "effect_confirmation",
+      // Plus what the governed read itself saw: the attempt's settlement and the observation it
+      // established are different statements, and only the second can be conditioned on later.
+      "observation",
     ]);
     // The attempt is recorded first, which is what makes a crash mid-effect detectable.
     expect(page.items[0]?.id).toBe(outcome.attemptEntryId);
@@ -1775,7 +1778,7 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
       context,
     );
     expect(outcome.outcomeKind).toBe("effect_confirmation");
-    expect(await ledgerKinds()).toEqual(["effect_attempt", "effect_confirmation"]);
+    expect(await ledgerKinds()).toEqual(["effect_attempt", "effect_confirmation", "observation"]);
     expect(dispatches).toBe(1);
     expect(probeCalls).toBe(1);
   });

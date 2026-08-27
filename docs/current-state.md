@@ -40,7 +40,7 @@ MAIN_POST_MERGE_CI               := PASS
 
 TASK_4_STRUCTURED_AGENT_TURNS    := COMPLETE
 TASK_5_MANAGER_EXECUTOR_AUDITOR  := COMPLETE
-TASK_6_EVIDENCE_EFFECTS          := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
+TASK_6_EVIDENCE_EFFECTS          := REPAIRED_AWAITING_INDEPENDENT_GATE
 TASK_7_PROJECT_INTELLIGENCE      := NOT_STARTED
 TASK_8_SKILLS_MCP                := NOT_STARTED
 TASK_9_MEMORY                    := NOT_STARTED
@@ -178,8 +178,31 @@ auditor-permitted; `browser.inspect` deliberately is not.
 
 ## Current phase — Task 6
 
-Task 6 is **implemented on `autonomy-task6-evidence-effects` and awaiting its independent gate**,
-branched from the accepted Task 5 SHA. It is not promoted and must not be merged before that review.
+Task 6 is **implemented and repaired on `autonomy-task6-evidence-effects`, and awaiting its
+independent gate**, branched from the accepted Task 5 SHA. It is not promoted and must not be merged
+before that review.
+
+The first implementation (`8723528`) returned `TASK6_INDEPENDENT_REVIEW=FAIL`. The gate was real but
+its requirements were unreachable: `code.patch` asked for symbol, impact, and test-selection
+observations that no bound governed operation produces, so the only way past it was for a test to
+append the facts by hand. All five returned defects are repaired:
+
+1. **The acquisition loop is real.** Requirements were moved down to what today's deterministic
+   machinery can honestly answer — a current `workspace_file` observation, which the reference
+   backend computes from bytes it reads off disk — and `governed-observation.ts` records what a
+   governed read established as an `observation` entry, derived from the backend result rather than
+   from any caller-supplied probe. The model path is now: refused, with the missing requirement
+   named in the recorded refusal, then `code.inspect`, then the same effect authorized.
+2. **No manually injected fact is offered as end-to-end proof.** Both end-to-end suites run the
+   real governed path; direct fixture seeding survives only where the subject is something else.
+3. **Both canonical authorities are live.** `command.run` and a repairing `code.patch` require
+   verified passing acceptance-criterion evidence, scoped by the canonical `assessTaskEvidence`
+   assessment, alongside current Ledger state.
+4. **No circular prerequisite.** `browser.inspect` is ungated and produces what `browser.verify`
+   consumes; two structural regressions sweep every operation in every task class for requirements
+   with no producer, or whose only producer is the blocked operation itself.
+5. **Current scope binding.** A request naming a job the authoritative capsule does not belong to is
+   refused, and another job's observations do not satisfy this one.
 
 Consequential effects are now conditioned on evidence and Ledger state:
 
@@ -188,8 +211,12 @@ Consequential effects are now conditioned on evidence and Ledger state:
   Task 3's canonical `isEntryStillValid`; there is no second staleness notion and no parallel
   evidence taxonomy.
 - `evidence-precondition-catalog.ts` (runtime) — resolves requirements from operation, task class
-  (the Task Capsule's own phase), and risk. `command.run` inherits the union of every other
-  operation's requirements, so the raw escape hatch can never be the cheap way round.
+  (the Task Capsule's own phase), and risk. `command.run` inherits the union of every *executable*
+  operation's requirements, so the raw escape hatch can never be the cheap way round; an operation
+  joins that union the day it gains a trusted execution binding.
+- `governed-observation.ts` (runtime) — what a completed governed read established, derived from the
+  backend's own result and recorded as an `observation`. This is what makes the gate reachable: the
+  investigation an agent is sent to perform produces the facts its later effect consumes.
 - `evidence-precondition-gate.ts` (runtime) — reads authoritative capsule, Ledger, and Evidence,
   evaluates, and refuses. It writes nothing.
 - The gate is a **required** dependency of `createSemanticAuthorizationBoundary` and
@@ -200,9 +227,8 @@ Consequential effects are now conditioned on evidence and Ledger state:
   closes the deferral Task 4 recorded in a comment.
 
 The hard gate holds: missing or stale evidence blocks effects without blocking the investigation
-path needed to satisfy them. Every read is ungated, and so are `build.check`, `test.targeted`,
-`test.regression`, and `debug.reproduce` — the operations that produce a failure report — in every
-task class.
+path needed to satisfy them. Every read is ungated, as are the operations that produce evidence, in
+every task class — and that is now enforced structurally rather than by inspection.
 
 Task 7's Project Intelligence, Task 8's Skills/MCP, Task 9's memory, and Task 10's Exit Gate and
 Quality Floor remain out of scope. `invoke-tool.ts` was reviewed and deliberately left unchanged; it

@@ -15,6 +15,100 @@ The gate closes that. A consequential effect is authorized only when the facts j
 **and are still current** — and the path an agent walks to produce those facts is never itself
 gated, because a gate that could deadlock the agent would be worse than no gate at all.
 
+## Independent review round 2 — `TASK6_INDEPENDENT_REVIEW=FAIL` on `8723528`, repaired
+
+The gate was real but its requirements were not reachable. `code.patch` asked for
+`symbol_definition`, `impact_analysis`, and `test_selection` observations that **nothing in the
+governed path produces** — the operations that would establish them (`repo.symbol`, `repo.impact`,
+`test.targeted`) have no trusted execution binding yet. The only way past the gate was for a test to
+append the facts by hand, which is exactly what the tests did. That is not a gate; it is a gate
+plus a key taped to the door.
+
+Five defects were returned. Each is addressed below.
+
+### 1. The acquisition loop is now real
+
+Two things changed.
+
+**The policy asks only for facts the current governed path can honestly establish.** The reference
+backend already computes, from bytes it reads off disk in the assigned workspace, the fingerprint of
+every file in a `code.inspect` path scope. That is a real, deterministic, model-independent fact, so
+that is what `code.patch` now requires: a current `workspace_file` observation. Nothing was
+fabricated to close the gap and no Task 7 machinery was pulled forward — the requirements were moved
+down to what today's deterministic machinery can answer. When Task 7 brings symbol, impact, and
+test-selection machinery, its facts join `PRECONDITION_RESOURCE_KINDS` and the policies tighten.
+
+**The runtime records what a governed read established.** `governed-observation.ts` derives resource
+facts from the backend's own result, and `recordOutcome` appends them as an `observation` entry
+alongside the effect outcome. Two reasons it is a separate entry rather than facts on the
+confirmation: "the attempt settled" and "this is what the workspace looks like" are different
+statements, and `observation` is the kind whose currency the canonical `isEntryStillValid` rule
+fingerprint-checks — a finding recorded as anything else could never go stale, which would make a
+staleness gate meaningless. The derivation is runtime-owned and unconditional; it is not a
+caller-supplied probe, so no composition can switch it off and leave the gate unsatisfiable.
+
+The model path is therefore: refused → the refusal names `workspace_file` → the model issues
+`code.inspect` → the runtime records what the backend saw → the same `code.patch` is authorized.
+The refusal text now carries the missing-requirement list into the Ledger, so the next rebuilt
+context shows the model what to acquire rather than only that it was refused.
+
+### 2. No manually injected fact is offered as end-to-end proof
+
+`evidence-conditioned-effects.test.ts` no longer appends prerequisite observations. It runs
+`code.inspect` through `authorize` → `runGovernedEffect` → reconcile → record, with a probe that
+reports one deliberately irrelevant fact, and then asserts the recorded observation is the hash of
+what is really on disk. `agent-turn-loop.test.ts` proves the same journey through real model turns
+in a single uninterrupted run.
+
+`precondition-fixtures.ts` still seeds a world directly, and its own docstring says why: it exists
+for tests whose subject is the authorization boundary, the ledger, or policy binding, not evidence
+acquisition.
+
+### 3. Both canonical authorities are live
+
+| Precondition | Ledger | EvidenceRecord |
+| --- | --- | --- |
+| `code.patch` (any phase) | current `workspace_file` observation | — |
+| `code.patch` during `repair` | current `workspace_file` observation | verified passing acceptance-criterion evidence |
+| `command.run` | current `workspace_file` observation (inherited) | verified passing acceptance-criterion evidence |
+
+The evidence side uses existing semantics throughout — an immutable record of a recognised
+`EvidenceKind`, about an acceptance criterion this task owns, with `status: "passed"` — and it is
+scoped by the canonical `assessTaskEvidence` / `TaskEvidenceScope.of(capsule)` assessment that the
+transition policy and the Auditor already use. There is no second taxonomy and no second scope rule.
+It is honestly acquirable: a capsule may only carry verified evidence by way of an immutable record
+cited in a governed transition, which is exactly how the regressions satisfy it.
+
+The `repair` rule changed from "a current failure report" — a fact nothing can produce — to the
+verified evidence a capsule must already cite to be in `repair` at all.
+
+### 4. The investigation path, and no circular prerequisites
+
+`browser.inspect` is now ungated and `browser.verify` requires a `browse_target` that inspection
+produces. The previous arrangement gated both on the same fact, so the only operation that could
+satisfy `browser.inspect` was `browser.inspect`.
+
+This is enforced structurally rather than by inspection. `operationsProducing(resourceKind)` is
+exported from `governed-observation.ts`, and two regressions sweep every operation in every task
+class: no requirement may name a resource kind nothing produces, and no requirement may name one
+whose only producer is the operation being blocked. A future policy that reintroduces either fails.
+
+### 5. Current scope binding
+
+The gate now refuses when the request names a job the authoritative capsule does not belong to, and
+the predicate ignores ledger entries recorded under a different job of the same task. Both have
+negative regressions: a mismatched `jobId` is refused as non-retryable `POLICY_REJECTED`, and a
+perfectly good `workspace_file` observation recorded under another job does not satisfy this one.
+
+### Preserved
+
+`command.run` anti-bypass, stale refusal, non-retryable denials, Task 4 and Task 5 behaviour, and
+every previously passing test. The escape-hatch union is now taken over operations that *have* a
+trusted execution binding — an operation nothing can run cannot be bypassed, and inheriting a
+requirement no governed path can satisfy would block raw execution for a reason unrelated to risk.
+`hasTrustedExecutionBinding` is declared on each catalog definition, so an operation joins the union
+the day it becomes executable.
+
 ## Sources of truth
 
 Both are ones V31M4 already treats as authoritative, and neither is new:
@@ -40,21 +134,22 @@ three inputs, exactly as the architecture asks:
 | --- | --- | --- |
 | operation | the closed `SEMANTIC_OPERATION_CATALOG`, via each definition's existing `evidencePreconditionPolicyId` | the base requirement set |
 | risk | the same catalog | recorded in the resolved policy id, so a denial is attributable |
-| task class | the authoritative Task Capsule's own `phase` | adds a current `failure_report` before any effect that *changes* something during `repair` |
+| task class | the authoritative Task Capsule's own `phase` | adds verified task evidence before any effect that *changes* something during `repair` |
 
 Base policies:
 
 | Policy id | Operations | Requires |
 | --- | --- | --- |
-| `evidence.none.v1` | every read, plus `build.check`, `test.targeted`, `test.regression`, `debug.reproduce` | nothing |
-| `evidence.patch_requires_current_target.v1` | `code.patch` | current `symbol_definition`, `impact_analysis`, `test_selection` |
-| `evidence.browse_requires_current_target.v1` | `browser.inspect`, `browser.verify` | current `verification_target` |
-| `evidence.command_run_escape_hatch.v1` | `command.run` | current `failure_report`, **plus the union of every other operation's requirements** |
+| `evidence.none.v1` | every read, plus `build.check`, `test.targeted`, `test.regression`, `debug.reproduce`, `browser.inspect` | nothing |
+| `evidence.patch_requires_current_target.v1` | `code.patch` | current `workspace_file` observation |
+| `evidence.verify_requires_inspected_target.v1` | `browser.verify` | current `browse_target` observation |
+| `evidence.command_run_escape_hatch.v1` | `command.run` | verified task evidence, **plus the union of every executable operation's requirements** |
 
 The last row is Step 2. The escape hatch is not gated by a hand-written list that could fall behind:
-it inherits the union, so any operation gated later strengthens `command.run` automatically rather
-than leaving a cheaper route beside it. A regression asserts `command.run` carries at least every
-requirement any other operation carries, and strictly more than the strongest of them.
+it inherits the union, so any executable operation gated later strengthens `command.run`
+automatically rather than leaving a cheaper route beside it. A regression asserts `command.run`
+carries at least every requirement any executable operation carries, and strictly more than the
+strongest of them.
 
 ## Where it runs
 
@@ -98,31 +193,36 @@ investigation path needed to satisfy it. Three things hold it:
 1. Every read operation resolves to an empty requirement set, in every task class, and the gate
    short-circuits before touching the database for them.
 2. `build.check`, `test.targeted`, `test.regression`, and `debug.reproduce` — the operations that
-   *produce* a failure report — are ungated in every task class. This is why the `repair` rule is
-   scoped to `workspace_write` and `network_effect` rather than to every non-read: requiring a
-   failure report before the operations that generate one would be precisely the deadlock.
-3. An end-to-end regression walks the whole path: a patch is refused, only ungated reads are used,
-   the findings are recorded, and the same patch is then authorized.
+   *produce* evidence — are ungated in every task class, as is `browser.inspect`. This is why the
+   `repair` rule is scoped to `workspace_write` and `network_effect` rather than to every non-read.
+3. Two structural regressions sweep every operation in every task class: no requirement may name a
+   resource kind nothing produces, and no requirement may name one whose only producer is the
+   operation being blocked.
+4. An end-to-end regression walks the whole path for real: a patch is refused, one governed
+   `code.inspect` runs, the runtime records what the backend saw, and the same patch is authorized.
 
 ## Regressions
 
-`packages/application/tests/autonomy/evidence-precondition.test.ts` (17) — the pure predicate:
-currency, invalidation, failed checks, cross-task facts, evidence status/kind/subject, partial
-satisfaction, determinism, and the typed non-retryable denial.
+`packages/application/tests/autonomy/evidence-precondition.test.ts` (18) — the pure predicate:
+currency, invalidation, failed checks, cross-task and cross-job facts, evidence status/kind/subject,
+partial satisfaction, determinism, and the typed non-retryable denial.
 
-`apps/runtime/tests/autonomy/evidence-precondition-catalog.test.ts` (14) — resolution: reads never
-gated, evidence-producing operations never gated, every high/critical operation gated, the escape
-hatch union, the task-class rule, determinism and immutability.
+`apps/runtime/tests/autonomy/evidence-precondition-catalog.test.ts` (19) — resolution, including the
+two structural anti-deadlock sweeps, both canonical authorities being live, the escape-hatch union
+over executable operations, the task-class rule, determinism and immutability.
 
-`apps/runtime/tests/autonomy/evidence-conditioned-effects.test.ts` (17) — end to end over real
-SQLite and the real governed surface: refusal and its contents, stale and invalidated prerequisites,
-the open investigation path, the escape hatch that cannot undercut, browser paths, the repair task
-class reached through a governed transition, a task with no capsule, and the gate writing nothing.
+`apps/runtime/tests/autonomy/evidence-conditioned-effects.test.ts` (22) — end to end over real
+SQLite and the real governed surface, with no hand-appended facts: the acquisition loop, the
+observation recorded from the backend's own reading, staleness against the real file on disk and
+recovery by re-inspection, invalidation, the open investigation path, the escape hatch that cannot
+undercut and needs verified evidence of its own, job-scope binding, a task with no capsule, the
+repair task class reached through a governed transition, and the gate writing nothing while denying.
 
-`apps/runtime/tests/autonomy/agent-turn-loop.test.ts` (+3) — the model path: a syntactically perfect
-patch turn is refused as `AUTHORIZATION_REFUSED`, the run continues rather than dying, nothing
-reaches the backend; the same turn executes once the prerequisites and the target are observed; and
-it is refused again once the observed target has moved on.
+`apps/runtime/tests/autonomy/agent-turn-loop.test.ts` (+5) — the model path: a patch turn the model
+has not investigated is refused as `AUTHORIZATION_REFUSED` with the missing requirement named, the
+run continues, nothing reaches the backend; inspect-then-patch succeeds in one uninterrupted run;
+the recorded fact is the hash of the real file; and a target that changes between the read and the
+write is refused again.
 
 `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts` (+1) — the inventory entry's own
 check that consequential effects are conditioned on evidence and reads are not.
@@ -144,7 +244,7 @@ Task 7's Project Intelligence, Task 9's memory, and Task 10's Quality Floor rema
 
 ```text
 pnpm typecheck   PASS   (9/9)
-pnpm test        PASS   (1175 tests: 1147 passed, 24 skipped, 4 todo; 147 files)
+pnpm test        PASS   (1188 tests: 1160 passed, 24 skipped, 4 todo; 147 files)
 pnpm lint        PASS   (9 pre-existing warnings, unchanged; 0 errors)
 pnpm build       PASS   (9/9)
 git diff --check PASS

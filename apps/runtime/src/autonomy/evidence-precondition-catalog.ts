@@ -1,5 +1,5 @@
 import type { EvidencePreconditionPolicy, PreconditionRequirement } from "@v31m4/application";
-import type { TaskPhase } from "@v31m4/domain";
+import type { EvidenceKind, TaskPhase } from "@v31m4/domain";
 import {
   getSemanticOperation,
   SEMANTIC_OPERATION_IDS,
@@ -27,17 +27,47 @@ import {
  * as hard when spelled as a raw command, and a gated operation added later strengthens the escape
  * hatch automatically rather than opening a hole beside it.
  */
+/**
+ * The resource kinds a requirement may name.
+ *
+ * Every one of these is something the *current* governed path can honestly establish. That is the
+ * whole constraint on this list: a requirement naming a fact no deterministic machinery can produce
+ * is not a gate, it is a deadlock, and inventing a record to satisfy it would be worse than either.
+ * When Task 7 brings symbol, impact, and test-selection machinery, its facts join this list and the
+ * policies below tighten; until then the gate asks only for what can be answered.
+ */
 export const PRECONDITION_RESOURCE_KINDS = Object.freeze({
-  /** Where the symbol being edited is actually defined, as last read. */
-  symbolDefinition: "symbol_definition",
-  /** What depends on it, so a patch is not applied blind to its blast radius. */
-  impactAnalysis: "impact_analysis",
-  /** Which tests will speak to this change; selected before the change, not after. */
-  testSelection: "test_selection",
-  /** The target and expectation a browser path was given, from a governed read. */
-  verificationTarget: "verification_target",
-  /** A recorded, still-current failure. Repair without one is not repair. */
-  failureReport: "failure_report",
+  /**
+   * A workspace file's content fingerprint, as observed by a governed read.
+   *
+   * Produced by the runtime from what the backend actually read off disk — see
+   * `governed-observation.ts` — never from anything a model said.
+   */
+  workspaceFile: "workspace_file",
+  /** A network target a governed `browser.inspect` actually looked at. */
+  browseTarget: "browse_target",
+});
+
+/**
+ * The evidence a task must already hold before the riskiest paths open.
+ *
+ * Existing semantics throughout: an immutable `EvidenceRecord` of a recognised kind, about an
+ * acceptance criterion this task owns, that passed. Scoping is the canonical `assessTaskEvidence`
+ * assessment the transition policy and the Auditor already use — this introduces no second
+ * taxonomy and no second scope rule.
+ */
+const VERIFIED_TASK_EVIDENCE: PreconditionRequirement = Object.freeze({
+  kind: "evidence" as const,
+  allowedEvidenceKinds: Object.freeze([
+    "unit_test",
+    "integration_test",
+    "property_test",
+    "hidden_test",
+    "mutation_test",
+    "static_analysis",
+  ]) as readonly EvidenceKind[],
+  subjectType: "acceptance_criterion",
+  requirePassed: true as const,
 });
 
 function observe(resourceKind: string): PreconditionRequirement {
@@ -58,17 +88,19 @@ function observe(resourceKind: string): PreconditionRequirement {
 const BASE_REQUIREMENTS: Readonly<Record<string, readonly PreconditionRequirement[]>> =
   Object.freeze({
     "evidence.none.v1": Object.freeze([]),
+    // A patch must be preceded by a governed read of the workspace that is still current. This is
+    // acquirable: `code.inspect` records exactly this fact, from bytes the backend read.
     "evidence.patch_requires_current_target.v1": Object.freeze([
-      observe(PRECONDITION_RESOURCE_KINDS.symbolDefinition),
-      observe(PRECONDITION_RESOURCE_KINDS.impactAnalysis),
-      observe(PRECONDITION_RESOURCE_KINDS.testSelection),
+      observe(PRECONDITION_RESOURCE_KINDS.workspaceFile),
     ]),
-    "evidence.browse_requires_current_target.v1": Object.freeze([
-      observe(PRECONDITION_RESOURCE_KINDS.verificationTarget),
+    // Verification may require inspection; inspection may never require verification.
+    "evidence.verify_requires_inspected_target.v1": Object.freeze([
+      observe(PRECONDITION_RESOURCE_KINDS.browseTarget),
     ]),
-    "evidence.command_run_escape_hatch.v1": Object.freeze([
-      observe(PRECONDITION_RESOURCE_KINDS.failureReport),
-    ]),
+    // Raw execution is the critical escape hatch. Beyond the union it inherits, it asks the one
+    // thing that distinguishes a task doing verified work from one flailing: something about this
+    // task has actually been verified.
+    "evidence.command_run_escape_hatch.v1": Object.freeze([VERIFIED_TASK_EVIDENCE]),
   });
 
 const ESCAPE_HATCH = "command.run";
@@ -97,12 +129,21 @@ function baseFor(definition: SemanticOperationDefinition): readonly Precondition
   return BASE_REQUIREMENTS[definition.evidencePreconditionPolicyId] ?? [];
 }
 
-/** Every requirement any other operation carries; the escape hatch may not undercut any of them. */
+/**
+ * Every requirement an *executable* operation carries; the escape hatch may not undercut any.
+ *
+ * Restricted to operations that have a trusted execution binding, because an operation nothing can
+ * run cannot be bypassed — and inheriting a requirement no governed path can satisfy would make raw
+ * execution unreachable for a reason that has nothing to do with risk. When an unbound operation
+ * gains its binding, its requirements join this union on the same day, with no edit here.
+ */
 function escapeHatchUnion(): readonly PreconditionRequirement[] {
   const union: PreconditionRequirement[] = [];
   for (const operationId of SEMANTIC_OPERATION_IDS) {
     if (operationId === ESCAPE_HATCH) continue;
-    union.push(...baseFor(getSemanticOperation(operationId)));
+    const definition = getSemanticOperation(operationId);
+    if (!definition.hasTrustedExecutionBinding) continue;
+    union.push(...baseFor(definition));
   }
   return union;
 }
@@ -115,15 +156,16 @@ export function resolveEvidencePrecondition(
   if (definition.operationId === ESCAPE_HATCH) {
     requirements.push(...escapeHatchUnion());
   }
-  // The task class. Changing the world during repair without a current recorded failure is acting
-  // on a belief about what is broken; the observation is cheap and the alternative is a guess.
+  // The task class. A capsule may only enter `repair` by citing evidence — Task 2's transition
+  // policy already requires it — so a repairing task provably holds verified evidence about what
+  // is true. Requiring it again here is what stops a repair from proceeding against a capsule whose
+  // evidence has since been superseded, and it is acquirable through the one governed path that
+  // could have put the task in this phase at all.
   //
-  // Scoped to the classes that *change* something. Running a build or a test is how a failure
-  // report comes to exist in the first place, so requiring one before those would be the deadlock
-  // this design exists to avoid. `command.run` is not exempted by this: it carries the same
-  // requirement in its own base policy, in every task class.
+  // Scoped to the classes that *change* something: running a build or a test is how evidence comes
+  // to exist, and gating those would be the deadlock this design exists to avoid.
   if (taskPhase === "repair" && CHANGES_THE_WORLD.has(definition.effectClass)) {
-    requirements.push(observe(PRECONDITION_RESOURCE_KINDS.failureReport));
+    requirements.push(VERIFIED_TASK_EVIDENCE);
   }
   return Object.freeze({
     // Attributable: a denial names which operation, in which task class, at which risk.

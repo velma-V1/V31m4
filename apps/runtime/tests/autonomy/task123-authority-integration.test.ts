@@ -309,6 +309,7 @@ describe("A: an expired execution grant must not block settling history", () => 
     expect(await ledgerKinds()).toEqual([
       "effect_attempt",
       "reconciliation_indeterminate",
+      "observation",
       "effect_confirmation",
     ]);
   });
@@ -848,6 +849,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     expect(await ledgerKinds()).toEqual([
       "effect_attempt",
       "reconciliation_indeterminate",
+      "observation",
       "effect_confirmation",
     ]);
     Reflect.deleteProperty(reconciler, "dependencies");
@@ -997,6 +999,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
     expect(await ledgerKinds()).toEqual([
       "effect_attempt",
       "reconciliation_indeterminate",
+      "observation",
       "effect_confirmation",
     ]);
   });
@@ -1182,6 +1185,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
       expect(await ledgerKinds()).toEqual([
         "effect_attempt",
         "reconciliation_indeterminate",
+        "observation",
         "effect_nonapplication",
       ]);
     });

@@ -1,6 +1,7 @@
 import {
   ApplicationError,
   assertEvidencePreconditionSatisfied,
+  assessTaskEvidence,
   type EvidenceRepositoryPort,
   type ExecutionLedgerRepositoryPort,
   evaluateEvidencePrecondition,
@@ -9,6 +10,7 @@ import {
   resolveTaskEvidence,
   scanTaskLedger,
   type TaskCapsuleRepositoryPort,
+  TaskEvidenceScope,
 } from "@v31m4/application";
 import type { EvidenceRecord, ExecutionLedgerEntry, JobId, TaskId } from "@v31m4/domain";
 import { resolveEvidencePrecondition } from "./evidence-precondition-catalog.js";
@@ -83,6 +85,24 @@ export function createEvidencePreconditionGate(
         },
       );
     }
+    // Current scope binding. The request names a task and a job; the authoritative capsule decides
+    // which job that task actually belongs to. A request that pairs a real task with someone else's
+    // job would otherwise be gated against facts and evidence from a run it has nothing to do with.
+    if (capsule.jobId !== request.jobId) {
+      throw new ApplicationError(
+        "POLICY_REJECTED",
+        "This effect names a job the authoritative task capsule does not belong to.",
+        {
+          retryable: false,
+          details: {
+            operationId: request.definition.operationId,
+            taskId: request.taskId,
+            requestedJobId: request.jobId,
+            capsuleJobId: capsule.jobId,
+          },
+        },
+      );
+    }
 
     const policy = resolveEvidencePrecondition(request.definition, capsule.phase);
     if (policy.requirements.length === 0) return;
@@ -97,13 +117,25 @@ export function createEvidencePreconditionGate(
       [...capsule.verifiedEvidenceIds],
       context,
     );
+    // The one authoritative evidence assessment, reused rather than restated: a record must exist,
+    // have passed, belong to this project and job, and be about a subject this task owns. The same
+    // call the transition policy and the Auditor make.
+    const assessment = assessTaskEvidence(
+      TaskEvidenceScope.of(capsule),
+      [...capsule.verifiedEvidenceIds],
+      resolved,
+    );
+    const verified = [...assessment.verifiedEvidenceIds]
+      .map((id) => resolved.get(id))
+      .filter((record): record is EvidenceRecord => record !== undefined);
 
     assertEvidencePreconditionSatisfied(
       evaluateEvidencePrecondition(policy, {
         taskId: request.taskId,
+        jobId: request.jobId,
         history,
         projection: projectLedger(history),
-        evidence: [...resolved.values()] as readonly EvidenceRecord[],
+        evidence: verified,
         currentFingerprints: request.currentFingerprints,
       }),
       request.definition.operationId,

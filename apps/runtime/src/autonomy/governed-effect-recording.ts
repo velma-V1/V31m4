@@ -17,6 +17,7 @@ import type {
   GovernedEffectOutcome,
   GovernedEffectRequest,
 } from "./effect-reconciler-contracts.js";
+import { deriveGovernedFacts } from "./governed-observation.js";
 
 /**
  * The execution half of the governed effect lifecycle: proving scope, observing what happened,
@@ -128,6 +129,7 @@ export async function recordOutcome(
           }`,
   });
   await appendExecutionLedgerEntry(dependencies, entry, context);
+  await recordGovernedObservation(dependencies, request, result, context);
 
   return Object.freeze({
     attemptEntryId: attempt.id,
@@ -135,6 +137,41 @@ export async function recordOutcome(
     outcomeKind,
     result,
   });
+}
+
+/**
+ * What a completed governed read saw, recorded as an `observation`.
+ *
+ * The outcome entry above already says the attempt settled, but "the attempt settled" and "this is
+ * what the workspace looks like" are different statements, and only the second is a fact anything
+ * later can be conditioned on. `observation` is the kind whose currency the canonical validity rule
+ * fingerprint-checks, so a finding recorded as anything else could never go stale — which would
+ * make a staleness gate meaningless.
+ *
+ * Runtime-owned and unconditional: derived from the backend's own result, appended here rather than
+ * by a caller, so no composition can leave a later precondition unsatisfiable.
+ */
+async function recordGovernedObservation(
+  dependencies: OutcomeRecordingDependencies,
+  request: GovernedEffectRequest,
+  result: SandboxExecutionResult | null,
+  context: OperationContext,
+): Promise<void> {
+  const facts = deriveGovernedFacts(request.plan, result);
+  if (facts.length === 0) return;
+  await appendExecutionLedgerEntry(
+    dependencies,
+    ExecutionLedgerEntry.create({
+      id: dependencies.generateEntryId(),
+      taskId: request.taskId,
+      jobId: request.plan.jobId,
+      recordedAt: dependencies.now(),
+      kind: "observation",
+      detail: `${request.plan.operationId} observed ${facts.length} resource(s)`,
+      facts,
+    }),
+    context,
+  );
 }
 
 /**

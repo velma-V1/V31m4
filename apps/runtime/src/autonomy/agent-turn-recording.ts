@@ -160,9 +160,26 @@ export function describeFailure(error: unknown): string {
 }
 
 export function messageOf(error: unknown): string {
-  return error instanceof Error && error.message.length > 0
-    ? error.message
-    : "the authorization boundary refused the operation";
+  const message =
+    error instanceof Error && error.message.length > 0
+      ? error.message
+      : "the authorization boundary refused the operation";
+  return `${message}${actionableDetail(error)}`;
+}
+
+/**
+ * The part of a refusal an agent can act on.
+ *
+ * A denial that only says "refused" leaves the model to guess, and guessing is how a run turns into
+ * the same rejected turn repeated until a budget runs out. An evidence precondition already names
+ * exactly what is missing, so that list is carried into the recorded refusal — which is what the
+ * next rebuilt context shows the model.
+ */
+function actionableDetail(error: unknown): string {
+  if (!isApplicationError(error)) return "";
+  const missing = error.details["missing"];
+  if (!Array.isArray(missing) || missing.length === 0) return "";
+  return `; missing: ${missing.filter((entry) => typeof entry === "string").join("; ")}`;
 }
 
 /** Keeps every recorded string inside the Execution Ledger's own text limit. */
