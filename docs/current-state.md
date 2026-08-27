@@ -25,6 +25,7 @@ Program: `V31M4-AUTONOMY-001 / 1.1.0`.
 - Task 1 target-host evidence: `docs/reviews/autonomy-task1-phase1-evidence.md`.
 - Task 4 evidence: `docs/reviews/autonomy-task4-agent-turn-evidence.md`.
 - Task 5 evidence: `docs/reviews/autonomy-task5-role-harness-evidence.md`.
+- Task 6 evidence: `docs/reviews/autonomy-task6-evidence-effects.md`.
 
 ## Autonomy program status
 
@@ -38,8 +39,8 @@ TASK123_PROMOTION_TO_MAIN        := COMPLETE
 MAIN_POST_MERGE_CI               := PASS
 
 TASK_4_STRUCTURED_AGENT_TURNS    := COMPLETE
-TASK_5_MANAGER_EXECUTOR_AUDITOR  := REPAIRED_AWAITING_INDEPENDENT_GATE
-TASK_6_EVIDENCE_EFFECTS          := NOT_STARTED
+TASK_5_MANAGER_EXECUTOR_AUDITOR  := COMPLETE
+TASK_6_EVIDENCE_EFFECTS          := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
 TASK_7_PROJECT_INTELLIGENCE      := NOT_STARTED
 TASK_8_SKILLS_MCP                := NOT_STARTED
 TASK_9_MEMORY                    := NOT_STARTED
@@ -152,62 +153,62 @@ installed on this host, so the mandated proof reported `BLOCKED_ENVIRONMENT`. Th
 8/8 twice against an installed real Qwen (`qwen3:14b`, Q4_K_M), including a measured 29,881-token
 context against a 32,768-token budget. 64K remains unpromoted.
 
-## Current phase — Task 5
+## Task 5 — accepted
 
-Task 5 is **implemented and repaired on `autonomy-task5-role-harness`, and awaiting its independent
-gate**. It is not promoted and must not be merged before that review.
+Task 5 passed its independent gate at `895789a2bf89dcf6fb31a9f45a44f1d1f6961370` on
+`autonomy-task5-role-harness`, after a round-2 FAIL on `728c908` was repaired. It is not merged to
+`main`. What it established, and what Task 6 builds on:
 
-The first Task 5 implementation (`728c908`) returned `TASK5_INDEPENDENT_REVIEW=FAIL` on three
-defects, all now repaired with regressions:
-
-1. **Manager ownership was incomplete.** The Manager selected the bounded task but not the role,
-   model, skill, operation, or context policy, so the Executor accepted all of that from whoever
-   called it. There is now one immutable, fingerprinted `RoleHandoff` — issued by the Manager from
-   authoritative state, consumed whole by a role, and verified against the dispatch fingerprint it
-   was sent with. The Auditor's handoff is derived afresh after execution from the frozen contract
-   and the authoritative result state; nothing of the Executor's context crosses over.
-2. **Time-of-check to time-of-use.** Selection read authoritative state at one moment and the
-   Executor acted at another, and nothing re-read state in between; the acceptance-contract binding
-   also defaulted to the supplied snapshot itself, so it proved nothing. The Executor now re-reads
-   the authoritative capsule and proves capsule and workspace identity still match the Manager-frozen
-   entry state before any model invocation, and the expected dispatch fingerprint is mandatory.
-   Drift fails closed with `CONFLICT` and requires reselection.
-3. **Audit identity.** The audit recompiled the contract using the frozen snapshot's own workspace
-   fingerprint, which made workspace drift structurally invisible. It now recompiles against the
-   workspace observed at audit time, and workspace identity is part of what may not be weakened or
-   rebound. Strengthening acceptance requirements remains allowed.
-
-Implemented:
-
-- `role-handoff.ts` — the immutable, fingerprinted Manager→role dispatch, plus the entry-state and
-  result-state currency checks that make a stale or substituted dispatch fail closed.
-
+- `role-handoff.ts` — one immutable, fingerprinted Manager→role dispatch. A role consumes it whole
+  and verifies its fingerprint; it never re-accepts an equivalent-looking policy from its caller.
 - `entry-acceptance-snapshot.ts` — the verification contract compiled from authoritative Task
-  Capsule state and frozen/fingerprinted before significant Executor work. Neither the Executor nor
-  the Auditor can weaken or redefine it afterwards.
-- `manager-routing.ts` — deterministic-first routing. Deterministic machinery is used whenever it is
-  sufficient; a model turn is requested only where adaptive reasoning materially helps. No new
-  authority surface.
-- `select-next-task.ts` — the Manager. Deterministic dependency-ready selection that performs no
-  write and cannot mark completion, and issues the Executor handoff on a route that calls for
-  execution (never on an audit or a blocked task).
-- `audit-task-result.ts` — the deterministic audit verdict over the frozen contract, the
-  authoritative Evidence store, and the Execution Ledger, reusing the existing evidence assessment
-  rather than inventing a second taxonomy.
-- `role-manifest.ts` — role invocation manifests with derived `readOnly`, operation-level role
-  permissions, and full context/model/skill/harness fingerprints, persisted as ordinary Ledger
-  resource facts.
-- `task-executor.ts` / `task-auditor.ts` — the fresh Executor and the independent read-only Auditor.
-  A model may advise the Auditor; it can never overturn the deterministic verdict.
+  Capsule state and frozen before Executor work. Workspace identity is part of it and may be
+  strengthened, never rebound or unbound.
+- `manager-routing.ts` / `select-next-task.ts` — deterministic-first routing and a Manager that
+  reads, decides, and writes nothing.
+- `audit-task-result.ts` / `task-auditor.ts` — a deterministic verdict a model may advise but never
+  overturn, against the frozen contract and the workspace observed at audit time.
+- `task-executor.ts` — a fresh Executor that re-reads authoritative state and fails closed if the
+  capsule or workspace moved since selection.
+- `role-manifest.ts` — role invocation manifests with derived `readOnly`, persisted as ordinary
+  Ledger resource facts.
 
-The Task 5-assigned deferred role-assignment item was resolved: `browser.verify` is now
-auditor-permitted as an explicit operation-level assignment; `browser.inspect` deliberately is not.
+The Task 5-assigned deferred role-assignment item was resolved: `browser.verify` is
+auditor-permitted; `browser.inspect` deliberately is not.
 
-Task 10's matching Exit Gate and Quality Floor were **not** implemented, and Tasks 7/9 context
-layering was **not** implemented. The repair kept both out of scope, left `autonomy-task4-agent-turns`
-untouched at `914a0e8`, and preserved the already-resolved Task 5 deferred item.
+## Current phase — Task 6
 
-Do not start Task 6 while Task 5 is still under review.
+Task 6 is **implemented on `autonomy-task6-evidence-effects` and awaiting its independent gate**,
+branched from the accepted Task 5 SHA. It is not promoted and must not be merged before that review.
+
+Consequential effects are now conditioned on evidence and Ledger state:
+
+- `evidence-precondition.ts` (application) — the pure deterministic predicate over existing
+  `EvidenceRecord` semantics and valid Ledger observations/check results. Currency is decided by
+  Task 3's canonical `isEntryStillValid`; there is no second staleness notion and no parallel
+  evidence taxonomy.
+- `evidence-precondition-catalog.ts` (runtime) — resolves requirements from operation, task class
+  (the Task Capsule's own phase), and risk. `command.run` inherits the union of every other
+  operation's requirements, so the raw escape hatch can never be the cheap way round.
+- `evidence-precondition-gate.ts` (runtime) — reads authoritative capsule, Ledger, and Evidence,
+  evaluates, and refuses. It writes nothing.
+- The gate is a **required** dependency of `createSemanticAuthorizationBoundary` and
+  `GovernedExecutionSurface.create`, and runs inside `authorize()` — the single mandatory boundary —
+  after policy and before any capability is minted.
+- The agent-turn loop gained a required `observeResources` dependency and now supplies both
+  `currentFingerprints` and `code.patch`'s `observedTargetFingerprint` from that observation. This
+  closes the deferral Task 4 recorded in a comment.
+
+The hard gate holds: missing or stale evidence blocks effects without blocking the investigation
+path needed to satisfy them. Every read is ungated, and so are `build.check`, `test.targeted`,
+`test.regression`, and `debug.reproduce` — the operations that produce a failure report — in every
+task class.
+
+Task 7's Project Intelligence, Task 8's Skills/MCP, Task 9's memory, and Task 10's Exit Gate and
+Quality Floor remain out of scope. `invoke-tool.ts` was reviewed and deliberately left unchanged; it
+is the pre-autonomy tool path and no model turn can reach it.
+
+Do not start Task 7 while Task 6 is still under review.
 
 ## Later phase order
 

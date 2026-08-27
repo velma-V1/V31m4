@@ -44,6 +44,7 @@ import {
 } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type { EffectPostState, EffectReconciler } from "../../src/autonomy/effect-reconciler.js";
 import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
+import { createEvidencePreconditionGate } from "../../src/autonomy/evidence-precondition-gate.js";
 import {
   assertRoleInvocationPermitted,
   mintRoleInvocationManifest,
@@ -207,6 +208,17 @@ let handoff: RoleHandoff;
 let entryCounter = 0;
 let contextRequests: unknown[];
 
+/** Everything the ledger has recorded, treated as still current: nothing here rewrites the world. */
+async function observedFingerprints(): Promise<Record<string, string>> {
+  const page = await ledger.listForTask(taskId, { limit: 200 }, context);
+  const current: Record<string, string> = {};
+  for (const entry of page.items) {
+    if (entry.kind !== "observation" && entry.kind !== "check_result") continue;
+    for (const fact of entry.facts) current[fact.locator] = fact.fingerprint;
+  }
+  return current;
+}
+
 function nextEntry(): string {
   entryCounter += 1;
   return `ledger:${entryCounter}`;
@@ -231,6 +243,8 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   backend = new CountingBackend();
   surface = GovernedExecutionSurface.create({
     policy,
+    // The real gate over this test's own authoritative stores: nothing here is stubbed out.
+    preconditions: createEvidencePreconditionGate({ capsules, ledger, evidence }),
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces()),
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -334,6 +348,9 @@ function executorDependencies(gateway: AgentModelGatewayPort) {
     ledger,
     unitOfWork: database.unitOfWork,
     buildContext,
+    // The caller's observation of reality, which the evidence precondition reads. These runs use
+    // only ungated reads, so what is recorded is exactly what is currently observed.
+    observeResources: () => observedFingerprints(),
     generateEntryId: nextEntry,
     generateInvocationId: (turnIndex: number) => `invocation-role-${turnIndex}`,
     now: () => T0,

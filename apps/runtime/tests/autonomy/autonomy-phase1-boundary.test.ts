@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
+import { satisfiedFingerprints, satisfiedPreconditions } from "./precondition-fixtures.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1 — end-to-end phase-1 boundary.
@@ -36,6 +37,8 @@ import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js
  */
 const projectId = ProjectId.parse("project:autonomy");
 const jobId = JobId.parse("job:autonomy");
+/** The real gate over an already-satisfied world: these tests are about authorization, not evidence. */
+const preconditions = () => satisfiedPreconditions("task:root", "job:autonomy").gate;
 const taskId = TaskId.parse("task:root");
 const budget = ResourceBudget.create({
   maxWallClockMs: 30_000,
@@ -79,7 +82,11 @@ function policyEngine(decision: PolicyDecision = "allow"): PolicyEnginePort {
 function authorizeSemanticExecution(
   request: Parameters<ReturnType<typeof createSemanticAuthorizationBoundary>["authorize"]>[0],
 ) {
-  return boundary.authorize(request, context());
+  // The facts the gate needs are already recorded; the request states what it currently observes.
+  return boundary.authorize(
+    { currentFingerprints: satisfiedFingerprints("task:root", "job:autonomy"), ...request },
+    context(),
+  );
 }
 
 beforeEach(async () => {
@@ -91,7 +98,10 @@ beforeEach(async () => {
   workspaceDirectory = join(workspacesRoot, workspace.id);
   writeFileSync(join(workspaceDirectory, "target.ts"), "export const value = 1;\n", "utf8");
   nextSandbox = 0;
-  boundary = createSemanticAuthorizationBoundary({ policy: policyEngine() });
+  boundary = createSemanticAuthorizationBoundary({
+    policy: policyEngine(),
+    preconditions: preconditions(),
+  });
   sandboxes = new SandboxSupervisor({
     backend: new ReferenceSandboxBackend(),
     workspaces,
@@ -151,7 +161,10 @@ describe("no model-direct effect bypass", () => {
       ).rejects.toThrow(ApplicationError);
     }
     for (const decision of ["deny", "require_approval"] as const) {
-      const governed = createSemanticAuthorizationBoundary({ policy: policyEngine(decision) });
+      const governed = createSemanticAuthorizationBoundary({
+        policy: policyEngine(decision),
+        preconditions: preconditions(),
+      });
       await expect(governed.authorize(base, context()), decision).rejects.toThrow(ApplicationError);
     }
   });
@@ -312,7 +325,10 @@ describe("code.patch staleness across a real workspace", () => {
 describe("capabilities are issuer-bound, single-use, and re-checked at dispatch", () => {
   it("refuses a capability from a different authorization boundary", async () => {
     const sandbox = await sandboxes.prepare(taskId, jobId, workspace, budget, policy, context());
-    const foreign = await createSemanticAuthorizationBoundary({ policy: policyEngine() }).authorize(
+    const foreign = await createSemanticAuthorizationBoundary({
+      policy: policyEngine(),
+      preconditions: preconditions(),
+    }).authorize(
       {
         operationId: "code.inspect",
         role: "executor",

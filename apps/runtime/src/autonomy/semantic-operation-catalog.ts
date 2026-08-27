@@ -178,12 +178,16 @@ const DEFINITIONS: readonly SemanticOperationDefinition[] = Object.freeze([
     ["executable", "arguments"],
     true,
   ),
-  define("browser.inspect", "network_read", "high", "evidence.none.v1", ["target"]),
+  // A browser path is only as trustworthy as the target it was given. Both require a current
+  // recorded target so the model cannot browse somewhere it merely remembers.
+  define("browser.inspect", "network_read", "high", "evidence.browse_requires_current_target.v1", [
+    "target",
+  ]),
   define(
     "browser.verify",
     "network_read",
     "high",
-    "evidence.none.v1",
+    "evidence.browse_requires_current_target.v1",
     ["target", "expectation"],
     false,
     VERIFY_ROLES,

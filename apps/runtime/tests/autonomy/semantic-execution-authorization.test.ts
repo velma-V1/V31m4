@@ -12,6 +12,7 @@ import {
   type SemanticAuthorizationBoundary,
   type SemanticExecutionRequest,
 } from "../../src/autonomy/semantic-execution-authorization.js";
+import { satisfiedFingerprints, satisfiedPreconditions } from "./precondition-fixtures.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 Task 1 repair.
@@ -22,6 +23,8 @@ import {
  * derived, and every one of these cases is a denial.
  */
 const taskId = TaskId.parse("task:root");
+/** The real gate over an already-satisfied world; the evidence gate has its own suite. */
+const preconditions = () => satisfiedPreconditions("task:root", "job:1").gate;
 const jobId = JobId.parse("job:1");
 const currentFingerprint = ContentHash.parse("a".repeat(64));
 const otherFingerprint = ContentHash.parse("b".repeat(64));
@@ -50,6 +53,7 @@ let planCounter = 0;
 beforeEach(() => {
   planCounter = 0;
   boundary = createSemanticAuthorizationBoundary({
+    preconditions: preconditions(),
     policy: allowPolicy,
     generateExecutionPlanId: () => `plan:${++planCounter}`,
     now: () => "2026-08-25T00:00:00.000Z",
@@ -74,7 +78,11 @@ const operationContext = createOperationContext({
 });
 
 function authorizeSemanticExecution(request: SemanticExecutionRequest) {
-  return boundary.authorize(request, operationContext);
+  // The facts the gate needs are already recorded; the request states what it currently observes.
+  return boundary.authorize(
+    { currentFingerprints: satisfiedFingerprints("task:root", "job:1"), ...request },
+    operationContext,
+  );
 }
 
 function request(overrides: Partial<SemanticExecutionRequest> = {}): SemanticExecutionRequest {
@@ -425,10 +433,10 @@ describe("capability verify and consume are separate questions", () => {
   });
 
   it("refuses another boundary's capability, and a structural copy of its own", async () => {
-    const foreign = await createSemanticAuthorizationBoundary({ policy: allowPolicy }).authorize(
-      request(),
-      operationContext,
-    );
+    const foreign = await createSemanticAuthorizationBoundary({
+      policy: allowPolicy,
+      preconditions: preconditions(),
+    }).authorize(request(), operationContext);
     // The third candidate passes `instanceof` — its prototype chain runs through a real plan —
     // which is exactly why verification is registry identity, not a branding check.
     for (const candidate of [

@@ -28,6 +28,7 @@ import type {
   AgentLoopOutcome,
   AgentTurnBudget,
   AgentTurnContext,
+  AgentTurnLoopDependencies,
 } from "./agent-turn-contracts.js";
 import { runAgentTurnLoop } from "./agent-turn-loop.js";
 import type { EffectReconciler, GovernedExecutionSurface } from "./effect-reconciler.js";
@@ -80,6 +81,12 @@ export interface TaskAuditorDependencies {
   readonly sandbox?: SandboxHandle;
   readonly probe?: EffectPostStateProbe;
   readonly reasoningPolicy?: AgentReasoningPolicy;
+  /**
+   * How the advisory pass observes reality for the evidence precondition. Optional because its
+   * default — observing nothing — is the *stricter* answer: an unobserved resource is not current,
+   * so every gated operation is refused rather than allowed.
+   */
+  readonly observeResources?: AgentTurnLoopDependencies["observeResources"];
 }
 
 /**
@@ -287,6 +294,7 @@ async function runAdvisoryAudit(
           },
           operation,
         ),
+      observeResources: dependencies.observeResources ?? (async () => ({})),
       generateEntryId: dependencies.generateEntryId ?? (() => AUDIT_CONTEXT_FINGERPRINT_FALLBACK),
       generateInvocationId:
         dependencies.generateInvocationId ?? ((turnIndex) => `invocation-audit-${turnIndex}`),

@@ -158,6 +158,19 @@ export interface AgentTurnLoopDependencies {
   readonly ledger: ExecutionLedgerRepositoryPort;
   readonly unitOfWork: UnitOfWorkPort;
   readonly buildContext: AgentContextSource;
+  /**
+   * What the assigned workspace and its observed resources currently fingerprint to.
+   *
+   * The evidence precondition can only tell a current fact from a stale one against something, and
+   * a model may not be that something. This is the caller's observation of reality — the sibling of
+   * `probe`, which proves what an effect did — and it is required rather than optional because a
+   * missing observation is read as "nothing is current", which denies every gated effect.
+   */
+  readonly observeResources: (
+    taskId: TaskId,
+    workspace: WorkspaceHandle,
+    context: OperationContext,
+  ) => Promise<Readonly<Record<string, string>>>;
   readonly generateEntryId: () => string;
   readonly generateInvocationId: (turnIndex: number) => string;
   readonly now: () => string;

@@ -25,6 +25,7 @@ import { expect, it } from "vitest";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { LocalWorkspaceManager } from "../../src/job-execution-infrastructure.js";
+import { satisfiedPreconditions } from "./precondition-fixtures.js";
 import {
   assertNoExternalRoutes,
   assertOnlyLoopbackInterfaces,
@@ -148,7 +149,10 @@ realTest("real workspace, catalog, and sandbox boundary on this host", async () 
   const directory = join(root, workspace.id);
   writeFileSync(join(directory, "target.ts"), "export const value = 1;\n", "utf8");
 
-  const boundary = createSemanticAuthorizationBoundary({ policy: allowPolicy });
+  const boundary = createSemanticAuthorizationBoundary({
+    policy: allowPolicy,
+    preconditions: satisfiedPreconditions("task:root", "job:1").gate,
+  });
   const authorizeSemanticExecution = boundary.authorize;
   const sandboxes = new SandboxSupervisor({
     backend: new ReferenceSandboxBackend(),
@@ -269,7 +273,10 @@ realTest(
     const docker = new DirectDockerSandbox({ image: sandboxImage, dockerExecutable, userSpec });
     const available = await docker.available();
     report(`container runtime reachable: ${available}`);
-    const boundary = createSemanticAuthorizationBoundary({ policy: allowPolicy });
+    const boundary = createSemanticAuthorizationBoundary({
+      policy: allowPolicy,
+      preconditions: satisfiedPreconditions("task:root", "job:1").gate,
+    });
     const authorizeSemanticExecution = boundary.authorize;
     const sandboxes = new SandboxSupervisor({
       backend: docker,

@@ -406,9 +406,10 @@ export class GovernedExecutionSurface {
    * and the only way anything is ever written to `surfaceState`.
    */
   static create(options: GovernedExecutionSurfaceOptions): GovernedExecutionSurface {
-    const { policy, generateExecutionPlanId, now, ...sandbox } = options;
+    const { policy, preconditions, generateExecutionPlanId, now, ...sandbox } = options;
     const boundary = createSemanticAuthorizationBoundary({
       policy,
+      preconditions,
       ...(generateExecutionPlanId === undefined ? {} : { generateExecutionPlanId }),
       ...(now === undefined ? {} : { now }),
     });

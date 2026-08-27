@@ -11,6 +11,7 @@ import type {
 } from "@v31m4/application";
 import type { ContentHash, LedgerResourceFact, TaskId } from "@v31m4/domain";
 import type { SandboxSupervisorOptions } from "@v31m4/infrastructure";
+import type { EvidencePreconditionGate } from "./evidence-precondition-gate.js";
 
 /**
  * The contracts of the governed effect lifecycle.
@@ -158,6 +159,8 @@ export interface GovernedExecutionSurfaceOptions
   extends Omit<SandboxSupervisorOptions, "capabilities"> {
   /** The canonical policy engine the semantic boundary consults for itself. */
   readonly policy: PolicyEnginePort;
+  /** The evidence precondition every consequential effect must satisfy before it is authorized. */
+  readonly preconditions: EvidencePreconditionGate;
   readonly generateExecutionPlanId?: () => string;
   readonly now?: () => string;
 }

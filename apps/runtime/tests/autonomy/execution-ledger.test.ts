@@ -41,6 +41,7 @@ import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.j
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
+import { satisfiedPreconditions } from "./precondition-fixtures.js";
 
 /**
  * The governed effect lifecycle end to end: authorize through Task 1, record the attempt before
@@ -48,6 +49,8 @@ import { context, runtimeDatabase } from "../fixtures.js";
  * one outcome. Task 3 composes Task 1 — it does not replace or bypass any of it.
  */
 const taskId = TaskId.parse("task:root");
+/** The real gate over an already-satisfied world; evidence gating has its own suite. */
+const preconditions = () => satisfiedPreconditions("task:root", "job:1").gate;
 const jobId = JobId.parse("job:1");
 const projectId = ProjectId.parse("project:1");
 const policy = SandboxIsolationPolicy.create({ maxCpuMillisPerSecond: 500, maxPids: 64 });
@@ -137,6 +140,7 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   backend = new CountingReferenceBackend();
   surface = GovernedExecutionSurface.create({
     policy: semanticPolicy,
+    preconditions: preconditions(),
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -1659,7 +1663,10 @@ describe("restart recovery", () => {
 describe("authoritative ledger state requires the canonical Task 1 issuer", () => {
   /** An otherwise identical capability from a different semantic authorization boundary. */
   async function foreignPlan(): Promise<Awaited<ReturnType<typeof inspectPlan>>> {
-    return createSemanticAuthorizationBoundary({ policy: semanticPolicy }).authorize(
+    return createSemanticAuthorizationBoundary({
+      policy: semanticPolicy,
+      preconditions: preconditions(),
+    }).authorize(
       {
         operationId: "code.inspect",
         role: "executor",
@@ -1832,6 +1839,7 @@ describe("authoritative ledger state requires the canonical Task 1 issuer", () =
   it("refuses a foreign capability whose scoped identity also disagrees", async () => {
     // Both defects at once: neither may be reported as success, and neither may write.
     const foreign = await createSemanticAuthorizationBoundary({
+      preconditions: preconditions(),
       policy: semanticPolicy,
     }).authorize(
       {

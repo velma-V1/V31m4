@@ -16,6 +16,7 @@ import {
 import { AGENT_TURN_CONTRACT_VERSION } from "@v31m4/contracts";
 import {
   ContentHash,
+  ExecutionLedgerEntry,
   JobId,
   ProjectId,
   ResourceBudget,
@@ -42,6 +43,8 @@ import {
 } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type { EffectPostState, EffectReconciler } from "../../src/autonomy/effect-reconciler.js";
 import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
+import { PRECONDITION_RESOURCE_KINDS } from "../../src/autonomy/evidence-precondition-catalog.js";
+import { createEvidencePreconditionGate } from "../../src/autonomy/evidence-precondition-gate.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { TaskManager } from "../../src/autonomy/task-manager.js";
 import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
@@ -198,6 +201,7 @@ let root: string;
 let workspace: WorkspaceHandle;
 let ledger: SqliteExecutionLedgerRepository;
 let capsules: SqliteTaskCapsuleRepository;
+let evidence: SqliteEvidenceRepository;
 let tasks: TaskManager;
 let surface: GovernedExecutionSurface;
 let reconciler: EffectReconciler;
@@ -257,6 +261,8 @@ async function runWith<Gateway extends AgentModelGatewayPort>(
       ledger,
       unitOfWork: database.unitOfWork,
       buildContext,
+      // These runs use only ungated reads, so what the ledger recorded is what is observed now.
+      observeResources: observeLedgerFacts,
       generateEntryId: () => `ledger:${++entryCounter}`,
       generateInvocationId: (turnIndex: number) => `invocation-agent-${turnIndex}`,
       now: () => T0,
@@ -288,6 +294,19 @@ async function ledgerKinds(): Promise<readonly string[]> {
   return page.items.map((entry) => entry.kind);
 }
 
+/** Everything the ledger recorded, treated as current: these runs never rewrite the world. */
+async function observeLedgerFacts(
+  taskId: Parameters<typeof ledger.listForTask>[0],
+): Promise<Record<string, string>> {
+  const page = await ledger.listForTask(taskId, { limit: 200 }, context);
+  const current: Record<string, string> = {};
+  for (const entry of page.items) {
+    if (entry.kind !== "observation" && entry.kind !== "check_result") continue;
+    for (const fact of entry.facts) current[fact.locator] = fact.fingerprint;
+  }
+  return current;
+}
+
 beforeEach(async () => {
   decision = "allow";
   entryCounter = 0;
@@ -308,15 +327,14 @@ beforeEach(async () => {
   database = runtimeDatabase();
   ledger = new SqliteExecutionLedgerRepository(database);
   capsules = new SqliteTaskCapsuleRepository(database);
-  tasks = new TaskManager({
-    unitOfWork: database.unitOfWork,
-    capsules,
-    evidence: new SqliteEvidenceRepository(database),
-  });
+  evidence = new SqliteEvidenceRepository(database);
+  tasks = new TaskManager({ unitOfWork: database.unitOfWork, capsules, evidence });
   await tasks.createTask(capsuleDraft, context);
   backend = new CountingBackend();
   surface = GovernedExecutionSurface.create({
     policy,
+    // The real gate over this test's own authoritative stores: nothing here is stubbed out.
+    preconditions: createEvidencePreconditionGate({ capsules, ledger, evidence }),
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -502,6 +520,7 @@ describe("the runtime revalidates every turn the adapter already validated", () 
         ledger,
         unitOfWork: database.unitOfWork,
         buildContext,
+        observeResources: observeLedgerFacts,
         generateEntryId: () => `ledger:${++entryCounter}`,
         generateInvocationId: (turnIndex: number) => `invocation-agent-${turnIndex}`,
         now: () => T0,
@@ -696,5 +715,107 @@ describe("an adapter that refuses a turn does not end the run as a failure", () 
     const { outcome } = await runWith(new FailingGateway([refusal(), refusal(), null]));
     expect(outcome).toMatchObject({ kind: "stopped", code: "REFUSED_TURN_BUDGET_EXHAUSTED" });
     expect(outcome.turns).toHaveLength(2);
+  });
+});
+
+/** A `code.patch` turn against the real workspace file the fixtures write. */
+function patchTurn() {
+  return {
+    kind: "tool_call" as const,
+    operation: "code.patch",
+    parameters: {
+      expectedFingerprint: sha256Hex("export const value = 1;\n"),
+      targetPath: "target.ts",
+      pathScope: ["target.ts"],
+      patch: "export const value = 2;\n",
+    },
+  };
+}
+
+/** Records one governed read's finding, exactly as the harness would. */
+async function record(resourceKind: string, locator: string, fingerprint?: string): Promise<void> {
+  entryCounter += 1;
+  await database.unitOfWork.execute(context, async (transaction) => {
+    await ledger.append(
+      ExecutionLedgerEntry.create({
+        id: `ledger:${entryCounter}`,
+        taskId: "task:agent",
+        jobId: "job:1",
+        recordedAt: T0,
+        kind: "observation",
+        detail: `${resourceKind} observed`,
+        facts: [{ resourceKind, locator, fingerprint: fingerprint ?? sha256Hex(locator) }],
+      }),
+      context,
+      transaction,
+    );
+  });
+}
+
+describe("a model turn cannot reach an effect its evidence does not support", () => {
+  async function patchRun(script: readonly unknown[]) {
+    return runAgentTurnLoop(
+      {
+        gateway: new ScriptedGateway(script),
+        surface,
+        reconciler,
+        tasks,
+        ledger,
+        unitOfWork: database.unitOfWork,
+        buildContext,
+        observeResources: observeLedgerFacts,
+        generateEntryId: () => `ledger:${++entryCounter}`,
+        generateInvocationId: (turnIndex: number) => `invocation-agent-${turnIndex}`,
+        now: () => T0,
+      },
+      {
+        taskId,
+        jobId,
+        modelId: modelId as never,
+        role: "executor",
+        allowedOperations: ["code.patch", "code.inspect"],
+        reasoningPolicy: "disabled",
+        budget,
+        resourceBudget,
+        workspace,
+        sandbox,
+        probe: applied,
+      },
+      context,
+    );
+  }
+
+  it("refuses a syntactically perfect patch whose prerequisites are not recorded", async () => {
+    // The target itself is observed and current, so the only thing left to refuse is the evidence.
+    await record("workspace_file", "target.ts", sha256Hex("export const value = 1;\n"));
+    const outcome = await patchRun([patchTurn(), finish("ready")]);
+    expect(outcome.turns[0]?.refusal).toBe("AUTHORIZATION_REFUSED");
+    expect(outcome.turns[0]?.detail).toMatch(/evidence precondition/iu);
+    // The run continues rather than dying, and nothing reached the backend.
+    expect(outcome.kind).toBe("ready_for_verification");
+    expect(backend.executions).toBe(0);
+  });
+
+  it("executes the same patch once the prerequisites and the target are observed", async () => {
+    await record(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
+    await record(PRECONDITION_RESOURCE_KINDS.impactAnalysis, "src/target.ts");
+    await record(PRECONDITION_RESOURCE_KINDS.testSelection, "tests/target.test.ts");
+    // The target's own current fingerprint comes from an observation, never from the turn.
+    await record("workspace_file", "target.ts", sha256Hex("export const value = 1;\n"));
+    const outcome = await patchRun([patchTurn(), finish("ready")]);
+    expect(outcome.turns[0]?.refusal).toBeNull();
+    // The gate let the write through to the governed effect path, which recorded it.
+    expect(outcome.turns[0]?.outcomeKind).toBe("effect_confirmation");
+    expect(await ledgerKinds()).toContain("effect_attempt");
+  });
+
+  it("refuses again once the observed target has moved on", async () => {
+    await record(PRECONDITION_RESOURCE_KINDS.symbolDefinition, "src/target.ts#value");
+    await record(PRECONDITION_RESOURCE_KINDS.impactAnalysis, "src/target.ts");
+    await record(PRECONDITION_RESOURCE_KINDS.testSelection, "tests/target.test.ts");
+    await record("workspace_file", "target.ts", sha256Hex("someone else edited this"));
+    const outcome = await patchRun([patchTurn(), finish("ready")]);
+    expect(outcome.turns[0]?.refusal).toBe("AUTHORIZATION_REFUSED");
+    expect(backend.executions).toBe(0);
   });
 });

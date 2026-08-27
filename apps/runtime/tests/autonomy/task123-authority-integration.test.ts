@@ -38,6 +38,7 @@ import type {
 import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { context, runtimeDatabase } from "../fixtures.js";
+import { satisfiedPreconditions } from "./precondition-fixtures.js";
 
 /**
  * Task 1 + Task 2 + Task 3 integration gaps.
@@ -52,6 +53,8 @@ import { context, runtimeDatabase } from "../fixtures.js";
  * reconciliation authority is separated from execution authority.
  */
 const taskId = TaskId.parse("task:integration");
+/** The real gate over an already-satisfied world; evidence gating has its own suite. */
+const preconditions = () => satisfiedPreconditions("task:integration", "job:1").gate;
 const jobId = JobId.parse("job:1");
 const projectId = ProjectId.parse("project:1");
 const isolation = SandboxIsolationPolicy.create({ maxCpuMillisPerSecond: 500, maxPids: 64 });
@@ -154,6 +157,7 @@ async function wire(db: SqliteRuntimeDatabase): Promise<void> {
   // records them are built together and cannot be recombined with foreign parts.
   surface = GovernedExecutionSurface.create({
     policy: policyEngine,
+    preconditions: preconditions(),
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -393,6 +397,7 @@ describe("C: settlement survives a restart without process-local authority", () 
     ledger = new SqliteExecutionLedgerRepository(database);
     const restarted = GovernedExecutionSurface.create({
       policy: policyEngine,
+      preconditions: preconditions(),
       backend: new FlakyReferenceBackend(),
       workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
       allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -483,6 +488,7 @@ describe("D: a reconciler and a sandbox from different authorities cannot compos
       backend: other,
       surface: GovernedExecutionSurface.create({
         policy: policyEngine,
+        preconditions: preconditions(),
         backend: other,
         workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces(workspace)),
         allowedOperations: SEMANTIC_OPERATION_IDS,

@@ -12,8 +12,11 @@ import {
   type SemanticAuthorizationBoundaryOptions,
   type SemanticExecutionRequest,
 } from "../../src/autonomy/semantic-execution-authorization.js";
+import { satisfiedPreconditions } from "./precondition-fixtures.js";
 
 const taskId = TaskId.parse("task:policy-binding");
+const preconditions = () =>
+  satisfiedPreconditions("task:policy-binding", "job:policy-binding").gate;
 const jobId = JobId.parse("job:policy-binding");
 const workspace: WorkspaceHandle = Object.freeze({
   id: "workspace-policy-binding",
@@ -57,6 +60,7 @@ function policy(result: PolicyResult): PolicyEnginePort {
 function options(policyEngine: PolicyEnginePort): SemanticAuthorizationBoundaryOptions {
   return {
     policy: policyEngine,
+    preconditions: preconditions(),
     generateExecutionPlanId: () => "plan:policy-binding",
     now: () => "2026-08-25T00:00:00.000Z",
   };
@@ -143,6 +147,7 @@ describe("semantic policy and resource authority", () => {
       expiresAt: "2026-08-25T00:01:00.000Z",
     });
     const boundary = createSemanticAuthorizationBoundary({
+      preconditions: preconditions(),
       policy: engine,
       generateExecutionPlanId: () => "plan:short-lived",
       now: () => now,

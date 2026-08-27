@@ -15,6 +15,7 @@ import {
   type WorkspaceHandle,
 } from "@v31m4/application";
 import { type ContentHash, type JobId, SafePath, type TaskId } from "@v31m4/domain";
+import type { EvidencePreconditionGate } from "./evidence-precondition-gate.js";
 import {
   assertCodePatchTargetIsCurrent,
   getSemanticOperation,
@@ -95,6 +96,12 @@ export interface SemanticExecutionRequest {
    * Without it the patch's currency cannot be proven, so the request is denied.
    */
   readonly observedTargetFingerprint?: ContentHash;
+  /**
+   * Fingerprints of observed resources as they stand now, so the evidence precondition can tell a
+   * current fact from a stale one. Absent means nothing is observed, which denies rather than
+   * satisfies.
+   */
+  readonly currentFingerprints?: Readonly<Record<string, string>>;
 }
 
 interface DerivedExecution {
@@ -120,6 +127,13 @@ export interface SemanticAuthorizationBoundary {
 
 export interface SemanticAuthorizationBoundaryOptions {
   readonly policy: PolicyEnginePort;
+  /**
+   * The evidence precondition, required rather than optional.
+   *
+   * An optional gate is a bypass. A caller that omitted it would authorize consequential effects
+   * against no evidence at all, and nothing downstream could tell the difference.
+   */
+  readonly preconditions: EvidencePreconditionGate;
   readonly generateExecutionPlanId?: () => string;
   readonly now?: () => string;
 }
@@ -149,6 +163,18 @@ export function createSemanticAuthorizationBoundary(
         options.policy,
         definition,
         trustedRequest,
+        context,
+      );
+      // Last, and never skipped: the facts that justify this effect must exist and still be
+      // current. It runs after policy so an outright policy denial or approval requirement is
+      // still the answer a caller gets, and before the mint so no authority exists without them.
+      await options.preconditions(
+        {
+          definition,
+          taskId: trustedRequest.taskId,
+          jobId: trustedRequest.jobId,
+          currentFingerprints: trustedRequest.currentFingerprints ?? {},
+        },
         context,
       );
       return authority.mint({
@@ -194,6 +220,9 @@ function snapshotRequest(request: SemanticExecutionRequest): SemanticExecutionRe
     ...(request.observedTargetFingerprint === undefined
       ? {}
       : { observedTargetFingerprint: request.observedTargetFingerprint }),
+    ...(request.currentFingerprints === undefined
+      ? {}
+      : { currentFingerprints: Object.freeze({ ...request.currentFingerprints }) }),
   });
 }
 

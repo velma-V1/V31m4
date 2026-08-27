@@ -9,6 +9,7 @@ import {
 } from "@v31m4/application";
 import { agentTurnSchema } from "@v31m4/contracts";
 import {
+  ContentHash,
   ExecutionLedgerEntry,
   JobId,
   ProjectId,
@@ -34,6 +35,11 @@ import {
 import { TaskManager } from "../../src/autonomy/task-manager.js";
 import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
 import { runtimeDatabase, context as taskContext } from "../fixtures.js";
+import {
+  PreconditionWorld,
+  satisfiedFingerprints,
+  satisfiedPreconditions,
+} from "./precondition-fixtures.js";
 
 /**
  * V31M4-AUTONOMY-001 / 1.1.0 — program acceptance inventory.
@@ -100,7 +106,10 @@ describe("autonomy program invariants", () => {
       actor: { id: "runtime", kind: "system", roles: ["runtime"] },
       startedAt: "2026-08-25T00:00:00.000Z",
     });
-    const boundary = createSemanticAuthorizationBoundary({ policy: policy() });
+    const boundary = createSemanticAuthorizationBoundary({
+      policy: policy(),
+      preconditions: satisfiedPreconditions("task:root", "job:1").gate,
+    });
     const authorizeSemanticExecution = boundary.authorize;
     const allowed = {
       operationId: "command.run",
@@ -110,13 +119,17 @@ describe("autonomy program invariants", () => {
       workspace,
       sandbox,
       parameters: { executable: "/bin/true", arguments: [] },
+      currentFingerprints: satisfiedFingerprints("task:root", "job:1"),
     };
     const capability = await authorizeSemanticExecution(allowed, operationContext);
     expect(capability.sandboxId).toBe(sandbox.id);
     // Only the paired boundary accepts it, and only once.
     expect(boundary.capabilities.verify(capability)).toBe(capability);
     expect(() =>
-      createSemanticAuthorizationBoundary({ policy: policy() }).capabilities.verify(capability),
+      createSemanticAuthorizationBoundary({
+        policy: policy(),
+        preconditions: satisfiedPreconditions("task:root", "job:1").gate,
+      }).capabilities.verify(capability),
     ).toThrow(ApplicationError);
     boundary.capabilities.consume(capability);
     expect(() => boundary.capabilities.consume(capability)).toThrow(ApplicationError);
@@ -136,12 +149,95 @@ describe("autonomy program invariants", () => {
     }
     for (const decision of ["deny", "require_approval"] as const) {
       await expect(
-        createSemanticAuthorizationBoundary({ policy: policy(decision) }).authorize(
-          allowed,
-          operationContext,
-        ),
+        createSemanticAuthorizationBoundary({
+          policy: policy(decision),
+          preconditions: satisfiedPreconditions("task:root", "job:1").gate,
+        }).authorize(allowed, operationContext),
       ).rejects.toThrow(ApplicationError);
     }
+  });
+
+  /**
+   * Owned by Task 6. Full coverage lives in `evidence-conditioned-effects.test.ts`; this is the
+   * inventory entry's own executable check that the gate is structural rather than configured.
+   */
+  it("consequential effects are conditioned on evidence", async () => {
+    const world = new PreconditionWorld().withCapsule("task:root", "job:1");
+    const workspace: WorkspaceHandle = Object.freeze({
+      id: "workspace-1",
+      projectId: ProjectId.parse("project:1"),
+      purpose: "tool_execution" as const,
+      rootPath: SafePath.parse("workspace-1"),
+      status: "active" as const,
+      createdAt: "2026-08-25T00:00:00.000Z",
+    });
+    const sandbox: SandboxHandle = Object.freeze({
+      id: SandboxId.parse("sandbox:1"),
+      jobId: JobId.parse("job:1"),
+      taskId: TaskId.parse("task:root"),
+      workspaceId: workspace.id,
+      backendId: "reference",
+      status: "ready" as const,
+    });
+    const boundary = createSemanticAuthorizationBoundary({
+      policy: {
+        async evaluate() {
+          return {
+            decision: "allow" as const,
+            policyId: "policy:evidence-invariant",
+            reasons: [],
+            requiredApprovalScopes: [],
+          };
+        },
+      },
+      preconditions: world.gate,
+    });
+    const operationContext = createOperationContext({
+      requestId: "request:evidence",
+      idempotencyKey: "key:evidence",
+      actor: { id: "runtime", kind: "system", roles: ["runtime"] },
+      startedAt: "2026-08-25T00:00:00.000Z",
+    });
+    const base = {
+      role: "executor" as const,
+      taskId: TaskId.parse("task:root"),
+      jobId: JobId.parse("job:1"),
+      workspace,
+      sandbox,
+      currentFingerprints: world.currentFingerprints(),
+    };
+
+    // Nothing is observed, so no consequential effect can be authorized — including the raw
+    // escape hatch, which inherits every other operation's requirements.
+    for (const [operationId, parameters] of [
+      [
+        "code.patch",
+        {
+          expectedFingerprint: "a".repeat(64),
+          targetPath: "target.ts",
+          pathScope: ["target.ts"],
+          patch: "@@",
+        },
+      ],
+      ["command.run", { executable: "/bin/true", arguments: [] }],
+    ] as const) {
+      await expect(
+        boundary.authorize(
+          {
+            ...base,
+            operationId,
+            parameters,
+            observedTargetFingerprint: ContentHash.parse("a".repeat(64)),
+          },
+          operationContext,
+        ),
+      ).rejects.toMatchObject({ code: "POLICY_REJECTED", retryable: false });
+    }
+
+    // And the investigation path that produces those facts is still open in the same state.
+    await expect(
+      boundary.authorize({ ...base, operationId: "git.status", parameters: {} }, operationContext),
+    ).resolves.toBeDefined();
   });
 
   /**

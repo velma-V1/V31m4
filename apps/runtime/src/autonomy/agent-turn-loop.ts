@@ -7,7 +7,7 @@ import {
   type OperationContext,
 } from "@v31m4/application";
 import { AGENT_TURN_CONTRACT_VERSION, agentTurnSchema } from "@v31m4/contracts";
-import type { TaskCapsule } from "@v31m4/domain";
+import { ContentHash, type TaskCapsule } from "@v31m4/domain";
 import type {
   AgentLoopOutcome,
   AgentTurnContext,
@@ -62,6 +62,8 @@ export * from "./agent-turn-contracts.js";
 interface AuthoritativeState {
   readonly capsule: TaskCapsule;
   readonly projection: LedgerProjection;
+  /** What the caller observes right now, against which a recorded fact is current or stale. */
+  readonly observed: Readonly<Record<string, string>>;
 }
 
 export async function runAgentTurnLoop(
@@ -271,10 +273,6 @@ async function applyToolCall(
 
   let plan: Awaited<ReturnType<typeof dependencies.surface.authorize>>;
   try {
-    // `code.patch` additionally requires the current observed fingerprint of its target, which can
-    // only come from a prior governed read. Supplying that from evidence belongs to the
-    // evidence-conditioned-effects phase, so until then such a turn is refused here rather than
-    // executed without its precondition.
     plan = await dependencies.surface.authorize(
       {
         operationId: operation,
@@ -284,6 +282,11 @@ async function applyToolCall(
         workspace: request.workspace,
         sandbox: request.sandbox,
         parameters: turn.parameters,
+        // Both come from the caller's observation of reality, never from the turn. The evidence
+        // precondition reads the first to decide whether the facts it needs are still current; the
+        // second is how `code.patch` proves the file it believes it is editing has not moved.
+        currentFingerprints: authoritative.observed,
+        ...observedTarget(authoritative, turn.parameters),
       },
       context,
     );
@@ -365,7 +368,28 @@ async function readAuthoritativeState(
   return Object.freeze({
     capsule: current.capsule,
     projection: await dependencies.reconciler.projection(request.taskId, context),
+    observed: Object.freeze({
+      ...(await dependencies.observeResources(request.taskId, request.workspace, context)),
+    }),
   });
+}
+
+/**
+ * The current fingerprint of a patch target, when the caller has actually observed one.
+ *
+ * Read from the observation, never from the turn: a model that could state its target's current
+ * fingerprint could state any fingerprint, and the staleness check would then be checking the
+ * model's memory against itself. An unobserved target yields nothing, and the boundary refuses.
+ */
+function observedTarget(
+  authoritative: AuthoritativeState,
+  parameters: Readonly<Record<string, unknown>>,
+): Readonly<{ observedTargetFingerprint?: ContentHash }> {
+  const targetPath = parameters["targetPath"];
+  if (typeof targetPath !== "string") return {};
+  const fingerprint = authoritative.observed[targetPath];
+  if (fingerprint === undefined || !ContentHash.is(fingerprint)) return {};
+  return { observedTargetFingerprint: ContentHash.parse(fingerprint) };
 }
 
 function contextOverBudget(built: AgentTurnContext, request: AgentTurnLoopRequest): string | null {

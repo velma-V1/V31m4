@@ -40,6 +40,7 @@ import {
 } from "../../src/autonomy/autonomy-state-infrastructure.js";
 import type { EffectPostState } from "../../src/autonomy/effect-reconciler.js";
 import { GovernedExecutionSurface } from "../../src/autonomy/effect-reconciler.js";
+import { createEvidencePreconditionGate } from "../../src/autonomy/evidence-precondition-gate.js";
 import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
 import { TaskManager } from "../../src/autonomy/task-manager.js";
 import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
@@ -267,11 +268,9 @@ class CountingBackend extends ReferenceSandboxBackend {
 async function harness(scenario: string): Promise<Harness> {
   const scopedTask = TaskId.parse(`${taskId}-${scenario}`);
   const ledger = new SqliteExecutionLedgerRepository(database);
-  const tasks = new TaskManager({
-    unitOfWork: database.unitOfWork,
-    capsules: new SqliteTaskCapsuleRepository(database),
-    evidence: new SqliteEvidenceRepository(database),
-  });
+  const capsules = new SqliteTaskCapsuleRepository(database);
+  const evidence = new SqliteEvidenceRepository(database);
+  const tasks = new TaskManager({ unitOfWork: database.unitOfWork, capsules, evidence });
   await tasks.createTask(
     {
       taskId: scopedTask,
@@ -290,6 +289,7 @@ async function harness(scenario: string): Promise<Harness> {
   const backend = new CountingBackend();
   const surface = GovernedExecutionSurface.create({
     policy,
+    preconditions: createEvidencePreconditionGate({ capsules, ledger, evidence }),
     backend,
     workspaces: new WorkspaceExecutionInterlock(new FixedWorkspaces()),
     allowedOperations: SEMANTIC_OPERATION_IDS,
@@ -364,6 +364,16 @@ async function runScenario(
       tasks: wired.tasks,
       ledger: wired.ledger,
       unitOfWork: database.unitOfWork,
+      // These runs use only ungated reads, so what the ledger recorded is what is observed now.
+      observeResources: async (taskId) => {
+        const page = await wired.ledger.listForTask(taskId, { limit: 200 }, context);
+        const current: Record<string, string> = {};
+        for (const entry of page.items) {
+          if (entry.kind !== "observation" && entry.kind !== "check_result") continue;
+          for (const fact of entry.facts) current[fact.locator] = fact.fingerprint;
+        }
+        return current;
+      },
       buildContext: (request) => stagePrompt(instructionFor(request)),
       generateEntryId: () => `ledger:${scenario}:loop:${nextEntry()}`,
       generateInvocationId: (turnIndex) => `invocation-${scenario}-${turnIndex}`,
