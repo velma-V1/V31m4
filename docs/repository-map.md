@@ -15,6 +15,7 @@
 | `/packages/contracts/src/common.schemas.ts` | Contract core | Versions, branded primitives, safe JSON, pagination, and API errors |
 | `/packages/contracts/src/approvals.schemas.ts` | Contract core | Strict approval record, governed plugin-registration, decision, and approval-list payloads |
 | `/packages/contracts/src/software-production.schemas.ts` | Contract core | Strict project-owned general coding build packet: scope, file operations, deterministic checks, and budgets |
+| `/packages/contracts/src/adapter-rpc-v1_1.schemas.ts` | Contract core | Additive, separately negotiated adapter protocol `1.1.0`: task/workspace/sandbox/semantic-operation-scoped tool invocation, 1.1 initialization, exact-version negotiation; never mutates the published `1.0.0` schemas |
 | `/packages/contracts/src/*-schemas.ts` | Contract core | Strict bounded API, event, workflow, and adapter payload schemas |
 | `/packages/contracts/src/index.ts` | Contract core | Public contracts package API only |
 | `/packages/contracts/tests` | Contract verification | Runtime contract, protocol, compatibility, JSON Schema, and parity verification |
@@ -22,7 +23,9 @@
 | `/packages/application/src/application-errors.ts` | Application core | Typed orchestration and dependency failures with immutable details |
 | `/packages/application/src/operation-context.ts` | Application core | Actor, correlation, idempotency, cancellation, and deadline context |
 | `/packages/application/src/port-types.ts` | Application core | Pagination, revisions, health, receipts, and subscriptions |
-| `/packages/application/src/ports` | Application boundary | Twenty-six infrastructure-free persistence, execution, governance, and operations ports |
+| `/packages/application/src/ports` | Application boundary | Twenty-seven infrastructure-free persistence, execution, governance, and operations ports, plus the semantic execution capability module |
+| `/packages/application/src/ports/sandbox.port.ts` | Application boundary | Typed sandbox lifecycle and the fail-closed `SandboxIsolationPolicy` the public `ResourceBudget` cannot express; keeps the internal `unknown` effect status out of the public v1 tool status |
+| `/packages/application/src/ports/semantic-execution-capability.ts` | Application boundary | Closure-owned mint/verify/consume authority for `AuthorizedSemanticExecutionPlan`: issuer-bound authenticity, single-use consumption, immutable policy provenance plus canonical risk/evidence/resource bounds, expiry recheck at the sink, and the workspace currency precondition a sandbox re-verifies at dispatch |
 | `/packages/application/src/services` | Application services | Ten deterministic, infrastructure-free decision and planning services, including verified-measurement model routing (Layer 5) |
 | `/packages/application/src/services/internal` | Application services | Private deterministic helpers; never exported |
 | `/packages/application/src/use-cases` | Application use cases | Twenty-one canonical production entrypoints, two approval-lifecycle entrypoints, and private pagination/authorization helpers |
@@ -32,9 +35,9 @@
 | `/packages/infrastructure/src/events` | Event infrastructure | Transactional outbox plus durable committed-event replay used by Layer 10 |
 | `/packages/infrastructure/src/artifacts` | Artifact infrastructure | Atomic SHA-256 content-addressed artifact storage |
 | `/packages/infrastructure/src/backup` | Recovery infrastructure | Verified SQLite backup manifests and staged restore |
-| `/packages/infrastructure/src/processes` | Process infrastructure | Layer 8 supervised child-process lifecycle, process-group shutdown, explicit environment inheritance, cancellation, timeout, and bounded output handling |
+| `/packages/infrastructure/src/processes` | Process infrastructure | Layer 8 supervised child-process lifecycle, process-group shutdown, explicit environment inheritance, cancellation, timeout, bounded stderr plus opt-in combined stdout+stderr output bounding, and the termination reason callers need to reconcile external side effects |
 | `/packages/infrastructure/src/rpc` | Adapter RPC infrastructure | Layer 8 bounded JSON-RPC framing/correlation and protocol handling |
-| `/packages/infrastructure/src/adapters` | Adapter infrastructure | Layer 8 adapter registration/restart-budget protection plus the lazy restartable supervised JSON-RPC process invoker |
+| `/packages/infrastructure/src/adapters` | Adapter infrastructure | Layer 8 adapter registration under an explicitly injected closed protocol-version set, restart-budget protection, and the lazy restartable supervised JSON-RPC process invoker |
 | `/packages/infrastructure/src/scheduling` | Scheduling infrastructure | Layer 8 bounded scheduling implementation |
 | `/packages/infrastructure/src/resources` | Resource infrastructure | Layer 8 resource monitoring implementation |
 | `/packages/infrastructure/src/secrets` | Secret infrastructure | Layer 8 bounded secret-lease implementation |
@@ -43,6 +46,7 @@
 | `/packages/infrastructure/src/policy` | Policy infrastructure | Layer 9 fail-closed rule-based policy engine |
 | `/packages/infrastructure/src/plugins` | Plugin infrastructure | Layer 9 durable plugin registry implementation |
 | `/packages/infrastructure/src/gateways` | Governed execution infrastructure | Layer 9 provider-neutral supervised model/tool/production-kernel gateways |
+| `/packages/infrastructure/src/sandbox` | Sandbox infrastructure | V31M4-owned `SandboxPort` lifecycle: an issued single-use capability with final-edge expiry verification, canonical workspace root and authoritative `WorkspaceManagerPort` re-read under an execution-lease interlock, mutually exclusive execution/lifecycle claims, ready-only dispatch, hardened path containment, compare-and-apply as the only workspace write, the hermetic reference backend, and the direct-Docker challenger — strict settings, catalog/backend resource ceilings, collision-resistant names, label-verified cleanup by container ID, supervised live Docker inspection, and retained degraded state whenever execution or cleanup remains indeterminate; backend selection stays open until a target-host bake-off |
 | `/packages/infrastructure/src/pagination-cursor.ts` | Infrastructure boundary support | Exact canonical safe-integer parsing shared by infrastructure list adapters and runtime external pagination |
 | `/packages/infrastructure/tests` | Infrastructure verification | Layers 7–10 persistence/process/gateway/replay integration and failure-path tests |
 | `/apps/runtime` | Authoritative runtime | Layer 10 composition, local auth, typed command/query/event HTTP routes, idempotent external commands, durable replay, resumable SSE, recovery, and shutdown |
@@ -53,11 +57,14 @@
 | `/apps/runtime/src/list-query-surface.ts` | Runtime query boundary | Strict authenticated `model.list`, `mission.list`, `job.list`, `candidate.list`, and `evidence.list` registration, filter-before-pagination, relationship validation, existing-port dispatch, and typed response shaping |
 | `/apps/runtime/src/model-catalog.ts` | Runtime model query support | Shared bounded complete-catalog traversal over opaque `ModelGatewayPort` pagination, with malformed totals/cursors, cycles, duplicates, and resource exhaustion refused before query filtering or routing |
 | `/apps/runtime/src/record-listing.ts` | Runtime persistence adapter support | Shared relationship-filter-before-pagination implementation so record items, totals, and cursors remain inside the requested authoritative boundary |
+| `/apps/runtime/src/autonomy` | Autonomy runtime | The single V31M4-owned semantic operation catalog (19 model-facing operations, deliberately no `git.worktree`) plus the mandatory semantic authorization boundary: it snapshots the request, evaluates the existing `PolicyEnginePort`, binds immutable policy provenance and canonical risk/evidence/resource policy into the capability, derives trusted execution from the catalog, permits caller-supplied commands only for `command.run`, and attaches the workspace currency precondition the sandbox re-verifies at dispatch |
 | `/apps/runtime/src/use-case-infrastructure.ts` | Runtime adapters | Layer 4 port adapters backing real use-case commands and project/mission/job queries: SQLite repositories, event bus, `ReferenceProductionKernel`, approval/audit stores, `passthroughUnitOfWork` |
 | `/apps/runtime/src/job-execution-infrastructure.ts` | Runtime adapters | Candidate/evidence SQLite repositories backing execution and list queries, real isolated workspace filesystem (`LocalWorkspaceManager`), and the `ReferenceModelGateway`/`ReferenceVerifier` reference adapters driving `job.execute` |
 | `/apps/runtime/public/index.html` | Operator UI | Minimal real browser UI (session token, health, project/mission/job-start/job-execute panels, SSE-over-fetch live event log); no framework/build step; full workflow, displayed state, authenticated SSE/reconnect, restart recovery, and negative authentication path proven in real Chromium |
 | `/apps/runtime/tests` | Runtime verification | Typed command/query/governance, approval anti-forgery, idempotency, negative verification, supervised model/kernel/verifier effects, exactly-once restart recovery, filter-before-pagination, strict cursors/config, SSE, source-size, real Playwright Chromium, and opt-in real-Ollama regressions against real HTTP + SQLite |
 | `/adapters/local-supervised` | Optional local execution adapters | SQLite-free bounded JSON-RPC children for dynamic Ollama and loopback-tested OpenAI-compatible inference, manifest kernel lifecycles, atomic contained file effects, and independent Node verification |
+| `/scripts/prove-autonomy-phase1-real.mjs` | Target-host verification | Explicit opt-in Task 1 boundary proof: real workspaces/catalog/sandbox supervisor plus the hardened direct-Docker backend when a container runtime and digest-pinned image exist; reports missing prerequisites honestly |
+| `/docs/reviews/autonomy-task1-phase1-evidence.md` | Architecture governance | Task 1 scoped-ACI/`SandboxPort`/adapter-1.1 evidence, protocol-1.0 preservation proof, and the unproven direct-Docker boundary |
 | `/scripts/prove-model-routing-real.mjs` | Target-host verification | Explicit opt-in two-installed-model discovery/routing/inference proof; excluded from the hermetic gate |
 | `/docs/reviews/model-routing-proof.md` | Architecture governance | Item 3 discovery, routing, fallback provenance, remote transport, defect, and target-host evidence |
 | `/scripts/prove-general-coding-real.mjs` | Target-host verification | Explicit opt-in installed-Ollama general coding-production acceptance command; excluded from the hermetic default gate |
@@ -118,7 +125,8 @@ plugins/game-production  ─────→ packages/department-host + packages/
 | Runtime resources | `projects.schemas.ts`, `missions.schemas.ts`, `jobs.schemas.ts`, `evidence.schemas.ts`, `approvals.schemas.ts`, `capabilities.schemas.ts`, `learning.schemas.ts` | Authoritative resource command, query, governance state, evidence, verification, delivery, promotion, training-packet, and capability-profile payloads |
 | Capability endpoints | `models.schemas.ts`, `tools.schemas.ts`, `plugins.schemas.ts`, `practice.schemas.ts`, `avatar.schemas.ts` | Provider-neutral capability discovery, invocation, workflow, practice, and avatar payloads |
 | Event stream | `runtime-events.schemas.ts` | Closed, versioned, aggregate-consistent client event union |
-| Adapter protocol | `adapter-rpc.schemas.ts` | Closed JSON-RPC requests, notifications, results, and errors |
+| Adapter protocol 1.0 | `adapter-rpc.schemas.ts` | Closed, immutable JSON-RPC requests, notifications, results, and errors |
+| Adapter protocol 1.1 | `adapter-rpc-v1_1.schemas.ts` | Additive side-by-side scoped tool invocation and 1.1 initialization plus exact-version negotiation; a 1.0 parser rejects every construct in it |
 | Portable schemas | `/schemas/*.schema.json` | External manifest and portable-record validation independent of TypeScript |
 
 ## Application port ownership
@@ -128,7 +136,7 @@ plugins/game-production  ─────→ packages/department-host + packages/
 | Atomic persistence | `unit-of-work`, project, mission, job, evidence, candidate, capability, workflow, training ports | Transactions, optimistic concurrency, append-only records, and durable aggregate access |
 | External execution | artifact, event, model, tool, plugin, kernel, verifier ports | Provider-neutral execution, cancellation, health, artifact integrity, and committed event publication |
 | Governance | policy, approval, audit ports | Separate authorization decisions, approval lifecycle, and append-only execution history |
-| Operations | scheduler, resource, secret, clock, workspace, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, isolation, configuration, and recovery |
+| Operations | scheduler, resource, secret, clock, workspace, sandbox, configuration, backup ports | Durable scheduling, system readings, bounded secrets, deterministic time, workspace and sandbox isolation, configuration, and recovery |
 
 ## Application service ownership
 

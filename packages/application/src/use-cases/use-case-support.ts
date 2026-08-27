@@ -173,19 +173,32 @@ export function requireValue<Value>(value: Value | null, message: string): Value
   return value;
 }
 
-export async function collectPortPages<Value>(
-  load: (
-    cursor: string | undefined,
-  ) => Promise<Readonly<{ items: readonly Value[]; nextCursor?: string }>>,
+export type PortPageLoader<Value> = (
+  cursor: string | undefined,
+) => Promise<Readonly<{ items: readonly Value[]; nextCursor?: string }>>;
+
+/** Whether the walk should keep following `nextCursor` after this page. */
+export type PortPageVisitDecision = "continue" | "stop";
+
+/**
+ * The one canonical paged walk for authoritative reads.
+ *
+ * It follows `nextCursor` to exhaustion, rejects a repeated cursor as an integrity failure, and
+ * reports hitting its defensive page ceiling as a typed non-success — it never treats a bounded
+ * first page as "all of the history". A visitor may stop early once it has decided, so a caller
+ * that only needs to find one entry does not have to materialise everything before it.
+ */
+export async function visitPortPages<Value>(
+  load: PortPageLoader<Value>,
+  visit: (items: readonly Value[]) => PortPageVisitDecision | Promise<PortPageVisitDecision>,
   maximumPages = 10_000,
-): Promise<readonly Value[]> {
-  const items: Value[] = [];
+): Promise<void> {
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < maximumPages; page += 1) {
     const result = await load(cursor);
-    items.push(...result.items);
-    if (result.nextCursor === undefined) return Object.freeze(items);
+    if ((await visit(result.items)) === "stop") return;
+    if (result.nextCursor === undefined) return;
     if (seenCursors.has(result.nextCursor)) {
       throw new ApplicationError("INTEGRITY_FAILURE", "Pagination returned a repeated cursor.", {
         details: { cursor: result.nextCursor },
@@ -201,4 +214,20 @@ export async function collectPortPages<Value>(
       details: { maximumPages },
     },
   );
+}
+
+export async function collectPortPages<Value>(
+  load: PortPageLoader<Value>,
+  maximumPages = 10_000,
+): Promise<readonly Value[]> {
+  const items: Value[] = [];
+  await visitPortPages(
+    load,
+    (page) => {
+      items.push(...page);
+      return "continue";
+    },
+    maximumPages,
+  );
+  return Object.freeze(items);
 }

@@ -20,6 +20,9 @@ describe("@v31m4/contracts public API", () => {
     expect(typeof contracts.avatarStateSchema.parse).toBe("function");
     expect(typeof contracts.runtimeEventSchema.parse).toBe("function");
     expect(typeof contracts.adapterRpcMessageSchema.parse).toBe("function");
+    expect(typeof contracts.adapterRpcV1_1MessageSchema.parse).toBe("function");
+    expect(contracts.ADAPTER_PROTOCOL_VERSION).toBe("1.0.0");
+    expect(contracts.ADAPTER_PROTOCOL_VERSION_1_1).toBe("1.1.0");
     expect(typeof contracts.softwareBuildPacketSchema.parse).toBe("function");
   });
 });

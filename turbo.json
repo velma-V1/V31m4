@@ -1,11 +1,15 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalPassThroughEnv": [
+    "V31M4_AUTONOMY_PHASE1_REAL",
+    "V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER",
+    "V31M4_DOCKER_EXECUTABLE",
     "V31M4_EXECUTION_PROFILE",
     "V31M4_OLLAMA_ENDPOINT",
     "V31M4_OLLAMA_MODEL",
     "V31M4_ROUTING_MODELS",
     "V31M4_RUN_REAL_MODEL_ROUTING",
+    "V31M4_SANDBOX_IMAGE",
     "V31M4_STAGE4_REAL"
   ],
   "tasks": {

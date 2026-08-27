@@ -4,12 +4,420 @@ This file is a concise operational handoff for future Claude Code sessions. It r
 
 ## Repository state
 
-- Branch: `main`
+- Branch: `autonomy-v1.1.0` (branched from `main`; `main` itself remains at the state described below).
 - Handoff baseline commit before this file was added: `2fe85cd708c6dffd4d05872f3a85926648e6a676`
 - Live HEAD: verify from git at every session start; do not trust a stored SHA as current after subsequent commits.
 - Architecture baseline: `V31M4-SRS-001 / 1.0.0`
 - Hardened ancestor: `5746e5f2571a08dea3cce0493adeac92ae025135`
 - Canonical continuation is based on the hardened Layer 5 line. Older Layer 6 implementations are reference material only.
+
+## Autonomy program state (`V31M4-AUTONOMY-001 / 1.1.0`)
+
+- Canonical architecture: `docs/superpowers/specs/2026-08-25-autonomy-quality-floor-architecture-v2.md`.
+  Canonical plan: `docs/superpowers/plans/2026-08-25-autonomy-quality-floor-v2.md`. Both supersede the
+  same-date non-v2 autonomy spec/plan, which are historical only (see `AGENTS.md`).
+- Preflight audit complete: `docs/reviews/autonomy-preflight-audit.md`.
+- **Task 0 (freeze the pre-autonomy baseline): DONE and verified green.** Evidence:
+  `docs/reviews/autonomy-baseline-v2.md`. Starting HEAD `802f676`, clean worktree, `node v24.18.0`,
+  `pnpm 11.17.0`. The only baseline failure was a missing local Playwright browser binary
+  (environment gap, not a product defect); after `pnpm exec playwright install chromium` (no
+  dependency/lockfile change), `pnpm check` is fully green: lint 0 errors (9 pre-existing warnings, 1
+  pre-existing info), typecheck 9/9. Before adding this task's own acceptance-inventory test file,
+  tests were 490 passing / 14 skipped (504 total) across 107 passing + 4 skipped files (111 total),
+  matching the last recorded full-gate evidence below exactly. Nine named future invariants were then
+  recorded as `it.todo()` only in
+  `apps/runtime/tests/autonomy/autonomy-program-invariants.test.ts`; because that file is entirely
+  `it.todo()`, Vitest counts it as a skipped file and each `it.todo()` as a "todo" test, so the exact
+  final count at the Task 0 commit is **490 passing / 14 skipped / 9 todo (513 total) across 107
+  passing + 5 skipped files (112 total)**. No runtime API, adapter protocol, or product behavior was
+  changed; `ADAPTER_PROTOCOL_VERSION` remains `"1.0.0"`.
+- **Task 1 (scoped semantic ACI, `SandboxPort`, adapter-protocol-1.1 foundation): PASS. The
+  mandatory target-host Docker proof is CLOSED at `c059a33`.** The record below preserves the
+  earlier FAILED and BLOCKED rounds as history; they are no longer the current status. The
+  authoritative proof record is `docs/reviews/autonomy-task1-phase1-evidence.md`, whose final
+  section reports the successful real Docker run — real engine, digest-pinned image, live
+  container, every required isolation property observed, cleanup independently verified.
+  - First implementation: commit `fc84f37`. An independent Codex review then found four defects and
+    returned **FAIL**. All four are reproduced, root-caused, and repaired (commit recorded in
+    `docs/reviews/autonomy-task1-phase1-evidence.md`), but Task 1 does **not** pass its hard gate
+    until a real container actually runs and every required isolation property is observed.
+  - **Finding 1 — semantic authorization was not bound to the execution sink.** `SandboxPort.execute`
+    took an operation string plus free-form JSON, so `{ operation: "git.status", executable: "touch" }`
+    was accepted and the backend ran `touch`; the `code.patch` fingerprint/path checks had no
+    mandatory production caller. **Repaired:** a non-forgeable `AuthorizedSemanticExecutionPlan` is
+    now the only thing the sink accepts, issued solely by `authorizeSemanticExecution`, which derives
+    a trusted runtime-owned command for every operation except the explicit `command.run` escape
+    hatch, rejects caller-supplied execution parameters outright, and validates `code.patch`
+    fingerprint/path-scope/staleness at that boundary.
+  - **Finding 2 — the Docker backend bypassed Layer 8 supervision.** It spawned the client directly,
+    a timeout killed only the CLI, an already-aborted signal still spawned, cleanup errors were
+    swallowed, and the supervisor deleted authoritative state before destruction succeeded.
+    **Repaired:** every docker invocation runs under `ProcessSupervisor`; a pre-aborted operation
+    never spawns; timeout and cancellation force-remove the named container and verify its absence;
+    cleanup failure is surfaced; a failed destroy leaves the sandbox degraded and reconcilable
+    instead of forgotten.
+  - **Finding 3 — configuration could defeat the isolation policy.** `{ image: "alpine:latest",
+    userSpec: "0:0", containerWorkdir: "/" }` was accepted, mounting the workspace over the container
+    root as root from an unpinned image. **Repaired:** settings are validated before anything is
+    probed or executed — the image must be `<repository>@sha256:<64 lowercase hex>`, uid and gid may
+    not be 0, and the container workspace target is a backend-owned constant a caller cannot replace.
+  - **Finding 4 — repository state falsely advanced the gate.** Corrected here and in the evidence
+    file, which retains the original failed evidence alongside the findings and remediation.
+  - **Round 2 (independent re-review of `29f0b55`, verdict FAIL_IMPLEMENTATION).** Five further
+    findings, all reproduced and repaired:
+    1. *The public plan factory recreated the bypass.* `AuthorizedSemanticExecutionPlan.issue` was
+       public and took a caller-supplied contract, so anyone could mint an authentic `git.status`
+       plan carrying `touch`. Minting now lives in a closure: `createSemanticExecutionAuthority`
+       returns a mint/verify pair, `createSemanticAuthorizationBoundary` keeps the mint private and
+       exposes only `authorize` plus a verifier, the contract is read from the canonical catalog,
+       and a sandbox accepts only capabilities its own paired boundary minted.
+    2. *Output-limit termination could strand a container.* `ProcessSupervisor` now reports why it
+       ended a process, and any unconfirmed client termination — timeout, cancel, output limit,
+       supervisor signal — force-removes the container, verifies its absence, and reports an
+       indeterminate effect. The sandbox never returns to `ready` on an unconfirmed termination.
+    3. *Plans could be replayed, and patch currency was checked too early.* Every capability now
+       carries an `executionPlanId` and is spent exactly once, and the sandbox re-reads the
+       authoritative workspace immediately before dispatch — a target that moved after
+       authorization is `CONFLICT` and never reaches the backend.
+    4. *The target-host proof was incomplete.* It now also observes `HOME`/`TMPDIR`, proves `/tmp`
+       and the sandbox HOME are tmpfs mapping no host storage, and exercises a real wall-clock
+       timeout with independent verification that the named container is gone.
+    5. *Unknown config keys were accepted.* Docker settings are strictly allowlisted, so a legacy
+       `containerWorkdir` (or any other unexpected security-sensitive key) is rejected.
+  - **Round 3 (independent re-review of `8671024`, verdict FAIL_IMPLEMENTATION).** Four further
+    findings plus a residual patch/workspace TOCTOU risk, all reproduced and repaired:
+    1. *Execution trusted a stale workspace handle.* A workspace sealed after `prepare` still
+       reached the backend. Dispatch now takes an execution lease and re-reads
+       `WorkspaceManagerPort`: the workspace must exist, be active, keep its identity and
+       project/purpose/created-at, and still resolve to the prepared canonical root. A new
+       `WorkspaceExecutionInterlock` — a decorator over the one workspace manager, not a second
+       authority — makes seal/discard and in-flight dispatch mutually exclusive, so a lifecycle
+       change during an effect loses deterministically with `CONFLICT`.
+    2. *Abnormal Docker client exits bypassed reconciliation.* Exit 125 (and a null exit) are now
+       `docker_client_abnormal_exit`, and any other non-zero exit is reported as an ordinary
+       failure only after the container's absence proves its lifecycle finished. Anything else is
+       force-removed, verified, and left `unknown` + `degraded`.
+    3. *Only stderr was bounded, and `maxOutputBytes` was unvalidated.* `ProcessSupervisor` gained
+       opt-in combined stdout+stderr accounting (opt-in so JSON-RPC adapter callers that read
+       stdout as a protocol channel are unaffected), and `maxOutputBytes` must be a positive
+       integer no greater than 64 MiB.
+    4. *The target-host proof lacked runtime attestation.* It now reads `/proc/self/status` inside
+       the real container and requires `CapEff`/`CapBnd` fully dropped and `NoNewPrivs == 1`; a
+       missing field is a failed observation, not a skipped check.
+    5. *Residual patch TOCTOU.* Containment now resolves the deepest existing ancestor, so a
+       nonexistent target beneath an escaping symlink parent is rejected. A backend may only write
+       through `applyWorkspaceChange`, which re-checks the fingerprint inside the same call under
+       the execution lease, and the supervisor refuses a `workspace_write` effect to any backend
+       that has not declared write support.
+  - **Round 4 (independent re-review of `6b2d4ba`).** Three further findings, all reproduced and
+    repaired:
+    1. *The interlock was not multiplicity-safe.* Leases were keyed by `sandboxId`, so two
+       executions from one sandbox collapsed into a single holder and the first release freed the
+       workspace while the second effect was still running; overlapping lifecycle mutations were
+       also possible. Each lease now carries its own unique identity, release is idempotent and
+       tied to that exact lease, and the stated policy is **exclusive dispatch per workspace** —
+       every governed operation reaches a writable workspace mount, so none may be treated as a
+       harmless concurrent reader. Lifecycle changes are exclusive against effects and against
+       each other.
+    2. *Compare-and-apply could be captured by a pre-placed symlink.* The temporary file used a
+       predictable `<target>.v31m4-apply` name; a symlink at that path turned the "safe" temp
+       write into a host-side write outside the workspace, which a probe demonstrated. The
+       replacement is now created in the validated canonical parent with an unguessable name via
+       exclusive creation (`wx`, mode 0600), written through its own descriptor, re-verified
+       against the expected fingerprint immediately before the rename, and removed on any failure.
+    3. *The read-only-root proof was a false positive.* A failed `touch /` proves permissions, not
+       a read-only mount — demonstrated on this host, where the write fails while
+       `/proc/self/mountinfo` reports `rw,relatime`. The proof now parses the container's mount
+       table and requires the root mount to carry `ro`, keeping the failed write as supplemental
+       evidence only. The egress probe now proves its own utility exists before treating that
+       utility's failure as evidence of a blocked network.
+  - **Round 5 (independent re-review of `3bd7b8a`).** One finding, reproduced and repaired: the
+    network proof only proved DNS failure. `getent hosts …` exiting non-zero was read as "egress
+    blocked", but name resolution can fail on a fully connected host — demonstrated here, where
+    `getent hosts example.invalid` exits 2 while the kernel reports `eth0`/`eth1`/`loopback0`, a
+    default route via `0100000A`, and a numeric-IP TCP connect to `1.1.1.1:443` succeeds. The proof
+    now reads what `--network none` actually establishes: `/sys/class/net` must contain only `lo`,
+    and `/proc/net/route` must carry no default route and no route off a non-loopback interface. A
+    live numeric-IP connection attempt remains supplemental and is skipped when no such tool
+    exists, so correctness never depends on an optional utility. The proof no longer prints an
+    egress claim unless those kernel observations pass.
+  - **Final implementation review of `bf5ef96`, repair resumed from its preserved interrupted
+    worktree.** Five findings were reproduced and repaired without starting Task 2:
+    1. Caller-supplied `policyDecision: "allow"` no longer authorizes anything. The canonical
+       boundary snapshots the exact request, calls `PolicyEnginePort`, rejects deny and
+       approval-required decisions, binds policy ID/expiry plus catalog risk,
+       evidence-precondition ID, and resource ceilings into the issuer-bound capability, and
+       rechecks expiry at the final synchronous dispatch edge after asynchronous workspace
+       validation. Docker execution uses the stricter wall-clock and output
+       ceiling; the existing workspace interlock is stricter than every catalog concurrency
+       ceiling. This binds the evidence-policy identifier only; it does not implement the later
+       EvidenceRecord/Ledger engine.
+    2. Docker names now hash the complete `SandboxId`, duplicate authoritative IDs are refused,
+       all four sandbox/task/job/workspace ownership labels are inspected, and destructive
+       cleanup uses the observed full container ID only after exact ownership and name checks.
+       A foreign same-name container is never removed.
+    3. Ordinary effects dispatch only from authoritative `ready`; `running`, `degraded`, and
+       `stopped` fail closed. Cancel cleanup cannot promote an indeterminate degraded sandbox to
+       ready. Execution claims `running` before its first asynchronous pre-dispatch read, while
+       cancel/destroy claim `stopped`, so sandbox execution and lifecycle cleanup cannot race or
+       erase authoritative state. Task 1 still has no Ledger reconciler.
+    4. Route, capability/`NoNewPrivs`, and mountinfo parsers now reject malformed and ambiguous
+       observations instead of accepting partial numeric coercions or incomplete records.
+    5. The target-host proof retains its in-container kernel checks and now supervises a live
+       `docker inspect` of the exact running V31M4 container. It verifies ownership, canonical
+       workspace source, the sole host bind at `/workspace`, no volume/extra bind/socket, approved
+       `/tmp` and HOME tmpfs, read-only root, non-root user, dropped capabilities,
+       no-new-privileges, and network mode `none` before the proof can proceed. Its independent
+       named-container absence challenger also uses the existing process supervisor.
+  - Current repair verification: focused Task 1 suites **177 passing / 2 skipped / 8 todo (187
+    total) across 14 passing + 1 skipped files (15 total)**; supervised processes **9/9**;
+    `pnpm check` exit 0 — lint 378 files with 9 pre-existing warnings and 1 pre-existing info,
+    typecheck 9/9, **651 passing / 16 skipped / 8 todo (675 total) across 118 passing + 5 skipped
+    files (123 total)**; `pnpm build` 9/9. The non-mandatory proof passed its two reference/static
+    checks and explicitly reported direct-Docker isolation **NOT PROVEN** because no digest-pinned
+    image was supplied. This is implementation readiness evidence only, not a passed Task 1 gate.
+  - **CLOSED — the required target-host Docker proof.** It ran for real against `c059a33`; see
+    the final section of `docs/reviews/autonomy-task1-phase1-evidence.md` for the engine, the
+    pinned image, and the per-property observations. Two defects surfaced and were repaired in the
+    course of closing it: the proof derived a non-root identity from the assigned workspace rather
+    than hardcoding one, and `assertDockerRuntimeObservation` dropped a fixed three-mount total in
+    favour of a stricter rule (exactly one host-visible mount; any additional bind, any volume, and
+    any unapproved tmpfs target refused whatever the total). No isolation property was relaxed and
+    the host workspace was not adjusted to make the proof pass.
+
+    *History (superseded).* Before that run the proof was blocked here: a Windows Docker CLI shim was on
+    this WSL2 distro's `PATH`, but invoking `docker version` reports that Docker is unavailable in
+    the distro and asks for Docker Desktop WSL integration; `/var/run/docker.sock` was absent and
+    no digest-pinned image had been supplied. A non-empty
+    `V31M4_SANDBOX_IMAGE` is **not** a pinned image; the proof validates the digest syntax and the
+    backend refuses to construct itself without one. Until the run recorded above, non-root
+    execution, read-only root, absent Docker socket, blocked egress, workspace-only write, and
+    verified container cleanup were all unobserved. The command that closed it:
+
+    ```bash
+    V31M4_SANDBOX_IMAGE=<repository>@sha256:<64 hex> \
+    V31M4_AUTONOMY_PHASE1_REQUIRE_DOCKER=1 \
+    node scripts/prove-autonomy-phase1-real.mjs
+    ```
+
+    That blockage is resolved; the command above is the one that closed the proof.
+  - **No sandbox backend is promoted**, and the bake-off may still return `NO_ACCEPTABLE_BACKEND`.
+  - Current gate after round 5: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **626 passing / 16 skipped / 8 todo (650 total) across 116
+    passing + 5 skipped test files (121 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+    is a green regression suite, **not** a passed Task 1 gate.
+
+- **Task 1's hard gate has passed.** Task 2 and Task 3 are therefore no longer forbidden, and the
+  clean Task 1+2+3 integration candidate described under "Task 1+2+3 final integration" below is
+  the current line of work.
+
+- **Task 2 / Task 3 (staging branch `autonomy-task2-3-staging`): implemented, independently
+  reviewed, FAILED, then repaired — NOT accepted.** This work lives only on the staging branch;
+  `autonomy-v1.1.0` is untouched at `bf5ef96b059e26d0176fbf6cf81a37d96d169731` and nothing is
+  merged. Task 1 remains INCOMPLETE, so neither task may be called passed. An independent review
+  of `faa13e3` returned four HIGH findings; each was reproduced against the committed code before
+  any repair, then root-caused, repaired, and covered by permanent regressions:
+  - **T2-1 — a fabricated evidence ID satisfied a checked transition.** `TaskTransitionPolicy`
+    validated only syntax, count, and uniqueness, so `evidence:fake` could enter `complete` or
+    `repair`. Transitions now resolve every cited reference through the existing
+    `EvidenceRepositoryPort` inside the same transaction and require the record to exist, be
+    `passed`, belong to the capsule's project, agree with its job, and be about a subject the
+    capsule owns. The policy stays pure but takes a mandatory evidence assessment, so it cannot be
+    evaluated on caller assertion at all. Self-review found the same hole at creation
+    (`createTaskCapsule` could seed `verifiedEvidenceIds`); that is repaired through the same
+    authority. No second evidence store was created.
+  - **T3-1 — a same-intent check/append race.** `runGovernedEffect` projected, decided, then
+    appended as separate steps, so two concurrent callers could both claim and both dispatch.
+    Reading the history, `decideRetry`, and the `effect_attempt` append now happen in one
+    authoritative `UnitOfWork` transaction that commits before anything reaches the environment.
+  - **T3-2 — request task ID could disagree with plan/sandbox.** The complete scoped identity
+    (`request.taskId`/`plan.taskId`/`sandbox.taskId`, `plan.jobId`/`sandbox.jobId`,
+    `plan.workspaceId`/`sandbox.workspaceId`, `plan.sandboxId`/`sandbox.id`) is now checked before
+    projection, ledger write, or dispatch; a mismatch fails closed with no entry and no dispatch.
+  - **T3-3 — first-500 ledger truncation.** Retry projection, reconciliation, and finalized-outcome
+    conflict detection each read one 500-entry page and ignored `nextCursor`. All three now use one
+    canonical paged walk built on the existing `collectPortPages` mechanism, which follows the
+    cursor to exhaustion, rejects a repeated cursor as `INTEGRITY_FAILURE`, and reports its
+    defensive page ceiling as a typed non-success rather than pretending history ended.
+  - **Round 2 (independent re-review of `314604e`).** Two further HIGH findings, both reproduced
+    against the committed code before any repair and both repaired:
+    - **T2-2 — evidence was validated against the previous state.** `proposeTaskTransition`
+      resolved and judged evidence against `current`, then applied `TaskCapsuleChanges` — which may
+      replace `acceptanceCriterionIds` or `changeArtifactIds` in the same move. A record proving a
+      subject the committed capsule no longer owned could therefore authorize the transition, and
+      already-carried `verifiedEvidenceIds` were exempted from revalidation entirely. Evidence is
+      now judged against a typed `TaskEvidenceScope` derived from immutable task/project/job
+      identity plus the proposed changes, **every** reference that will exist afterwards is
+      revalidated (carried ones included), and a post-condition proves the scope evaluated is the
+      scope actually written. The scope carries a nominal marker, so passing a capsule where the
+      committed scope is required is a compile error rather than a silent regression.
+    - **T3-4 — check validity dependencies were not enforced.** `isEntryStillValid` read only the
+      entry's own facts and the invalidated set, so `dependsOnEntryIds` meant nothing: a check
+      whose own report had not moved stayed "current" after the observation it rested on was
+      invalidated or went stale. Validity now requires every declared dependency to exist, be
+      fact-bearing, belong to the same task and job, and itself be valid, chaining transitively and
+      failing closed on a missing, foreign, or cyclic dependency. Reference edges are also hardened
+      at append time: outcome/failure/check/invalidation references must all resolve inside the
+      same task **and** job, and an invalidation may only name a fact-bearing entry — so it can
+      never be aimed at an effect attempt.
+  - **Round 3 (independent re-review of `74f6e31`, Task 3 only).** Two further HIGH findings, both
+    reproduced against the committed code before any repair and both repaired by replacing the
+    ad-hoc outcome checks with one canonical attempt-outcome state machine:
+    - **T3-5 — a `failure` could create a second resolution.** The fold treated a failure naming an
+      attempt as resolving it, but the append-time conflict check considered only the three
+      `effect_*`/`reconciliation_*` kinds. So `failure → confirmation`, `confirmation → failure`,
+      and `failure → failure` were all accepted, and every later fold of that task threw
+      `INTEGRITY_FAILURE` — an accepted append permanently bricked the task's history, since even
+      claiming a new intent folds first.
+    - **T3-6 — an indeterminate attempt could never be reconciled.** `reconciliation_indeterminate`
+      marked the attempt resolved, and append then refused any later confirmation or
+      non-application. An effect whose reality became observable after a crash was therefore
+      blocked for ever, contradicting the canonical invariant that unknown effects block retry
+      *until reconciled*.
+    - **The repair.** `unresolved`, `failed`, and `indeterminate` all block a retry but stay
+      reconcilable; `confirmed` and `not_applied` are terminal. Transitions are
+      `unresolved → {failed, indeterminate, confirmed, not_applied}`,
+      `failed → {indeterminate, confirmed, not_applied}`, `indeterminate → {confirmed,
+      not_applied}`, and nothing leaves a terminal state. There is no self-transition, so a
+      repeated status can never be used to manufacture history. The append path and the fold share
+      one table, so every accepted sequence folds and a forbidden stored transition is corruption.
+      A new `EffectReconciler.reconcileAttempt` settles an already-attempted effect from a probe's
+      observation with **zero** sandbox dispatches, validates the transition inside the
+      authoritative transaction so exactly one of two concurrent reconciliations wins, and writes
+      nothing when reality is still unprovable and already on record as such.
+  - **Round 4 (independent re-review of `0bcad10`, Task 3 only).** One further HIGH finding,
+    reproduced against the committed code before any repair, then repaired:
+    - **T3-7 — authoritative ledger state did not prove the Task 1 issuer.** `EffectReconciler`
+      accepted anything *typed* as an `AuthorizedSemanticExecutionPlan` and never held a
+      `SemanticExecutionCapabilityVerifier` of its own. On the effect path the only issuer check
+      lived at the sandbox sink, which runs *after* the `effect_attempt` is already durable, so a
+      capability minted by a foreign semantic authorization boundary created authoritative history
+      before Task 1 ever rejected it — behaviour an existing test explicitly accepted. Worse,
+      `reconcileAttempt` dispatches through `SandboxPort` by design, so on that path no issuer
+      check happened at all: a foreign plan, a plain `{ ...plan }` copy, or an
+      `Object.create(plan)` forgery (which passes `instanceof`) could drive the probe and append a
+      terminal `effect_confirmation`. Reproduced: all four attacks produced a full authoritative
+      outcome.
+    - **The repair.** `SemanticExecutionCapabilityVerifier` is now a mandatory
+      `EffectReconcilerDependencies` member — the verify half of the *same* boundary the paired
+      `SandboxPort` holds — and both `runGovernedEffect` and `reconcileAttempt` verify the issuer
+      as their first statement: before the projection a claim reads, before any append, before
+      dispatch, and before the probe. It is `verify`, never `consume`: the single-use spend stays
+      at the sink in `SandboxSupervisor`, untouched, and reconciliation performs no effect so it
+      must not re-spend execution authority. Investigated rather than assumed: Task 1's `verify`
+      tests only the authority's own mint registry and is independent of `consumed`, so a
+      capability whose execution already spent it stays authenticity-verifiable and can settle the
+      attempt it created — no bearer-token authority was invented and no Task 1 semantics were
+      weakened. `observePostState` became private, removing the last public entry point that could
+      run a probe on an unverified plan.
+  - Gate after round 4: `pnpm check` exit 0 — lint 0 errors (9 pre-existing warnings, 1
+    pre-existing info), typecheck 9/9, **863 passing / 16 skipped / 6 todo (885) across 124
+    passing + 5 skipped test files (129 total)**; `pnpm build` 9/9; `git diff --check` clean. This
+    is a green regression suite, **not** a passed Task 2 or Task 3 gate.
+
+- **Round 5 — independent defensive security audit of Tasks 1/2/3, repaired on
+  `autonomy-task2-audit-repair` (branched from `autonomy-task2-3-staging` at `c7ef85e`).** The
+  audit returned `SECURITY_GATE := FAIL` on one HIGH. It was re-verified here against the exact
+  SHA before any code changed — reproduced red against the **real** SQLite repository and the real
+  `TaskManager`, not only against fakes — and confirmed.
+  - **T2-3 — creation was a second entry point into the state machine that skipped every
+    phase-entry rule.** `createTaskCapsule` never consulted `TaskTransitionPolicy`, and its
+    evidence check was guarded by `verifiedEvidenceIds.length > 0`. Citing nothing therefore
+    skipped the evidence authority entirely, so a first revision could be born already `complete`
+    — which is **terminal**, so the checked API could never afterwards correct the durable record
+    — or already in `repair`, or already in `execute` without the attempt its entry costs. T2-1
+    had closed the half where a *reference* could be laundered as verified; the half where the
+    *phase itself* needs justification stayed open. **Repaired at the authority boundary, not in
+    the entity:** `TaskCapsule.create` is a structural constructor that must keep building any
+    revision, including rehydration, so the use case enforces the rule. `TaskTransitionPolicy`
+    now publishes `requiresEvidence(phase)` alongside the existing `attemptCost(phase)`, and
+    `createTaskCapsule` asks the policy rather than restating the set — one place for the rule,
+    no second copy to drift. A phase whose entry needs evidence may not be created on assertion
+    alone (the existing `assessTaskEvidence`/`resolveTaskEvidence` pair then validates the
+    citation exactly as the transition path does), and a phase whose entry spends an attempt may
+    not be created with that attempt unpaid. Both are refused, never coerced. Non-gated phases
+    stay creatable exactly as before, and no Task Capsule public contract, canonical fingerprint,
+    durable revision semantic, evidence-scope check, or Task 3 attempt/reconciliation semantic
+    changed. Regressions: 8 in `packages/application/tests/use-cases/task-capsule.test.ts`, 1 in
+    `packages/application/tests/services/task-transition-policy.test.ts`, and 5 against the real
+    durable repository in `apps/runtime/tests/autonomy/task-state.test.ts`; 6 of them failed
+    before the repair and pass after it.
+  - **Five MEDIUM findings were verified and deliberately deferred on this branch, none blocking.**
+    Three are in Task-1-owned code that this branch must not carry (`SandboxIsolationPolicy`'s
+    numeric bounds are bypassable by a hand-built policy literal; the semantic `role` is a caller
+    assertion never cross-checked against `context.actor.roles`; `workspaceRoot` is interpolated
+    unescaped into the Docker `--mount` CSV). One is Task-3 persistence
+    (`SqliteExecutionLedgerRepository.listForTask` rehydrates every ledger row of every task per
+    page, so one corrupt row stops governed effects for all tasks — availability, fail-closed, and
+    a durable-query change that does not belong in a focused security repair). One is branch
+    ancestry (`autonomy-task123-integration-rehearsal` is built on `c059a33^`, not on final Task 1
+    `c059a33`, so it ships the superseded `assertDockerRuntimeObservation`; fail-closed, and
+    rewriting the preserved rehearsal was out of scope). **All but one are now closed on the
+    integration branch** — see "Task 1+2+3 final integration" below.
+  - Gate after round 5: `pnpm lint` exit 0 (9 pre-existing warnings, 1 pre-existing info),
+    `pnpm typecheck` 9/9, `pnpm test` **877 passing / 16 skipped / 6 todo (899) across 124 passing
+    + 5 skipped test files (129 total)**, `pnpm build` 9/9. That was a green regression suite on the
+    staging branch, not a merged result; the branch was submitted for independent re-audit rather
+    than merged, and it was accepted there. Task 2 and Task 3 are **PASS** as accepted at
+    `34a74d9`. Task 4 remains BLOCKED and unstarted.
+
+## Task 1+2+3 final integration (`autonomy-task123-final-integration`)
+
+The first real clean Task 1+2+3 integration candidate. **Not a passed final-integration gate** —
+it is built and locally verified here, and its next hard gate is independent review.
+
+- **Branch:** `autonomy-task123-final-integration`, branched from final Task 1 `c059a33` and
+  reconciled forward. It is not a fast-forward of anything: the final Task 1 line and the repaired
+  Task 2/3 line (`34a74d9`) genuinely diverge, and the reconciliation was semantic. Every Task 1
+  file is byte-identical to `c059a33`; the Task 2/3 work was adapted to Task 1's stronger contract,
+  never the reverse. The superseded `autonomy-task123-integration-rehearsal` was used as behavioural
+  reference only — its final authority design was ported, its rejected intermediate history was not
+  replayed, and the branch itself is untouched.
+- **Authority design.** A governed execution surface builds the Task 1 semantic boundary, the
+  sandbox that boundary governs, and the Execution Ledger reconciler together, so a reconciler
+  whose verifier and sink come from different authorities cannot be assembled. Privileged behaviour
+  is captured at canonical construction and held in module-private state, so patching a public
+  member changes what a caller is told and nothing about what executes. Semantic effects have
+  exactly one gateway. Live execution authority and historical reconciliation authority stay
+  distinct: settling reads the durable `effect_attempt` row alone — no capability, no sandbox
+  handle, no dispatch — so reconciliation is observation and settlement, never a second execution
+  path.
+- **Security items from the round-5 audit.** The HIGH was already closed by the repaired Task 2/3
+  line the integration carries (`34a74d9` gates capsule creation on the phase-entry rules), and the
+  branch-ancestry MEDIUM is eliminated by construction, since this branch descends from `c059a33`
+  and carries the current `assertDockerRuntimeObservation`. Three MEDIUMs are repaired here with
+  permanent regressions: `SandboxIsolationPolicy` is now nominally branded and re-asserted at the
+  container argument sink; a workspace root containing `,` or `=` is refused before a sandbox
+  exists, because such a path cannot be expressed safely in a `--mount` specification; and the
+  Execution Ledger filters and pages in SQL, rehydrating only the returned page, so one unreadable
+  row no longer stops governed effects for every task. One MEDIUM remains deliberately deferred —
+  binding the semantic `role` to `context.actor.roles` — because the autonomy module is still
+  unwired and the binding belongs with the Manager/Executor/Auditor phase that will define it.
+- **Architecture.** `packages/domain/src/entities/task-capsule.ts` was 604 lines, over the frozen
+  500-line limit. It is split along real responsibility boundaries into the entity itself, its
+  bounded field vocabulary (`task-capsule-fields.ts`), and its plan graph (`task-capsule-dag.ts`).
+  No functionality was removed, no contract weakened, and the canonical fingerprint is byte-identical
+  before and after. The source-size test — which historically covered one package's `src` — is now a
+  genuine repository-wide gate over every first-party production source root the repository actually
+  has, with regression coverage proving an oversized file is caught and that only build output and
+  vendored code are skipped. Zero production source files exceed 500 lines.
+- **Frozen invariants held:** runtime API 1.0 unbroken, `ADAPTER_PROTOCOL_VERSION` still `"1.0.0"`,
+  adapter 1.1 still additive, exactly 19 semantic model-facing operations, `git.worktree` still
+  absent from that set, `WorkspaceManagerPort` still the workspace/worktree lifecycle authority.
+- **Preserved branches are untouched:** `autonomy-v1.1.0`, `autonomy-task2-3-staging`,
+  `autonomy-task2-audit-repair`, `autonomy-task123-integration-rehearsal`, and `main` are all at
+  the SHAs they held before this work.
+- **Target-host Docker proof: PASS on this candidate's own tree.** The candidate does not inherit
+  `c059a33`'s run; it was re-run here in mandatory Docker mode against the final integrated working
+  tree, with the digest-pinned image, and every required isolation property was observed again.
+  See the final section of `docs/reviews/autonomy-task1-phase1-evidence.md`.
+- **Local gates: `pnpm typecheck` 9/9, `pnpm test` 933 passing / 16 skipped / 6 todo (955) across
+  127 passing + 5 skipped files (132 total), `pnpm lint` exit 0 (9 pre-existing warnings, 1
+  pre-existing info), `pnpm build` 9/9, `git diff --check` clean.** A green local gate set and a
+  passed host proof are **not** a passed final-integration gate.
+- **Next hard gate: independent review of the integration candidate.** Main promotion is not
+  started — the repository still has a separate promotion-governance gap involving
+  main/workflow/ruleset protection — and Task 4 remains BLOCKED.
 
 ## Verified implemented state
 

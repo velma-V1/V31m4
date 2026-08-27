@@ -4,12 +4,33 @@
 
 - Runtime API contract version: `1.0.0`
 - Runtime event schema version: `1.0.0`
-- Adapter protocol version: `1.0.0`
+- Adapter protocol versions: `1.0.0` (`ADAPTER_PROTOCOL_VERSION`, immutable) and `1.1.0`
+  (`ADAPTER_PROTOCOL_VERSION_1_1`, additive and separately negotiated)
 - Root JSON Schema document versions: `1.0.0`
 
 ## Compatibility rule
 
 V31M4 currently uses exact-version compatibility. A parser for `1.0.0` accepts only `1.0.0`. It does not silently accept a newer patch, minor, prerelease, or major version.
+
+## Adapter protocol 1.1
+
+`packages/contracts/src/adapter-rpc-v1_1.schemas.ts` adds adapter protocol `1.1.0` **beside**
+`1.0.0`, never inside it. `adapter-rpc.schemas.ts` is unchanged: the `1.0.0` constant, its closed
+eleven-method request union, and every published `1.0.0` shape stay exactly as they were, and a
+`1.0.0` parser rejects every `1.1.0` construct.
+
+`1.1.0` exists because strict `1.0.0` cannot carry task/workspace/sandbox scope for a governed
+semantic operation. It adds a `1.1.0`-literal `adapter.initialize` and a distinct
+`tool.invoke_scoped` method — a distinct method, so a `1.0.0` peer refuses it outright instead of
+partially understanding it. Its result status union deliberately matches the immutable public v1
+tool status; an unreconciled effect stays internal Sandbox/Ledger state and never becomes a fourth
+wire status.
+
+`SUPPORTED_ADAPTER_PROTOCOL_VERSIONS` lists the exact versions this runtime speaks, most preferred
+first. `negotiateAdapterProtocolVersion` selects the highest exact version both peers offer and
+throws otherwise: no range matching, no prerelease tolerance, no "closest version" fallback.
+`AdapterRegistry` is constructed with that same injected set and rejects registration of any
+adapter declaring a version outside it.
 
 This strict rule prevents one process from interpreting newly added fields, methods, event variants, or invariants differently from another process. Version negotiation and migrations must be explicit.
 
