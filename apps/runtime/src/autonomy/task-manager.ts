@@ -10,7 +10,7 @@ import {
   type UnitOfWorkPort,
   type Versioned,
 } from "@v31m4/application";
-import type { TaskCapsule, TaskCapsuleChanges, TaskCapsuleInput, TaskId } from "@v31m4/domain";
+import type { TaskCapsuleChanges, TaskCapsuleInput, TaskId } from "@v31m4/domain";
 
 /**
  * Runtime composition for durable task state.
@@ -31,7 +31,7 @@ export interface TaskManagerDependencies {
 }
 
 export interface CurrentTask {
-  readonly capsule: TaskCapsule;
+  readonly capsule: import("@v31m4/domain").TaskCapsule;
   readonly head: Versioned<TaskCapsuleHead>;
 }
 
@@ -82,32 +82,10 @@ export class TaskManager {
 }
 
 /**
- * DAG nodes that are workable right now: not blocked themselves, and with no blocked node
- * anywhere in their transitive dependencies. Returned in the capsule's own node order so the
- * answer is deterministic, and derived purely from stored state.
+ * Re-exported from the Manager use case, which is now the single definition.
  *
- * Task 2's DAG models dependency and *blocker* state, which is what this reads. It deliberately
- * does not model per-node completion or decide which ready node to work on — selecting the next
- * task belongs to the later Manager phase.
+ * The rule is a pure function of an authoritative capsule, so it belongs with the selection use
+ * case that depends on it rather than in a runtime wiring seam. Keeping the name reachable here
+ * preserves every existing caller without leaving two copies of the traversal to drift apart.
  */
-export function readyDagNodeIds(capsule: TaskCapsule): readonly string[] {
-  const nodes = new Map(capsule.dagNodes.map((node) => [node.id, node]));
-  const blockedTransitively = new Map<string, boolean>();
-
-  const isBlocked = (id: string): boolean => {
-    const cached = blockedTransitively.get(id);
-    if (cached !== undefined) return cached;
-    const node = nodes.get(id);
-    if (node === undefined) return true;
-    // Provisionally false so a malformed self-reference cannot loop; the entity already
-    // guarantees the DAG is acyclic.
-    blockedTransitively.set(id, false);
-    const blocked = node.blocked || node.dependsOn.some((dependency) => isBlocked(dependency));
-    blockedTransitively.set(id, blocked);
-    return blocked;
-  };
-
-  return Object.freeze(
-    capsule.dagNodes.filter((node) => !isBlocked(node.id)).map((node) => node.id),
-  );
-}
+export { readyDagNodeIds } from "@v31m4/application";

@@ -15,7 +15,13 @@ export async function resolveTaskEvidence(
   evidence: EvidenceRepositoryPort,
   evidenceIds: readonly string[],
   context: OperationContext,
-  transaction: UnitOfWorkTransaction,
+  /**
+   * Optional, and only because a read may legitimately have no transaction of its own: the
+   * independent audit resolves the same records outside any write. Every authoritative *write*
+   * still requires one. Callers that hold a transaction must pass it, so a resolution inside a
+   * transaction still sees that transaction's view.
+   */
+  transaction?: UnitOfWorkTransaction,
 ): Promise<ReadonlyMap<string, EvidenceRecord>> {
   const resolved = new Map<string, EvidenceRecord>();
   for (const evidenceId of evidenceIds) {

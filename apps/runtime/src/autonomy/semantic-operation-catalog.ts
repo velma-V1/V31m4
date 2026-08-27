@@ -90,10 +90,24 @@ const READ_ROLES = Object.freeze<readonly SemanticOperationRole[]>([
   "auditor",
 ]);
 /**
- * Anything that is not a pure read is Executor-only: the Manager cannot act and the Auditor
- * is read-only by default, so neither can reach a write, execute, or network operation.
+ * Anything that is not a pure read is Executor-only by default: the Manager cannot act and the
+ * Auditor is read-only, so neither reaches a write, execute, or network-effect operation.
  */
 const EFFECT_ROLES = Object.freeze<readonly SemanticOperationRole[]>(["executor"]);
+
+/**
+ * The one operation-level widening of the default.
+ *
+ * `browser.verify` checks a stated expectation against a target: that is what an audit *is*, and
+ * the role contract bars a read-only role from write, execute, and network-**effect** operations —
+ * `browser.verify` is a `network_read`. It was left Executor-only when the roles did not yet exist;
+ * with the roles implemented and regression-covered, the conservative default has been reviewed
+ * and narrowed to exactly this operation.
+ *
+ * `browser.inspect` is deliberately *not* widened. Open-ended exploration of a network target is
+ * not verification, and the narrower change is the one the evidence supports.
+ */
+const VERIFY_ROLES = Object.freeze<readonly SemanticOperationRole[]>(["executor", "auditor"]);
 
 const READ_RESOURCES: SemanticResourcePolicy = Object.freeze({
   maxWallClockMs: 30_000,
@@ -113,6 +127,8 @@ function define(
   evidencePreconditionPolicyId: string,
   requiredParameters: readonly string[] = [],
   allowsCallerSuppliedCommand = false,
+  /** Operation-level override of the effect-class default; used once, for `browser.verify`. */
+  allowedRoles?: readonly SemanticOperationRole[],
 ): SemanticOperationDefinition {
   const isRead = effectClass === "read";
   return Object.freeze({
@@ -122,7 +138,7 @@ function define(
     effectClass,
     riskClass,
     sandboxRequirement: isRead ? "none" : "required",
-    allowedRoles: isRead ? READ_ROLES : EFFECT_ROLES,
+    allowedRoles: allowedRoles ?? (isRead ? READ_ROLES : EFFECT_ROLES),
     evidencePreconditionPolicyId,
     resourcePolicy: isRead ? READ_RESOURCES : EXECUTE_RESOURCES,
     requiredParameters: Object.freeze([...requiredParameters]),
@@ -163,7 +179,15 @@ const DEFINITIONS: readonly SemanticOperationDefinition[] = Object.freeze([
     true,
   ),
   define("browser.inspect", "network_read", "high", "evidence.none.v1", ["target"]),
-  define("browser.verify", "network_read", "high", "evidence.none.v1", ["target", "expectation"]),
+  define(
+    "browser.verify",
+    "network_read",
+    "high",
+    "evidence.none.v1",
+    ["target", "expectation"],
+    false,
+    VERIFY_ROLES,
+  ),
 ]);
 
 export const SEMANTIC_OPERATION_CATALOG: Readonly<

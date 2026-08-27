@@ -72,7 +72,7 @@ adapters/
 └── local-supervised/                    # Optional dynamic Ollama/OpenAI-compatible model (legacy one-shot plus protocol-1.1 structured agent turns), contained kernel, and verifier JSON-RPC children
 
 apps/
-├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local composition; src/autonomy/ owns the 19-operation catalog, the canonical policy-backed capability authorizer, and the governed agent-turn loop
+├── runtime/                             # Layer 10: authoritative runtime plus explicit hermetic_reference/supervised_local composition; src/autonomy/ owns the 19-operation catalog, the canonical policy-backed capability authorizer, the governed agent-turn loop, and the Manager/Executor/Auditor role harness
 └── departments-integration/             # Post-core: independence-matrix integration tests (core-only / both departments / after removal)
 
 plugins/

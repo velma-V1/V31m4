@@ -7,6 +7,7 @@ import {
   type SandboxHandle,
   type WorkspaceHandle,
 } from "@v31m4/application";
+import { agentTurnSchema } from "@v31m4/contracts";
 import {
   ExecutionLedgerEntry,
   JobId,
@@ -19,8 +20,17 @@ import {
 import { SqliteRuntimeDatabase } from "@v31m4/infrastructure";
 import { describe, expect, it } from "vitest";
 import { SqliteTaskCapsuleRepository } from "../../src/autonomy/autonomy-state-infrastructure.js";
+import {
+  assertRoleInvocationPermitted,
+  isReadOnlyRole,
+  mintRoleInvocationManifest,
+} from "../../src/autonomy/role-manifest.js";
 import { createSemanticAuthorizationBoundary } from "../../src/autonomy/semantic-execution-authorization.js";
-import { SEMANTIC_OPERATION_IDS } from "../../src/autonomy/semantic-operation-catalog.js";
+import {
+  getSemanticOperation,
+  isSemanticOperationId,
+  SEMANTIC_OPERATION_IDS,
+} from "../../src/autonomy/semantic-operation-catalog.js";
 import { TaskManager } from "../../src/autonomy/task-manager.js";
 import { SqliteEvidenceRepository } from "../../src/job-execution-infrastructure.js";
 import { runtimeDatabase, context as taskContext } from "../fixtures.js";
@@ -247,8 +257,77 @@ describe("autonomy program invariants", () => {
         .allowed,
     ).toBe(true);
   });
-  it.todo("agent turn cannot invoke disallowed operation");
-  it.todo("auditor cannot mutate candidate");
+  /**
+   * Owned by Task 4. The full governed loop, with a counting sandbox backend proving that a
+   * refused turn produces no execution at all, lives in `agent-turn-loop.test.ts`. This is the
+   * inventory entry's own executable check: a syntactically perfect turn is still only a proposal,
+   * and the closed catalog and the role manifest are what decide whether it may run.
+   */
+  it("agent turn cannot invoke disallowed operation", () => {
+    // A turn that parses is not a turn that is permitted.
+    const forged = agentTurnSchema.parse({
+      kind: "tool_call",
+      operation: "code.patch",
+      parameters: { patch: "@@" },
+    });
+    expect(forged.kind).toBe("tool_call");
+
+    // Outside the closed catalog: refused by the registry, whatever it looks like on the wire.
+    for (const outside of ["git.worktree", "shell.exec", "docker.run", "browser.navigate"]) {
+      expect(agentTurnSchema.safeParse({ ...forged, operation: outside }).success).toBe(true);
+      expect(isSemanticOperationId(outside)).toBe(false);
+      expect(() => assertRoleInvocationPermitted("executor", [outside as never])).toThrow(
+        ApplicationError,
+      );
+    }
+    // Inside the catalog but outside the role: refused before a manifest can exist to hold it.
+    expect(() => assertRoleInvocationPermitted("auditor", ["code.patch"])).toThrow(
+      ApplicationError,
+    );
+    expect(() => assertRoleInvocationPermitted("manager", ["command.run"])).toThrow(
+      ApplicationError,
+    );
+    // And a manifest can never be minted with an operation its role may not hold.
+    expect(() =>
+      mintRoleInvocationManifest({
+        role: "auditor",
+        taskId: TaskId.parse("task:invariants"),
+        capsuleFingerprint: sha256Hex("capsule") as never,
+        contextFingerprint: sha256Hex("context") as never,
+        modelId: "model:any" as never,
+        allowedOperations: ["command.run"],
+        skillVersions: [],
+        harnessVersion: "v31m4-autonomy-1.1.0",
+        acceptanceContractFingerprint: sha256Hex("contract") as never,
+      }),
+    ).toThrow(ApplicationError);
+  });
+
+  /**
+   * Owned by Task 5. The full role harness — fresh contexts, independent rejection, restart-safe
+   * handoff — lives in `role-harness.test.ts`. This is the inventory entry's own executable check
+   * that a read-only role structurally cannot change anything it is judging.
+   */
+  it("auditor cannot mutate candidate", () => {
+    const mutating: string[] = [];
+    for (const operationId of SEMANTIC_OPERATION_IDS) {
+      const definition = getSemanticOperation(operationId);
+      const permitted = definition.allowedRoles.includes("auditor");
+      const observes =
+        definition.effectClass === "read" || definition.effectClass === "network_read";
+      // Every operation an auditor may hold observes; nothing it may hold changes anything.
+      if (permitted && !observes) mutating.push(operationId);
+      // And the manifest mint agrees with the catalog, operation by operation.
+      const mint = () => assertRoleInvocationPermitted("auditor", [operationId]);
+      if (permitted) expect(mint, operationId).not.toThrow();
+      else expect(mint, operationId).toThrow(ApplicationError);
+    }
+    expect(mutating).toEqual([]);
+    // The read-only default is derived from the role, so a caller cannot declare its way out.
+    expect(isReadOnlyRole("auditor")).toBe(true);
+    expect(isReadOnlyRole("manager")).toBe(true);
+    expect(isReadOnlyRole("executor")).toBe(false);
+  });
   it.todo("stale workspace index cannot enter context");
   it.todo("stale memory is not injected as current fact");
   it.todo("deterministic failure cannot be overridden by neural verifier");

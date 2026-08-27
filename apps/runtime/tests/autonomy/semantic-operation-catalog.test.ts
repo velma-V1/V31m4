@@ -79,16 +79,29 @@ describe("semantic operation catalog", () => {
   });
 
   it("keeps role permissions operation-level and the auditor read-only", () => {
+    // Read-only means: no write, no execute, no network *effect*. Role permissions are
+    // operation-level, so the rule is asserted per operation rather than derived from one class.
+    const auditorPermitted = new Set(["read", "network_read"]);
     for (const id of SEMANTIC_OPERATION_IDS) {
       const definition = getSemanticOperation(id);
       if (definition.effectClass === "read") {
         expect(definition.allowedRoles).toContain("auditor");
-      } else {
-        expect(definition.allowedRoles).not.toContain("auditor");
+      }
+      if (definition.allowedRoles.includes("auditor")) {
+        expect(auditorPermitted.has(definition.effectClass), id).toBe(true);
+      }
+      if (definition.effectClass !== "read") {
         expect(definition.allowedRoles).not.toContain("manager");
         expect(definition.sandboxRequirement).toBe("required");
       }
     }
+    // The one reviewed widening: verifying a stated expectation is what an audit does.
+    expect(getSemanticOperation("browser.verify").allowedRoles).toEqual(["executor", "auditor"]);
+    // And its exploratory sibling stays Executor-only.
+    expect(getSemanticOperation("browser.inspect").allowedRoles).toEqual(["executor"]);
+    expect(() => assertSemanticOperationAllowedForRole("browser.inspect", "auditor")).toThrow(
+      ApplicationError,
+    );
     expect(() => assertSemanticOperationAllowedForRole("code.patch", "auditor")).toThrow(
       ApplicationError,
     );

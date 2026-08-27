@@ -24,6 +24,7 @@ Program: `V31M4-AUTONOMY-001 / 1.1.0`.
 - Task 0 baseline evidence: `docs/reviews/autonomy-baseline-v2.md`.
 - Task 1 target-host evidence: `docs/reviews/autonomy-task1-phase1-evidence.md`.
 - Task 4 evidence: `docs/reviews/autonomy-task4-agent-turn-evidence.md`.
+- Task 5 evidence: `docs/reviews/autonomy-task5-role-harness-evidence.md`.
 
 ## Autonomy program status
 
@@ -36,8 +37,8 @@ TASK123_FINAL_INTEGRATION        := COMPLETE
 TASK123_PROMOTION_TO_MAIN        := COMPLETE
 MAIN_POST_MERGE_CI               := PASS
 
-TASK_4_STRUCTURED_AGENT_TURNS    := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
-TASK_5_MANAGER_EXECUTOR_AUDITOR  := NOT_STARTED
+TASK_4_STRUCTURED_AGENT_TURNS    := COMPLETE
+TASK_5_MANAGER_EXECUTOR_AUDITOR  := IMPLEMENTED_AWAITING_INDEPENDENT_GATE
 TASK_6_EVIDENCE_EFFECTS          := NOT_STARTED
 TASK_7_PROJECT_INTELLIGENCE      := NOT_STARTED
 TASK_8_SKILLS_MCP                := NOT_STARTED
@@ -49,7 +50,9 @@ TASK_12_SELF_IMPROVEMENT_LAB     := NOT_STARTED
 
 Tasks 1-3 are no longer staging work. They were independently reviewed, integrated on a clean line, re-proven on the target host, promoted through protected PR #12, and passed CI again on the resulting `main` merge commit.
 
-One previously accepted deferred item remains assigned to its planned later phase. It is known and accepted; do not pull it forward unless the governing architecture/plan requires it for the phase being implemented.
+The previously accepted deferred item assigned to Task 5 — the conservative pending-roles assignment recorded during Task 1 — was resolved in Task 5 and is no longer outstanding. See `docs/reviews/autonomy-task5-role-harness-evidence.md`.
+
+The accepted deferred-refinements issue still holds items owned by later phases: the matching Exit Gate belongs to Task 10, and layered context compilation with a derived readable projection belongs to Tasks 7 and 9. Do not pull either forward.
 
 ## Tasks 1-3 accepted state
 
@@ -134,43 +137,52 @@ Status: **COMPLETE**.
 - CI performs frozen-lockfile install, typecheck, test, lint, and build.
 - Target-host proofs are separate evidence and are not inferred from ordinary CI.
 
-## Current phase — Task 4
+## Task 4 — accepted
 
-Task 4 is **implemented on `autonomy-task4-agent-turns` and awaiting its independent gate**. It is
+Task 4 is **COMPLETE**. Accepted SHA `914a0e890772d615d00c80deaa7deb525e968f55` on
+`autonomy-task4-agent-turns`, independently gated on 2026-08-27. It is not merged to `main`; Task 5
+builds on it directly.
+
+Structured agent turns, the additive adapter-protocol-1.1 agent invocation, the provider-neutral
+agent model capability, the governed agent-turn loop, and the modernized local adapter are in place.
+The exact-SHA CI run passed.
+
+Qwen3.8-27B target-host qualification is **deferred and is not a Task 5 blocker**: the model is not
+installed on this host, so the mandated proof reported `BLOCKED_ENVIRONMENT`. The same proof passed
+8/8 twice against an installed real Qwen (`qwen3:14b`, Q4_K_M), including a measured 29,881-token
+context against a 32,768-token budget. 64K remains unpromoted.
+
+## Current phase — Task 5
+
+Task 5 is **implemented on `autonomy-task5-role-harness` and awaiting its independent gate**. It is
 not promoted and must not be merged before that review.
 
 Implemented:
 
-- `packages/contracts/src/agent-turn.schemas.ts` — the provider-neutral agent-turn output contract
-  `tool_call | finish | defer`, versioned separately from the adapter protocol, with no
-  chain-of-thought field.
-- `packages/domain/src/value-objects/private-reasoning.ts` — the one frozen list of
-  private-reasoning property names, enforced at every boundary that accepts model output.
-- Adapter protocol 1.1 gained an additive `model.invoke_agent` method carrying the reasoning policy,
-  the output-contract version, the allowed operation IDs, and a bounded context budget. Protocol
-  1.0 is byte-identical and still rejects every 1.1 construct.
-- `ModelGatewayPort` gained the `AgentModelGatewayPort` capability beside its unchanged legacy
-  `invoke`; `SupervisedModelGateway` implements it and strictly validates the adapter's answer.
-- `apps/runtime/src/autonomy/agent-turn-loop.ts` — the governed loop. Context is rebuilt from the
-  authoritative Task Capsule and folded Ledger before every turn, the runtime revalidates every
-  turn, and turn/tool/defer/refusal/context budgets bound the run. `finish` returns
-  `ready_for_verification` and certifies nothing.
-- `adapters/local-supervised/model-adapter.mjs` serves the structured agent path beside its
-  preserved legacy path: reasoning policy translated to `think` only inside the adapter, a
-  configurable hard byte ceiling replacing the fixed 64 KiB autonomy limit, an explicit token
-  budget as `num_ctx`, oversize refused rather than truncated, and no reasoning trace persisted.
-- `scripts/prove-agent-turn-real.mjs` (`pnpm prove:agent-turn`) proves the whole real path on the
-  target host and reports `BLOCKED_ENVIRONMENT` honestly when a prerequisite is missing.
+- `entry-acceptance-snapshot.ts` — the verification contract compiled from authoritative Task
+  Capsule state and frozen/fingerprinted before significant Executor work. Neither the Executor nor
+  the Auditor can weaken or redefine it afterwards.
+- `manager-routing.ts` — deterministic-first routing. Deterministic machinery is used whenever it is
+  sufficient; a model turn is requested only where adaptive reasoning materially helps. No new
+  authority surface.
+- `select-next-task.ts` — the Manager. Deterministic dependency-ready selection that performs no
+  write and cannot mark completion.
+- `audit-task-result.ts` — the deterministic audit verdict over the frozen contract, the
+  authoritative Evidence store, and the Execution Ledger, reusing the existing evidence assessment
+  rather than inventing a second taxonomy.
+- `role-manifest.ts` — role invocation manifests with derived `readOnly`, operation-level role
+  permissions, and full context/model/skill/harness fingerprints, persisted as ordinary Ledger
+  resource facts.
+- `task-executor.ts` / `task-auditor.ts` — the fresh Executor and the independent read-only Auditor.
+  A model may advise the Auditor; it can never overturn the deterministic verdict.
 
-Target-host status:
+The Task 5-assigned deferred role-assignment item was resolved: `browser.verify` is now
+auditor-permitted as an explicit operation-level assignment; `browser.inspect` deliberately is not.
 
-- The plan's Qwen3.8-27B Q4_K_M is **not installed** on this host, so the mandated proof is
-  `BLOCKED_ENVIRONMENT`. Pulling it was not authorized. No Qwen3.8-27B measurement is claimed.
-- The same proof passed 8/8 twice against an installed real Qwen (`qwen3:14b`, Q4_K_M) as non-target
-  evidence, including a measured 29,881-token context against a 32,768-token budget.
-- 64K remains unpromoted and requires its own measured target-host evidence.
+Task 10's matching Exit Gate and Quality Floor were **not** implemented, and Tasks 7/9 context
+layering was **not** implemented.
 
-Do not start Task 5 while Task 4 is still under review.
+Do not start Task 6 while Task 5 is still under review.
 
 ## Later phase order
 
